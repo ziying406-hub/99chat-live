@@ -1,0 +1,20 @@
+{
+  "name": "ChatLite",
+  "short_name": "ChatLite",
+  "description": "A functional chat PWA clone with contacts, groups, messages, media, and collections.",
+  "id": "/",
+  "scope": "/",
+  "start_url": "/",
+  "display": "standalone",
+  "theme_color": "#0A2FC0",
+  "background_color": "#ffffff",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "/public/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

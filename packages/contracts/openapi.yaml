@@ -1,0 +1,70 @@
+openapi: 3.1.0
+info:
+  title: Chat PWA Functional Clone API
+  version: 0.1.0
+paths:
+  /api/auth/login:
+    post:
+      summary: Password login with country code and phone number.
+  /api/auth/register:
+    post:
+      summary: Register a phone account with bcrypt password hashing.
+  /api/me:
+    get:
+      summary: Current user profile.
+    patch:
+      summary: Update nickname, signature, or avatar.
+  /api/conversations:
+    get:
+      summary: List chats with unread counts.
+  /api/conversations/{id}/messages:
+    get:
+      summary: Message history.
+    post:
+      summary: Send a message.
+  /api/contacts:
+    get:
+      summary: Friend list.
+  /api/friend-requests:
+    get:
+      summary: Friend requests.
+    post:
+      summary: Create friend request.
+  /api/friend-requests/{id}:
+    patch:
+      summary: Accept or reject a friend request.
+  /api/groups:
+    get:
+      summary: Group list.
+    post:
+      summary: Create group.
+  /api/groups/{id}:
+    get:
+      summary: Group details and settings.
+    patch:
+      summary: Update group metadata.
+  /api/groups/{id}/members:
+    get:
+      summary: Group member list.
+    post:
+      summary: Invite a user into the group.
+  /api/groups/{id}/members/{userId}:
+    patch:
+      summary: Update member role or mute status.
+    delete:
+      summary: Remove a member from the group.
+  /api/files/sign:
+    post:
+      summary: Create a local upload target.
+  /api/files/upload/{id}/{name}:
+    put:
+      summary: Upload raw file bytes to the local object store.
+  /uploads/{id}/{name}:
+    get:
+      summary: Download or display an uploaded file.
+  /api/collections:
+    get:
+      summary: Saved messages and files.
+  /api/reports:
+    post:
+      summary: Submit a user or group report.

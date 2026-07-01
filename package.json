@@ -1,0 +1,15 @@
+{
+  "name": "chat-pwa-clone",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "web:dev": "python3 -m http.server 5173 -d apps/web",
+    "api:dev": "cd apps/api && go run ./cmd/server",
+    "dev": "echo 'Run web:dev and api:dev in separate terminals'"
+  },
+  "workspaces": [
+    "apps/web",
+    "apps/api",
+    "packages/contracts"
+  ]
+}

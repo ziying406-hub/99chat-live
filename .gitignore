@@ -1,0 +1,9 @@
+.DS_Store
+.gocache/
+.gomodcache/
+node_modules/
+dist/
+build/
+*.log
+apps/api/uploads/
+apps/api/file-*/
