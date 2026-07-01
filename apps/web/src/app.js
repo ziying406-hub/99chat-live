@@ -16,7 +16,10 @@ const state = {
   useMock: false,
   data: null,
   ws: null,
-  scrollToBottom: false
+  scrollToBottom: false,
+  preview: null,
+  mention: null,
+  mentionIds: []
 };
 
 const mock = createMockData();
@@ -101,8 +104,18 @@ function connectRealtime() {
       const envelope = JSON.parse(event.data);
       if (envelope.type === "message.created") {
         const id = envelope.conversationId;
+        const message = envelope.payload;
         state.data.messages[id] = [...(state.data.messages[id] || []), envelope.payload];
-        upsertConversationPreview(id, envelope.payload);
+        const incoming = message.senderId !== state.user?.id;
+        const mentionedMe = incoming && Array.isArray(message.mentions) && message.mentions.includes(state.user?.id);
+        upsertConversationPreview(id, message, {
+          bumpUnread: incoming && id !== state.selectedConversationId,
+          mentionMe: mentionedMe
+        });
+        if (mentionedMe) {
+          const conv = getConversation(id);
+          toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
+        }
         if (id === state.selectedConversationId) scheduleScrollToBottom();
         render();
       }
@@ -213,7 +226,11 @@ function renderMessageSidebar() {
               <div class="item-title">${escapeHTML(c.title)}</div>
               <div class="item-preview">${formatPreview(c.lastText)}</div>
             </div>
-            <div class="item-meta">${formatTime(c.lastAt)}${c.unread ? `<br><span class="badge">${c.unread > 99 ? "99+" : c.unread}</span>` : ""}</div>
+            <div class="item-meta">
+              ${formatTime(c.lastAt)}
+              ${c.unread ? `<br><span class="badge">${c.unread > 99 ? "99+" : c.unread}</span>` : ""}
+              ${conversationMentionsCurrentUser(c) ? `<br><span class="mention-badge list">@你</span>` : ""}
+            </div>
           </article>`).join("")}
       </div>
     </aside>`;
@@ -294,35 +311,83 @@ function renderChatPane(conv) {
         <div class="day-divider">昨日下午 4:48</div>
         ${messages.map(renderMessage).join("")}
       </div>
-      <form class="composer" id="composer">
-        <button class="icon-btn" type="button" data-action="voice">${state.voiceMode ? "⌨" : icons.mic}</button>
-        ${state.voiceMode ? `<button class="ghost-btn" type="button" data-action="fake-voice">00:00 点击录音</button>` : `<div class="editor" id="editor" contenteditable="true"></div>`}
-        <button class="icon-btn" type="button" data-tool="attachments" title="附件">${icons.attach}</button>
-        <button class="icon-btn" type="button" data-tool="emoji" title="表情">${icons.smile}</button>
-        <button class="primary-btn inline" type="submit">传送</button>
-      </form>
-      ${renderToolMenu()}
+      <div class="composer-shell">
+        <form class="composer" id="composer">
+          <button class="icon-btn" type="button" data-action="voice">${state.voiceMode ? "⌨" : icons.mic}</button>
+          ${state.voiceMode ? `<button class="ghost-btn" type="button" data-action="fake-voice">00:00 点击录音</button>` : `<textarea class="editor" id="editor" placeholder="输入消息"></textarea>`}
+          <button class="icon-btn" type="button" data-action="mention" title="提及成员">@</button>
+          <button class="icon-btn" type="button" data-tool="attachments" title="附件">${icons.attach}</button>
+          <button class="icon-btn" type="button" data-tool="emoji" title="表情">${icons.smile}</button>
+          <button class="primary-btn inline" type="submit">传送</button>
+        </form>
+        <div class="mention-menu" id="mentionMenu">${renderMentionMenu()}</div>
+        ${renderToolMenu()}
+      </div>
     </section>`;
 }
 
 function renderMessage(message) {
   const mine = message.senderId === state.user.id;
+  const mentionedMe = (message.mentions || []).includes(state.user.id);
   return `
     <article class="message ${mine ? "me" : ""}">
       <img class="avatar" src="${avatarSrc(mine ? state.user.avatar : avatar(message.senderName[0] || "友"))}" alt="">
       <div class="bubble">
-        <div class="sender">${escapeHTML(message.senderName)} · ${formatTime(message.createdAt)}</div>
+        <div class="sender">${escapeHTML(message.senderName)} · ${formatTime(message.createdAt)}${mentionedMe ? ` <span class="mention-badge">@你</span>` : ""}</div>
         ${renderMessageBody(message)}
       </div>
     </article>`;
 }
 
 function renderMessageBody(message) {
-  if (message.type === "image") return `<div class="media-card"><img src="${mediaURL(message.attachment?.url || "/public/demo-photo.svg")}" alt=""></div>`;
-  if (message.type === "file") return `📄 ${escapeHTML(message.attachment?.name || message.body || "文件")}`;
+  if (message.type === "image") {
+    const url = mediaURL(message.attachment?.url || "/public/demo-photo.svg");
+    const name = escapeHTML(message.attachment?.name || message.body || "图片");
+    return `
+      <button class="media-card media-card-button" type="button" data-open-image="${escapeAttr(url)}" data-image-name="${name}">
+        <img src="${url}" alt="${name}">
+        <span class="media-card-overlay">点按查看大图</span>
+      </button>`;
+  }
+  if (message.type === "file") {
+    const url = mediaURL(message.attachment?.url || "");
+    const name = escapeHTML(message.attachment?.name || message.body || "文件");
+    const openable = url && url !== "#";
+    if (!openable) {
+      return `
+        <div class="message-link message-file disabled" aria-disabled="true">
+          <span class="message-link-icon">📄</span>
+          <span class="message-link-body">
+            <span class="message-link-title">${name}</span>
+            <span class="message-link-hint">文件暂不可打开</span>
+          </span>
+        </div>`;
+    }
+    return `
+      <a class="message-link message-file" href="${escapeAttr(url)}" target="_blank" rel="noreferrer">
+        <span class="message-link-icon">📄</span>
+        <span class="message-link-body">
+          <span class="message-link-title">${name}</span>
+          <span class="message-link-hint">点按打开文件</span>
+        </span>
+      </a>`;
+  }
   if (message.type === "voice") return `🎙 语音消息 00:${String(message.body || "08").padStart(2, "0")}`;
-  if (message.type === "contact") return `👤 名片：${escapeHTML(message.body || "联系人")}`;
-  return linkMentions(escapeHTML(message.body || ""));
+  if (message.type === "contact") {
+    const contact = findContactByName(message.body) || findContactByName(message.senderName);
+    const title = escapeHTML(contact?.nickname || message.body || "联系人");
+    const subtitle = escapeHTML(contact?.signature || contact?.chatId || "点按查看详情");
+    const avatarSrcValue = avatarSrc(contact?.avatar || avatar((contact?.nickname || message.body || "联").slice(0, 1)));
+    return `
+      <button class="message-link message-contact" type="button" data-open-contact="${escapeAttr(contact?.nickname || message.body || message.senderName || "")}">
+        <img class="message-contact-avatar" src="${avatarSrcValue}" alt="">
+        <span class="message-link-body">
+          <span class="message-link-title">名片：${title}</span>
+          <span class="message-link-hint">${subtitle}</span>
+        </span>
+      </button>`;
+  }
+  return renderMessageText(message.body || "");
 }
 
 function renderToolMenu() {
@@ -340,6 +405,24 @@ function renderToolMenu() {
     return `<div class="emoji-popover">${emojis.map(e => `<button data-emoji="${e}">${e}</button>`).join("")}</div>`;
   }
   return "";
+}
+
+function renderMentionMenu() {
+  if (!currentGroup()) return "";
+  if (!state.mention?.open) return "";
+  const items = getMentionCandidates(state.mention.query);
+  return `
+    <div class="mention-menu-title">选择群成员</div>
+    <div class="mention-menu-list">
+      ${items.length ? items.map((item, index) => `
+        <button class="mention-menu-item ${index === (state.mention?.activeIndex || 0) ? "active" : ""}" type="button" data-mention-id="${escapeAttr(item.id)}">
+          <img class="avatar" src="${avatarSrc(item.avatar)}" alt="">
+          <span class="mention-menu-meta">
+            <span class="mention-menu-name">${escapeHTML(item.nickname)}</span>
+            <span class="mention-menu-subtitle">${escapeHTML(item.subtitle)}</span>
+          </span>
+        </button>`).join("") : `<div class="mention-menu-empty">没有匹配的成员</div>`}
+    </div>`;
 }
 
 function renderDetailPane(conv) {
@@ -398,6 +481,15 @@ function settingButton(action, label, klass) {
 function renderMembersPane() {
   const group = currentGroup();
   if (!group) return renderSettingsPane(getConversation(state.selectedConversationId));
+  const mentionStats = getGroupMentionStats(group);
+  const members = [...group.members].sort((a, b) => {
+    const countA = mentionStats[a.userId] || 0;
+    const countB = mentionStats[b.userId] || 0;
+    if (countA !== countB) return countB - countA;
+    if (a.role === "owner") return -1;
+    if (b.role === "owner") return 1;
+    return (a.nickname || "").localeCompare(b.nickname || "", "zh-Hans-CN");
+  });
   return `
     <aside class="detail-pane">
       <header class="panel-header"><h3>群聊成员</h3><button class="ghost-btn inline" data-modal="invite">新增</button></header>
@@ -405,18 +497,22 @@ function renderMembersPane() {
         <div class="setting-row"><span>群聊ID</span><strong>${group.chatId}</strong></div>
       </section>
       <div class="list">
-        ${group.members.map(m => `
+        ${members.map(m => {
+          const mentionCount = mentionStats[m.userId] || 0;
+          return `
           <article class="list-item">
             <img class="avatar" src="${avatarSrc(avatar(m.nickname[0] || "成"))}" alt="">
             <div>
               <div class="item-title">${escapeHTML(m.nickname)}</div>
-              <div class="item-preview">${m.role}${m.muted ? " · 已禁言" : ""}</div>
+              <div class="item-preview">${m.role}${m.muted ? " · 已禁言" : ""}${mentionCount ? ` · 被@${mentionCount}次` : ""}</div>
             </div>
             <div class="icon-row">
+              ${mentionCount ? `<button class="mention-badge list" type="button" data-search-member="${escapeAttr(m.nickname)}">被@${mentionCount}</button>` : ""}
               <button class="ghost-btn inline" data-member-action="mute" data-member-id="${m.userId}" data-muted="${m.muted ? "false" : "true"}">${m.muted ? "解除禁言" : "禁言"}</button>
               ${m.role === "owner" ? "" : `<button class="danger-btn inline" data-member-action="remove" data-member-id="${m.userId}">移除</button>`}
             </div>
-          </article>`).join("")}
+          </article>`;
+        }).join("")}
       </div>
     </aside>`;
 }
@@ -432,7 +528,10 @@ function renderMediaPane() {
         <div class="grid">
           ${(media.length ? media : [{ type: "image", attachment: { url: "/public/demo-photo.svg" }, body: "演示图片" }]).map(m => `
             <div class="card">
-              <div class="media-card"><img src="${mediaURL(m.attachment?.url || "/public/demo-photo.svg")}" alt=""></div>
+              <button class="media-card media-card-button" type="button" data-open-image="${escapeAttr(mediaURL(m.attachment?.url || "/public/demo-photo.svg"))}" data-image-name="${escapeAttr(m.attachment?.name || m.body || "媒体")}">
+                <img src="${mediaURL(m.attachment?.url || "/public/demo-photo.svg")}" alt="${escapeAttr(m.attachment?.name || m.body || "媒体")}">
+                <span class="media-card-overlay">点按查看大图</span>
+              </button>
               <p>${escapeHTML(m.attachment?.name || m.body || "媒体")}</p>
             </div>`).join("")}
         </div>
@@ -442,7 +541,7 @@ function renderMediaPane() {
 
 function renderSearchPane() {
   const q = state.query.toLowerCase();
-  const results = (state.data.messages[state.selectedConversationId] || []).filter(m => m.body.toLowerCase().includes(q));
+  const results = (state.data.messages[state.selectedConversationId] || []).filter(m => searchMatchesQuery(m, q));
   return `
     <aside class="detail-pane">
       <header class="panel-header"><h3>搜索聊天记录</h3></header>
@@ -526,6 +625,106 @@ function page(title, body) {
 
 function renderModal() {
   if (!state.modal) return "";
+  if (state.modal === "image-preview" && state.preview) {
+    const image = state.preview;
+    const title = escapeHTML(image.name || "图片预览");
+    const url = escapeAttr(image.url || "");
+    return `
+      <div class="modal-backdrop">
+        <div class="modal image-modal">
+          <header class="modal-header">
+            <strong>${title}</strong>
+            <button class="icon-btn" data-close-modal>×</button>
+          </header>
+          <div class="modal-body image-modal-body">
+            <img class="image-preview" src="${url}" alt="${title}">
+          </div>
+          <footer class="modal-footer">
+            <a class="primary-btn inline" href="${url}" target="_blank" rel="noreferrer">新窗口打开</a>
+            <button class="ghost-btn inline" data-close-modal>关闭</button>
+          </footer>
+        </div>
+      </div>`;
+  }
+  if ((state.modal === "contact-remark" || state.modal === "contact-tags") && state.preview) {
+    const contact = state.preview;
+    const isRemark = state.modal === "contact-remark";
+    const title = isRemark ? "编辑备注" : "管理标签";
+    const tagsValue = (contact.tags || []).join(", ");
+    return `
+      <div class="modal-backdrop">
+        <div class="modal contact-modal">
+          <header class="modal-header">
+            <strong>${title}</strong>
+            <button class="icon-btn" data-close-modal>×</button>
+          </header>
+          <div class="modal-body">
+            ${isRemark ? `
+              <textarea class="textarea" id="contactRemark" placeholder="填写备注">${escapeHTML(contact.remark || "")}</textarea>
+              <p class="item-meta">备注只对你可见。</p>
+            ` : `
+              <input class="input" id="contactTags" value="${escapeAttr(tagsValue)}" placeholder="多个标签请用逗号分隔">
+              <p class="item-meta">例如：重要客户, 常联系, 项目组</p>
+            `}
+          </div>
+          <footer class="modal-footer">
+            <button class="ghost-btn inline" data-close-modal>取消</button>
+            <button class="primary-btn inline" data-confirm-contact-edit="${isRemark ? "remark" : "tags"}">保存</button>
+          </footer>
+        </div>
+      </div>`;
+  }
+  if (state.modal === "contact-detail" && state.preview) {
+    const contact = state.preview;
+    const commonGroups = commonGroupsForContact(contact);
+    const tagText = (contact.tags && contact.tags.length) ? contact.tags.join(" · ") : "添加标签";
+    return `
+      <div class="modal-backdrop">
+        <div class="modal contact-modal">
+          <header class="modal-header">
+            <strong>名片详情</strong>
+            <button class="icon-btn" data-close-modal>×</button>
+          </header>
+          <div class="modal-body">
+            <div class="contact-summary">
+              <img class="avatar contact-avatar" src="${avatarSrc(contact.avatar || avatar(contact.nickname?.[0] || "联"))}" alt="">
+              <div>
+                <h3>${escapeHTML(contact.nickname || "联系人")}</h3>
+                <div class="item-meta">${escapeHTML(contact.signature || "暂无个性签名")}</div>
+              </div>
+            </div>
+            <div class="contact-detail-grid">
+              <div class="setting-row"><span>聊天号</span><strong>${escapeHTML(contact.chatId || "未提供")}</strong></div>
+              <button class="setting-row contact-action" type="button" data-contact-action="remark">
+                <span>备注</span>
+                <span class="item-meta">${escapeHTML(contact.remark || "点按添加备注")}</span>
+              </button>
+              <button class="setting-row contact-action" type="button" data-contact-action="tags">
+                <span>标签</span>
+                <span class="item-meta">${escapeHTML(tagText)}</span>
+              </button>
+            </div>
+            <div class="contact-section">
+              <div class="contact-section-title">共同群组 (${commonGroups.length})</div>
+              <div class="contact-group-list">
+                ${commonGroups.length ? commonGroups.map(group => `
+                  <button class="list-item contact-group-item" type="button" data-conversation="group-${group.id}">
+                    <img class="avatar" src="${avatarSrc(group.avatar)}" alt="">
+                    <div>
+                      <div class="item-title">${escapeHTML(group.title)}</div>
+                      <div class="item-preview">${group.members.length} 位成员</div>
+                    </div>
+                  </button>`).join("") : `<div class="empty-state">暂无共同群组</div>`}
+              </div>
+            </div>
+          </div>
+          <footer class="modal-footer">
+            <button class="ghost-btn inline" data-close-modal>关闭</button>
+            <button class="primary-btn inline" data-open-chat="${escapeAttr(contact.id || contact.chatId || contact.nickname || "")}">发消息</button>
+          </footer>
+        </div>
+      </div>`;
+  }
   const bodies = {
     "quick-add": `<button class="ghost-btn inline" data-modal="add-friend">添加朋友</button><button class="ghost-btn inline" data-modal="create-group">创建群聊</button>`,
     "add-friend": `<input class="input" id="friendChatId" placeholder="搜索电话号码/聊天号"><textarea class="textarea" id="friendGreeting">你好，我想加你为好友</textarea>`,
@@ -569,6 +768,9 @@ function bindEvents() {
     state.section = "messages";
     state.selectedConversationId = el.dataset.conversation;
     state.sidePage = null;
+    state.mention = null;
+    state.mentionIds = [];
+    markConversationRead(state.selectedConversationId);
     await loadMessages(state.selectedConversationId);
     scheduleScrollToBottom();
     render();
@@ -595,25 +797,36 @@ function bindEvents() {
     render();
   }));
   document.querySelector("#composer")?.addEventListener("submit", onSendMessage);
+  const editor = document.querySelector("#editor");
+  if (editor) {
+    editor.addEventListener("input", updateMentionSuggestions);
+    editor.addEventListener("keyup", updateMentionSuggestions);
+    editor.addEventListener("click", updateMentionSuggestions);
+    editor.addEventListener("focus", updateMentionSuggestions);
+    editor.addEventListener("keydown", handleEditorKeydown);
+  }
   document.querySelectorAll("[data-tool]").forEach(el => el.addEventListener("click", () => {
     state.toolMenu = state.toolMenu === el.dataset.tool ? null : el.dataset.tool;
+    state.mention = null;
     render();
   }));
   document.querySelectorAll("[data-emoji]").forEach(el => el.addEventListener("click", () => {
-    const editor = document.querySelector("#editor");
-    if (editor) editor.textContent += el.dataset.emoji;
+    insertIntoEditor(el.dataset.emoji || "");
     state.toolMenu = null;
-    syncEditor(editor?.textContent || "");
+    syncMentionMenu();
   }));
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
   document.querySelectorAll("[data-modal]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     state.modal = el.dataset.modal;
+    if (state.modal !== "contact-detail") state.preview = null;
     render();
   }));
   document.querySelectorAll("[data-close-modal]").forEach(el => el.addEventListener("click", () => {
     state.modal = null;
+    state.preview = null;
+    state.scrollToBottom = true;
     render();
   }));
   document.querySelectorAll("[data-confirm-modal]").forEach(el => el.addEventListener("click", () => confirmModal(el.dataset.confirmModal)));
@@ -623,6 +836,11 @@ function bindEvents() {
   }));
   document.querySelectorAll("[data-report]").forEach(el => el.addEventListener("click", () => submitReport(el.dataset.report)));
   document.querySelectorAll("[data-action]").forEach(el => el.addEventListener("click", e => handleAction(e, el.dataset.action)));
+  document.querySelectorAll("[data-search-member]").forEach(el => el.addEventListener("click", () => {
+    state.sidePage = "search";
+    state.query = el.dataset.searchMember || "";
+    render();
+  }));
   document.querySelectorAll("[data-copy]").forEach(el => el.addEventListener("click", () => {
     navigator.clipboard?.writeText(el.dataset.copy);
     toast("已复制");
@@ -632,6 +850,30 @@ function bindEvents() {
     state.modal = null;
     sendMessage({ type: "contact", body: contact.nickname });
   }));
+  document.querySelectorAll("[data-action='mention']").forEach(el => el.addEventListener("click", () => openMentionPicker()));
+  document.querySelector("#mentionMenu")?.addEventListener("click", e => {
+    const target = e.target.closest("[data-mention-id]");
+    if (!target) return;
+    insertMentionById(target.dataset.mentionId);
+  });
+  document.querySelectorAll("[data-open-contact]").forEach(el => el.addEventListener("click", () => {
+    openContactDetail(el.dataset.openContact);
+  }));
+  document.querySelectorAll("[data-open-image]").forEach(el => el.addEventListener("click", () => {
+    openImagePreview({
+      url: el.dataset.openImage,
+      name: el.dataset.imageName || "图片预览"
+    });
+  }));
+  document.querySelectorAll("[data-open-chat]").forEach(el => el.addEventListener("click", () => {
+    openChatFromContactKey(el.dataset.openChat);
+  }));
+  document.querySelectorAll("[data-contact-action]").forEach(el => el.addEventListener("click", () => {
+    const action = el.dataset.contactAction;
+    state.modal = action === "tags" ? "contact-tags" : "contact-remark";
+    render();
+  }));
+  document.querySelectorAll("[data-confirm-contact-edit]").forEach(el => el.addEventListener("click", () => confirmContactEdit(el.dataset.confirmContactEdit)));
   document.querySelectorAll("[data-friend-request]").forEach(el => el.addEventListener("click", () => updateFriendRequest(el.dataset.friendRequest, el.dataset.status)));
   document.querySelectorAll("[data-member-action]").forEach(el => el.addEventListener("click", () => updateGroupMember(el.dataset.memberAction, el.dataset.memberId, el.dataset.muted === "true")));
 }
@@ -661,15 +903,21 @@ async function onLogin(event) {
 
 async function onSendMessage(event) {
   event.preventDefault();
-  const body = document.querySelector("#editor")?.textContent?.trim() || "";
+  const body = document.querySelector("#editor")?.value?.trim() || "";
   if (!body) return;
-  await sendMessage({ type: "text", body });
+  const mentions = uniqueMentionIds([
+    ...state.mentionIds,
+    ...collectMentionIds(body)
+  ]);
+  state.mentionIds = [];
+  state.mention = null;
+  await sendMessage({ type: "text", body, mentions });
 }
 
 async function sendSynthetic(type) {
   const payloads = {
     image: { type: "image", body: "[图片]", attachment: { id: "demo-image", name: "photo.png", url: "/public/demo-photo.svg", mimeType: "image/svg+xml", size: 2048 } },
-    file: { type: "file", body: "项目说明.pdf", attachment: { id: "demo-file", name: "项目说明.pdf", url: "#", mimeType: "application/pdf", size: 4096 } },
+    file: { type: "file", body: "项目说明.pdf", attachment: { id: "demo-file", name: "项目说明.pdf", url: URL.createObjectURL(new Blob(["这是一个可打开的演示文件。"], { type: "text/plain;charset=utf-8" })), mimeType: "text/plain", size: 4096 } },
     voice: { type: "voice", body: "08" }
   };
   state.toolMenu = null;
@@ -752,13 +1000,17 @@ async function sendMessage(payload) {
   }
   upsertConversationPreview(state.selectedConversationId, message);
   state.toolMenu = null;
+  state.mentionIds = [];
   scheduleScrollToBottom();
   render();
 }
 
 function handleAction(event, action) {
   if (action === "mark-read") {
-    state.data.conversations.forEach(c => c.unread = 0);
+    state.data.conversations.forEach(c => {
+      c.unread = 0;
+      c.mentionedMe = false;
+    });
     toast("全部已读");
     render();
   }
@@ -906,12 +1158,18 @@ function filteredConversations() {
     const matchesQ = !q || `${c.title} ${c.lastText}`.toLowerCase().includes(q);
     const matchesFilter = state.filter === "all" || (state.filter === "unread" && c.unread) || (state.filter === "group" && c.kind === "group");
     return matchesQ && matchesFilter;
-  }).sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+  }).sort((a, b) => {
+    const attentionA = conversationNeedsAttention(a) ? 1 : 0;
+    const attentionB = conversationNeedsAttention(b) ? 1 : 0;
+    if (attentionA !== attentionB) return attentionB - attentionA;
+    if ((a.unread || 0) !== (b.unread || 0)) return (b.unread || 0) - (a.unread || 0);
+    return new Date(b.lastAt) - new Date(a.lastAt);
+  });
 }
 
 function filteredContacts() {
   const q = state.query.toLowerCase();
-  return state.data.contacts.filter(c => !q || `${c.nickname} ${c.chatId} ${c.signature}`.toLowerCase().includes(q));
+  return state.data.contacts.filter(c => !q || `${c.nickname} ${c.chatId} ${c.signature} ${c.remark || ""} ${(c.tags || []).join(" ")}`.toLowerCase().includes(q));
 }
 
 function getConversation(id) {
@@ -925,17 +1183,316 @@ function currentGroup() {
   return state.data.groups.find(g => g.id === groupId);
 }
 
-function upsertConversationPreview(conversationId, message) {
+function getGroupMentionStats(group) {
+  const stats = {};
+  if (!group) return stats;
+  const messages = state.data.messages?.[`group-${group.id}`] || [];
+  for (const message of messages) {
+    if (!Array.isArray(message.mentions) || message.senderId === state.user?.id) continue;
+    for (const userId of message.mentions) {
+      stats[userId] = (stats[userId] || 0) + 1;
+    }
+  }
+  return stats;
+}
+
+function conversationMentionsCurrentUser(conversation) {
+  if (!conversation || !state.user?.id) return false;
+  if (conversation.mentionedMe) return true;
+  const messages = state.data.messages?.[conversation.id] || [];
+  const lastMessage = messages[messages.length - 1];
+  if (lastMessage?.senderId && lastMessage.senderId !== state.user.id && Array.isArray(lastMessage.mentions)) {
+    return lastMessage.mentions.includes(state.user.id);
+  }
+  const preview = String(conversation.lastText || "");
+  return preview.includes("@你") || preview.includes("[有人@你]");
+}
+
+function getMentionCandidates(query = "") {
+  const group = currentGroup();
+  if (!group) return [];
+  const search = String(query || "").toLowerCase();
+  const members = (group.members || [])
+    .filter(member => member.userId !== state.user?.id)
+    .map(member => {
+      const contact = state.data.contacts.find(item => item.id === member.userId);
+      return {
+        id: member.userId,
+        nickname: contact?.nickname || member.nickname || "成员",
+        avatar: contact?.avatar || avatar((member.nickname || "成").slice(0, 1)),
+        subtitle: contact?.remark || contact?.chatId || member.role || "群成员"
+      };
+    });
+  if (!search) return members;
+  return members.filter(member => `${member.nickname} ${member.subtitle}`.toLowerCase().includes(search));
+}
+
+function commonGroupsForContact(contact) {
+  if (!contact) return [];
+  return state.data.groups.filter(group =>
+    (group.members || []).some(member => member.userId === contact.id || member.nickname === contact.nickname)
+  );
+}
+
+function findContactByName(name) {
+  const query = String(name || "").trim().toLowerCase();
+  if (!query) return null;
+  return state.data.contacts.find(contact => contact.nickname.toLowerCase() === query) || null;
+}
+
+function openContactDetail(key) {
+  const contact = state.data.contacts.find(item =>
+    item.id === key ||
+    item.chatId === key ||
+    item.nickname === key
+  ) || findContactByName(key);
+  if (!contact) {
+    toast("未找到该名片的详情");
+    return;
+  }
+  state.preview = contact;
+  state.modal = "contact-detail";
+  render();
+}
+
+function openImagePreview(image) {
+  if (!image?.url) {
+    toast("图片地址无效");
+    return;
+  }
+  state.preview = image;
+  state.modal = "image-preview";
+  render();
+}
+
+function openMentionPicker() {
+  const group = currentGroup();
+  if (!group) {
+    toast("只有群聊里才能提及成员");
+    return;
+  }
+  const editor = document.querySelector("#editor");
+  if (!editor) return;
+  const caret = editor.selectionStart ?? editor.value.length;
+  state.toolMenu = null;
+  state.mention = {
+    open: true,
+    query: "",
+    replaceStart: caret,
+    replaceEnd: caret,
+    activeIndex: 0
+  };
+  syncMentionMenu();
+  editor.focus();
+}
+
+function updateMentionSuggestions() {
+  const editor = document.querySelector("#editor");
+  if (!editor) return;
+  const group = currentGroup();
+  if (!group) {
+    state.mention = null;
+    syncMentionMenu();
+    return;
+  }
+  const value = editor.value;
+  const cursor = editor.selectionStart ?? value.length;
+  const before = value.slice(0, cursor);
+  const atIndex = before.lastIndexOf("@");
+  if (atIndex < 0 || /[\s@]/.test(before.slice(atIndex + 1))) {
+    state.mention = null;
+    syncMentionMenu();
+    return;
+  }
+  const query = before.slice(atIndex + 1);
+  state.toolMenu = null;
+  state.mention = {
+    open: true,
+    query,
+    replaceStart: atIndex,
+    replaceEnd: cursor,
+    activeIndex: 0
+  };
+  syncMentionMenu();
+}
+
+function handleEditorKeydown(event) {
+  if (!state.mention?.open) return;
+  if (event.key === "Escape") {
+    state.mention = null;
+    syncMentionMenu();
+    return;
+  }
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const items = getMentionCandidates(state.mention.query);
+    if (!items.length) return;
+    const direction = event.key === "ArrowDown" ? 1 : -1;
+    const current = state.mention.activeIndex ?? 0;
+    const next = (current + direction + items.length) % items.length;
+    state.mention = { ...state.mention, activeIndex: next };
+    syncMentionMenu();
+    return;
+  }
+  if (event.key === "Enter" || event.key === "Tab") {
+    event.preventDefault();
+    const items = getMentionCandidates(state.mention.query);
+    const selected = items[state.mention.activeIndex ?? 0] || items[0];
+    if (selected) insertMention(selected);
+  }
+}
+
+function insertMentionById(contactId) {
+  const contact = state.data.contacts.find(item => item.id === contactId);
+  if (!contact) return;
+  insertMention(contact);
+}
+
+function insertMention(contact) {
+  const editor = document.querySelector("#editor");
+  if (!editor) return;
+  const mentionText = `@${contact.nickname} `;
+  const value = editor.value;
+  const start = Math.max(0, state.mention?.replaceStart ?? editor.selectionStart ?? value.length);
+  const end = Math.max(start, state.mention?.replaceEnd ?? editor.selectionEnd ?? value.length);
+  editor.value = `${value.slice(0, start)}${mentionText}${value.slice(end)}`;
+  const caret = start + mentionText.length;
+  editor.focus();
+  editor.setSelectionRange(caret, caret);
+  state.mentionIds = uniqueMentionIds([...state.mentionIds, contact.id]);
+  state.mention = null;
+  syncMentionMenu();
+}
+
+function insertIntoEditor(text) {
+  const editor = document.querySelector("#editor");
+  if (!editor) return;
+  const value = editor.value;
+  const start = editor.selectionStart ?? value.length;
+  const end = editor.selectionEnd ?? value.length;
+  editor.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
+  const caret = start + text.length;
+  editor.focus();
+  editor.setSelectionRange(caret, caret);
+  updateMentionSuggestions();
+}
+
+function syncMentionMenu() {
+  const menu = document.querySelector("#mentionMenu");
+  if (!menu) return;
+  if (!state.mention?.open) {
+    menu.innerHTML = "";
+    return;
+  }
+  menu.innerHTML = renderMentionMenu();
+}
+
+async function confirmContactEdit(kind) {
+  const contact = state.preview;
+  if (!contact) return;
+  const patch = {};
+  if (kind === "remark") {
+    patch.remark = document.querySelector("#contactRemark")?.value?.trim() || "";
+  } else {
+    patch.tags = (document.querySelector("#contactTags")?.value || "")
+      .split(/[,，\n]/)
+      .map(item => item.trim())
+      .filter(Boolean);
+  }
+  try {
+    let updated = contact;
+    if (state.useMock) {
+      Object.assign(contact, patch);
+      updated = contact;
+    } else {
+      updated = await api(`/api/contacts/${encodeURIComponent(contact.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify(patch)
+      });
+      state.data.contacts = state.data.contacts.map(item => item.id === updated.id ? updated : item);
+    }
+    state.preview = updated;
+    state.modal = "contact-detail";
+    toast(kind === "remark" ? "备注已保存" : "标签已保存");
+    render();
+  } catch (error) {
+    toast(error?.message || "保存失败");
+  }
+}
+
+function openChatFromContactKey(key) {
+  const contact = state.data.contacts.find(item =>
+    item.id === key ||
+    item.chatId === key ||
+    item.nickname === key
+  ) || findContactByName(key);
+  if (!contact) {
+    toast("未找到可聊天的联系人");
+    return;
+  }
+  const sessionId = `session-${contact.id}`;
+  let conversation = getConversation(sessionId);
+  if (!conversation) {
+    conversation = {
+      id: sessionId,
+      kind: "session",
+      title: contact.nickname,
+      avatar: contact.avatar,
+      unread: 0,
+      lastText: "",
+      lastAt: new Date().toISOString()
+    };
+    state.data.conversations.unshift(conversation);
+    state.data.messages[sessionId] = state.data.messages[sessionId] || [];
+  }
+  state.selectedConversationId = sessionId;
+  state.section = "messages";
+  state.sidePage = null;
+  state.modal = null;
+  state.preview = null;
+  state.mention = null;
+  state.mentionIds = [];
+  markConversationRead(sessionId);
+  render();
+}
+
+function upsertConversationPreview(conversationId, message, options = {}) {
   const conv = getConversation(conversationId);
   if (!conv) return;
   conv.lastText = message.type === "text" ? message.body : `[${{ image: "图片", file: "文件", voice: "语音", contact: "名片" }[message.type] || "消息"}]`;
   conv.lastAt = message.createdAt;
-  conv.unread = 0;
+  if (options.mentionMe) {
+    conv.mentionedMe = true;
+  }
+  if (options.bumpUnread) {
+    conv.unread = (conv.unread || 0) + 1;
+  } else {
+    conv.unread = 0;
+  }
 }
 
-function syncEditor(text) {
-  const editor = document.querySelector("#editor");
-  if (editor) editor.textContent = text;
+function markConversationRead(conversationId) {
+  const conv = getConversation(conversationId);
+  if (conv) {
+    conv.unread = 0;
+    conv.mentionedMe = false;
+  }
+}
+
+function conversationNeedsAttention(conversation) {
+  return Boolean(conversation?.mentionedMe || (conversation?.unread || 0) > 0);
+}
+
+function searchMatchesQuery(message, query) {
+  if (!query) return false;
+  const body = String(message?.body || "").toLowerCase();
+  const sender = String(message?.senderName || "").toLowerCase();
+  if (body.includes(query) || sender.includes(query)) return true;
+  const mentions = Array.isArray(message?.mentions) ? message.mentions : [];
+  return mentions.some(userId => {
+    const contact = state.data.contacts.find(item => item.id === userId);
+    return String(contact?.nickname || "").toLowerCase().includes(query);
+  });
 }
 
 function createLocalGroup(title) {
@@ -957,10 +1514,10 @@ function createMockData() {
   const now = new Date();
   const user = { id: "u1", country: "+60", phone: "174319676", chatId: "o8tew3", nickname: "chenshao", signature: "保持专注，保持联系。", avatar: avatar("陈") };
   const contacts = [
-    { id: "388770", nickname: "陈刀仔（日进斗金）", signature: "愿你每天都好运", chatId: "cdz888", avatar: avatar("陈") },
-    { id: "388769", nickname: "苏雅", signature: "在线接待", chatId: "suya66", avatar: avatar("苏") },
+    { id: "388770", nickname: "陈刀仔（日进斗金）", signature: "愿你每天都好运", chatId: "cdz888", avatar: avatar("陈"), remark: "老朋友", tags: ["优先", "线下"] },
+    { id: "388769", nickname: "苏雅", signature: "在线接待", chatId: "suya66", avatar: avatar("苏"), tags: ["客服"] },
     { id: "388754", nickname: "恋情客", signature: "忙碌中", chatId: "love66", avatar: avatar("恋") },
-    { id: "388786", nickname: "^魚. 𝙯ᙆ", signature: "保持联系", chatId: "fish66", avatar: avatar("魚") },
+    { id: "388786", nickname: "^魚. 𝙯ᙆ", signature: "保持联系", chatId: "fish66", avatar: avatar("魚"), remark: "常联系", tags: ["重点"] },
     { id: "1278382", nickname: "小花朵接待号", signature: "会员接待", chatId: "flower", avatar: avatar("花") }
   ];
   const groups = [{
@@ -990,9 +1547,9 @@ function createMockData() {
     ],
     conversations: [
       { id: "group-19146", kind: "group", title: "VIP 会员讨论 08群", avatar: avatar("V"), unread: 0, lastText: "万顺下分专员1：[图片]", lastAt: addHours(now, -2) },
-      { id: "group-19144", kind: "group", title: "财富密码资料群", avatar: avatar("财"), unread: 99, lastText: "[有人@你] 苏洋：1111", lastAt: addHours(now, -3) },
+      { id: "group-19144", kind: "group", title: "财富密码资料群", avatar: avatar("财"), unread: 99, mentionedMe: true, lastText: "[有人@你] 苏洋：1111", lastAt: addHours(now, -3) },
       { id: "session-1278382", kind: "session", title: "小花朵接待号", avatar: avatar("花"), unread: 0, lastText: "[图片]", lastAt: addHours(now, -26) },
-      { id: "group-21444", kind: "group", title: "test", avatar: avatar("群"), unread: 0, lastText: "我：@^魚. 𝙯ᙆ test", lastAt: addHours(now, -23) },
+      { id: "group-21444", kind: "group", title: "test", avatar: avatar("群"), unread: 0, mentionedMe: false, lastText: "我：@^魚. 𝙯ᙆ test", lastAt: addHours(now, -23) },
       { id: "session-388770", kind: "session", title: "陈刀仔（日进斗金）", avatar: avatar("陈"), unread: 0, lastText: "你们已是好友，可以开始聊天了!", lastAt: addHours(now, -24) }
     ],
     messages: {
@@ -1038,11 +1595,33 @@ function formatTime(value) {
 }
 
 function formatPreview(value) {
-  return linkMentions(escapeHTML(value || ""));
+  return escapeHTML(value || "");
 }
 
-function linkMentions(value) {
-  return value.replace(/(@[^ ]+)/g, `<span class="mention">$1</span>`);
+function renderMessageText(value) {
+  const text = escapeHTML(value || "");
+  return text.replace(/@([^\s@]+)/g, (match, mention) => {
+    const contact = findContactByName(mention);
+    if (!contact) {
+      return `<span class="mention">${match}</span>`;
+    }
+    return `<button class="mention mention-chip" type="button" data-open-contact="${escapeAttr(contact.nickname)}">${match}</button>`;
+  });
+}
+
+function collectMentionIds(body) {
+  const matches = String(body || "").match(/@([^\s@]+)/g) || [];
+  const ids = [];
+  for (const match of matches) {
+    const nickname = match.slice(1);
+    const contact = findContactByName(nickname);
+    if (contact) ids.push(contact.id);
+  }
+  return ids;
+}
+
+function uniqueMentionIds(items) {
+  return [...new Set((items || []).filter(Boolean))];
 }
 
 function mediaURL(value) {

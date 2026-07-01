@@ -117,8 +117,10 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			sender_user_id TEXT NOT NULL REFERENCES users(id),
 			type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'file', 'voice', 'contact', 'collection')),
 			body TEXT NOT NULL DEFAULT '',
+			mentions TEXT[] NOT NULL DEFAULT '{}',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mentions TEXT[] NOT NULL DEFAULT '{}'`,
 		`CREATE TABLE IF NOT EXISTS message_attachments (
 			id TEXT PRIMARY KEY,
 			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -300,7 +302,7 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 }
 
 func (pg *PostgresStore) loadContacts(ctx context.Context, userID string) ([]Contact, error) {
-	rows, err := pg.pool.Query(ctx, `SELECT u.id, u.nickname, u.signature, u.chat_id, u.avatar_url
+	rows, err := pg.pool.Query(ctx, `SELECT u.id, u.nickname, u.signature, u.chat_id, u.avatar_url, COALESCE(c.remark, ''), COALESCE(c.tags, '{}')
 		FROM contacts c JOIN users u ON u.id = c.contact_user_id
 		WHERE c.owner_user_id = $1 ORDER BY c.created_at`, userID)
 	if err != nil {
@@ -310,7 +312,7 @@ func (pg *PostgresStore) loadContacts(ctx context.Context, userID string) ([]Con
 	var contacts []Contact
 	for rows.Next() {
 		var contact Contact
-		if err := rows.Scan(&contact.ID, &contact.Nickname, &contact.Signature, &contact.ChatID, &contact.Avatar); err != nil {
+		if err := rows.Scan(&contact.ID, &contact.Nickname, &contact.Signature, &contact.ChatID, &contact.Avatar, &contact.Remark, &contact.Tags); err != nil {
 			return nil, err
 		}
 		contacts = append(contacts, contact)
@@ -337,7 +339,7 @@ func (pg *PostgresStore) loadConversations(ctx context.Context) ([]Conversation,
 }
 
 func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string) ([]Message, error) {
-	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, m.type, m.body, m.created_at,
+	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, m.type, m.body, m.mentions, m.created_at,
 			a.id, a.name, a.object_key, a.mime_type, a.size_bytes
 		FROM messages m
 		JOIN users u ON u.id = m.sender_user_id
@@ -354,10 +356,12 @@ func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string
 		var attachment Attachment
 		var attachmentID, name, objectKey, mimeType *string
 		var size *int64
-		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.Type, &msg.Body, &msg.CreatedAt,
+		var mentions []string
+		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.Type, &msg.Body, &mentions, &msg.CreatedAt,
 			&attachmentID, &name, &objectKey, &mimeType, &size); err != nil {
 			return nil, err
 		}
+		msg.Mentions = mentions
 		if attachmentID != nil {
 			attachment.ID = *attachmentID
 			attachment.Name = valueString(name)
@@ -554,6 +558,29 @@ func (s *Store) findContactByChatID(ctx context.Context, chatID string) (Contact
 	return contact, err
 }
 
+func (s *Store) contactByID(ctx context.Context, id string) (Contact, bool, error) {
+	s.mu.RLock()
+	for _, contact := range s.contacts {
+		if contact.ID == id {
+			s.mu.RUnlock()
+			return contact, true, nil
+		}
+	}
+	s.mu.RUnlock()
+	if s.pg == nil {
+		return Contact{}, false, nil
+	}
+	var contact Contact
+	err := s.pg.pool.QueryRow(ctx, `SELECT c.contact_user_id, u.nickname, u.signature, u.chat_id, u.avatar_url, COALESCE(c.remark, ''), COALESCE(c.tags, '{}')
+		FROM contacts c JOIN users u ON u.id = c.contact_user_id
+		WHERE c.owner_user_id = $1 AND c.contact_user_id = $2`,
+		s.user.ID, id).Scan(&contact.ID, &contact.Nickname, &contact.Signature, &contact.ChatID, &contact.Avatar, &contact.Remark, &contact.Tags)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Contact{}, false, nil
+	}
+	return contact, err == nil, err
+}
+
 func (s *Store) persistUser(ctx context.Context, user User) error {
 	if s.pg == nil {
 		return nil
@@ -561,6 +588,39 @@ func (s *Store) persistUser(ctx context.Context, user User) error {
 	_, err := s.pg.pool.Exec(ctx, `UPDATE users SET nickname = $2, signature = $3, avatar_url = $4 WHERE id = $1`,
 		user.ID, user.Nickname, user.Signature, user.Avatar)
 	return err
+}
+
+func (s *Store) updateContact(ctx context.Context, contactID, remark string, tags []string) (Contact, error) {
+	s.mu.Lock()
+	for i := range s.contacts {
+		if s.contacts[i].ID == contactID {
+			s.contacts[i].Remark = remark
+			s.contacts[i].Tags = append([]string(nil), tags...)
+			s.mu.Unlock()
+			if s.pg != nil {
+				if _, err := s.pg.pool.Exec(ctx, `UPDATE contacts SET remark = $3, tags = $4 WHERE owner_user_id = $1 AND contact_user_id = $2`,
+					s.user.ID, contactID, remark, tags); err != nil {
+					return Contact{}, err
+				}
+			}
+			return s.contacts[i], nil
+		}
+	}
+	s.mu.Unlock()
+	if s.pg != nil {
+		if _, err := s.pg.pool.Exec(ctx, `UPDATE contacts SET remark = $3, tags = $4 WHERE owner_user_id = $1 AND contact_user_id = $2`,
+			s.user.ID, contactID, remark, tags); err != nil {
+			return Contact{}, err
+		}
+		contact, ok, err := s.contactByID(ctx, contactID)
+		if err != nil {
+			return Contact{}, err
+		}
+		if ok {
+			return contact, nil
+		}
+	}
+	return Contact{}, errNotFound
 }
 
 func (s *Store) persistMessage(ctx context.Context, msg Message) error {
@@ -823,9 +883,9 @@ func upsertGroup(ctx context.Context, tx pgx.Tx, ownerID string, group Group) er
 }
 
 func insertMessage(ctx context.Context, tx pgx.Tx, msg Message) error {
-	if _, err := tx.Exec(ctx, `INSERT INTO messages(id, conversation_id, sender_user_id, type, body, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING`,
-		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.CreatedAt); err != nil {
+	if _, err := tx.Exec(ctx, `INSERT INTO messages(id, conversation_id, sender_user_id, type, body, mentions, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING`,
+		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.CreatedAt); err != nil {
 		return err
 	}
 	if msg.Attachment != nil {

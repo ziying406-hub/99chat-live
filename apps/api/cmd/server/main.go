@@ -36,11 +36,13 @@ type User struct {
 }
 
 type Contact struct {
-	ID        string `json:"id"`
-	Nickname  string `json:"nickname"`
-	Signature string `json:"signature"`
-	ChatID    string `json:"chatId"`
-	Avatar    string `json:"avatar"`
+	ID        string   `json:"id"`
+	Nickname  string   `json:"nickname"`
+	Signature string   `json:"signature"`
+	ChatID    string   `json:"chatId"`
+	Avatar    string   `json:"avatar"`
+	Remark    string   `json:"remark,omitempty"`
+	Tags      []string `json:"tags,omitempty"`
 }
 
 type Conversation struct {
@@ -61,6 +63,7 @@ type Message struct {
 	Type           string      `json:"type"`
 	Body           string      `json:"body"`
 	Attachment     *Attachment `json:"attachment,omitempty"`
+	Mentions       []string    `json:"mentions,omitempty"`
 	CreatedAt      time.Time   `json:"createdAt"`
 }
 
@@ -175,6 +178,7 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/conversations", s.conversationsRoute)
 	mux.HandleFunc("/api/conversations/", s.conversationRoute)
 	mux.HandleFunc("/api/contacts", s.contactsRoute)
+	mux.HandleFunc("/api/contacts/", s.contactRoute)
 	mux.HandleFunc("/api/friend-requests", s.friendRequestsRoute)
 	mux.HandleFunc("/api/friend-requests/", s.friendRequestRoute)
 	mux.HandleFunc("/api/groups", s.groupsRoute)
@@ -370,6 +374,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			Type       string      `json:"type"`
 			Body       string      `json:"body"`
 			Attachment *Attachment `json:"attachment"`
+			Mentions   []string    `json:"mentions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -386,6 +391,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			Type:           req.Type,
 			Body:           strings.TrimSpace(req.Body),
 			Attachment:     req.Attachment,
+			Mentions:       uniqueStrings(req.Mentions),
 			CreatedAt:      time.Now(),
 		}
 		s.mu.Lock()
@@ -421,13 +427,56 @@ func (s *Store) contactsRoute(w http.ResponseWriter, r *http.Request) {
 	if query != "" {
 		filtered := items[:0]
 		for _, c := range items {
-			if strings.Contains(strings.ToLower(c.Nickname+c.ChatID+c.Phoneish()), query) {
+			haystack := strings.ToLower(strings.Join(append([]string{c.Nickname, c.ChatID, c.Phoneish(), c.Remark}, c.Tags...), " "))
+			if strings.Contains(haystack, query) {
 				filtered = append(filtered, c)
 			}
 		}
 		items = filtered
 	}
 	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) contactRoute(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/contacts/"), "/")
+	if id == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		contact, ok, err := s.contactByID(r.Context(), id)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "contact lookup failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "contact not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, contact)
+	case http.MethodPatch:
+		var patch struct {
+			Remark string   `json:"remark"`
+			Tags   []string `json:"tags"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		contact, err := s.updateContact(r.Context(), id, strings.TrimSpace(patch.Remark), patch.Tags)
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				writeError(w, http.StatusNotFound, "contact not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "contact update failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, contact)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
 }
 
 func (c Contact) Phoneish() string {
@@ -868,10 +917,10 @@ func (s *Store) websocket(w http.ResponseWriter, r *http.Request) {
 func seedStore() *Store {
 	now := time.Now()
 	contacts := []Contact{
-		{ID: "388770", Nickname: "陈刀仔（日进斗金）", Signature: "愿你每天都好运", ChatID: "cdz888", Avatar: avatar("陈")},
-		{ID: "388769", Nickname: "苏雅", Signature: "在线接待", ChatID: "suya66", Avatar: avatar("苏")},
+		{ID: "388770", Nickname: "陈刀仔（日进斗金）", Signature: "愿你每天都好运", ChatID: "cdz888", Avatar: avatar("陈"), Remark: "老朋友", Tags: []string{"优先", "线下"}},
+		{ID: "388769", Nickname: "苏雅", Signature: "在线接待", ChatID: "suya66", Avatar: avatar("苏"), Tags: []string{"客服"}},
 		{ID: "388754", Nickname: "恋情客", Signature: "忙碌中", ChatID: "love66", Avatar: avatar("恋")},
-		{ID: "388786", Nickname: "^魚. 𝙯ᙆ", Signature: "保持联系", ChatID: "fish66", Avatar: avatar("魚")},
+		{ID: "388786", Nickname: "^魚. 𝙯ᙆ", Signature: "保持联系", ChatID: "fish66", Avatar: avatar("魚"), Remark: "常联系", Tags: []string{"重点"}},
 		{ID: "1278382", Nickname: "小花朵接待号", Signature: "会员接待", ChatID: "flower", Avatar: avatar("花")},
 	}
 	group := Group{
@@ -1118,4 +1167,18 @@ func displayMessage(m Message) string {
 	default:
 		return "[消息]"
 	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
