@@ -21,8 +21,10 @@ const state = {
   mention: null,
   mentionIds: [],
   messageScrollTopByConversation: {},
+  pendingMessageScrollRestore: null,
   draftTextByConversation: {},
   replyDraftByConversation: {},
+  pendingEditorAutofocus: false,
   highlightedMessageId: null,
   forwardPayload: null,
   forwardSelection: null,
@@ -144,6 +146,7 @@ function render() {
   flushScrollToBottom();
   restoreMessageScrollPosition();
   restoreTransientFocus();
+  syncHighlightedMessage();
 }
 
 function renderAuth() {
@@ -330,10 +333,10 @@ function renderChatPane(conv) {
       </div>
       <div class="composer-shell">
         ${multiSelectActive ? renderMultiSelectBar() : `
-          ${renderReplyComposer()}
+          <div id="replyBarHost">${renderReplyComposer()}</div>
           <form class="composer" id="composer">
             <button class="icon-btn" type="button" data-action="voice">${state.voiceMode ? "⌨" : icons.mic}</button>
-            ${state.voiceMode ? `<button class="ghost-btn" type="button" data-action="fake-voice">00:00 点击录音</button>` : `<textarea class="editor" id="editor" placeholder="输入消息">${escapeHTML(getCurrentDraftText())}</textarea>`}
+            ${state.voiceMode ? `<button class="ghost-btn" type="button" data-action="fake-voice">00:00 点击录音</button>` : `<textarea class="editor" id="editor" placeholder="输入消息" ${state.pendingEditorAutofocus ? "autofocus" : ""}>${escapeHTML(getCurrentDraftText())}</textarea>`}
             <button class="icon-btn" type="button" data-action="mention" title="提及成员">@</button>
             <button class="icon-btn" type="button" data-tool="attachments" title="附件">${icons.attach}</button>
             <button class="icon-btn" type="button" data-tool="emoji" title="表情">${icons.smile}</button>
@@ -497,7 +500,7 @@ function renderMessageContextMenu() {
   return `
     <div class="message-context-menu" data-message-menu style="left:${left}px; top:${top}px;">
       <button type="button" data-message-action="forward">转发</button>
-      <button type="button" data-message-action="quote">引用</button>
+      <label data-message-action="quote" for="editor" tabindex="0">引用</label>
       <button type="button" data-message-action="copy">复制</button>
       <button type="button" data-message-action="favorite">收藏</button>
       <button type="button" data-message-action="delete" class="${canDelete ? "" : "disabled"}">删除</button>
@@ -1743,8 +1746,23 @@ function rememberMessageScrollPosition() {
   if (!state.authed) return;
   const conversationId = state.selectedConversationId;
   if (!conversationId) return;
+  if (state.pendingMessageScrollRestore?.conversationId === conversationId) {
+    state.messageScrollTopByConversation[conversationId] = state.pendingMessageScrollRestore.scrollTop;
+    return;
+  }
   const messages = document.querySelector(".messages");
   if (!messages) return;
+  state.messageScrollTopByConversation[conversationId] = messages.scrollTop;
+}
+
+function pinCurrentMessageScrollPosition() {
+  const conversationId = state.selectedConversationId;
+  const messages = document.querySelector(".messages");
+  if (!conversationId || !messages) return;
+  state.pendingMessageScrollRestore = {
+    conversationId,
+    scrollTop: messages.scrollTop
+  };
   state.messageScrollTopByConversation[conversationId] = messages.scrollTop;
 }
 
@@ -1782,7 +1800,10 @@ function restoreMessageScrollPosition() {
   if (!state.authed || state.scrollToBottom) return;
   const conversationId = state.selectedConversationId;
   if (!conversationId) return;
-  const scrollTop = state.messageScrollTopByConversation[conversationId];
+  const pending = state.pendingMessageScrollRestore?.conversationId === conversationId
+    ? state.pendingMessageScrollRestore.scrollTop
+    : undefined;
+  const scrollTop = typeof pending === "number" ? pending : state.messageScrollTopByConversation[conversationId];
   if (typeof scrollTop !== "number") return;
   const applyScroll = () => {
     const messages = document.querySelector(".messages");
@@ -1793,6 +1814,7 @@ function restoreMessageScrollPosition() {
     applyScroll();
     requestAnimationFrame(applyScroll);
   });
+  state.pendingMessageScrollRestore = null;
 }
 
 function shouldSuppressPointerAction(event) {
@@ -1825,20 +1847,22 @@ function handleMessageAction(action) {
   const menu = state.messageMenu;
   if (!menu) return;
   const message = getCurrentMessageById(menu.messageId);
-  state.messageMenu = null;
   if (!message) {
+    state.messageMenu = null;
     render();
     return;
   }
+  pinCurrentMessageScrollPosition();
+  if (action === "quote") {
+    quoteMessage(message);
+    return;
+  }
+  state.messageMenu = null;
   if (action === "forward") {
     state.forwardPayload = { messages: [message] };
     state.forwardSelection = createDefaultForwardSelection();
     state.modal = "forward-message";
     render();
-    return;
-  }
-  if (action === "quote") {
-    quoteMessage(message);
     return;
   }
   if (action === "copy") {
@@ -1864,17 +1888,54 @@ function handleMessageAction(action) {
 }
 
 function quoteMessage(message) {
+  pinCurrentMessageScrollPosition();
   setCurrentReplyDraft(buildQuotePayload(message));
-  state.voiceMode = false;
-  render();
-  requestAnimationFrame(() => {
+  if (state.voiceMode) {
+    state.messageMenu = null;
+    state.voiceMode = false;
+    state.pendingEditorAutofocus = true;
+    render();
+    focusComposerEditor({ preserveScroll: true, retries: 3 });
+    return;
+  }
+  state.messageMenu = null;
+  refreshReplyBarHost();
+  window.setTimeout(() => {
+    document.querySelector("[data-message-menu]")?.remove();
+  }, 0);
+}
+
+function focusComposerEditor({ preserveScroll = false, retries = 0 } = {}) {
+  const tryFocus = remaining => {
     const editor = document.querySelector("#editor");
-    if (!editor) return;
-    editor.focus();
+    if (!(editor instanceof HTMLTextAreaElement)) return;
+    if (preserveScroll) pinCurrentMessageScrollPosition();
+    try {
+      editor.focus({ preventScroll: true });
+    } catch (_) {
+      editor.focus();
+    }
     const caret = editor.value.length;
     editor.setSelectionRange(caret, caret);
-  });
-  toast("已进入引用");
+    if (preserveScroll) {
+      pinCurrentMessageScrollPosition();
+      restoreMessageScrollPosition();
+    }
+    if (document.activeElement === editor || remaining <= 0) return;
+    setTimeout(() => tryFocus(remaining - 1), 40);
+  };
+  tryFocus(retries);
+  state.pendingEditorAutofocus = false;
+}
+
+function refreshReplyBarHost() {
+  const host = document.querySelector("#replyBarHost");
+  if (!host) return;
+  host.innerHTML = renderReplyComposer();
+  host.querySelectorAll("[data-clear-reply]").forEach(el => el.addEventListener("click", () => {
+    setCurrentReplyDraft(null);
+    refreshReplyBarHost();
+  }));
 }
 
 async function copyMessage(message) {
@@ -2299,17 +2360,24 @@ function setCurrentReplyDraft(value) {
   state.replyDraftByConversation[state.selectedConversationId] = value;
 }
 
+function syncHighlightedMessage() {
+  document.querySelectorAll(".message.highlighted").forEach(item => item.classList.remove("highlighted"));
+  if (!state.highlightedMessageId) return;
+  const selector = `[data-message-id="${CSS.escape(String(state.highlightedMessageId))}"]`;
+  document.querySelector(selector)?.classList.add("highlighted");
+}
+
 function jumpToQuotedMessage(messageId) {
   if (!messageId) return;
   const item = document.querySelector(`[data-message-id="${CSS.escape(String(messageId))}"]`);
   if (!item) return;
-  item.scrollIntoView({ block: "center", behavior: "smooth" });
   state.highlightedMessageId = messageId;
-  render();
+  syncHighlightedMessage();
+  item.scrollIntoView({ block: "center", behavior: "smooth" });
   setTimeout(() => {
     if (state.highlightedMessageId !== messageId) return;
     state.highlightedMessageId = null;
-    render();
+    syncHighlightedMessage();
   }, 1400);
 }
 

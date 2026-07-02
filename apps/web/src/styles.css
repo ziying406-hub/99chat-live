@@ -869,7 +869,8 @@ a {
   backdrop-filter: blur(8px);
 }
 
-.message-context-menu button {
+.message-context-menu button,
+.message-context-menu label {
   min-height: 48px;
   border: 0;
   border-right: 1px solid rgba(22, 31, 57, 0.08);
@@ -877,17 +878,22 @@ a {
   background: transparent;
   color: var(--text);
   cursor: pointer;
+  display: grid;
+  place-items: center;
 }
 
-.message-context-menu button:nth-child(2n) {
+.message-context-menu button:nth-child(2n),
+.message-context-menu label:nth-child(2n) {
   border-right: 0;
 }
 
-.message-context-menu button:nth-last-child(-n + 2) {
+.message-context-menu button:nth-last-child(-n + 2),
+.message-context-menu label:nth-last-child(-n + 2) {
   border-bottom: 0;
 }
 
-.message-context-menu button:hover {
+.message-context-menu button:hover,
+.message-context-menu label:hover {
   background: rgba(10, 47, 192, 0.06);
 }
 
