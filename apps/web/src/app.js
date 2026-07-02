@@ -31,6 +31,7 @@ const state = {
   forwardSearchRefreshTimer: null,
   forwardSearchKeepAliveUntil: 0,
   messageMenu: null,
+  conversationMenu: null,
   multiSelect: null,
   suppressPointerUntil: 0
 };
@@ -201,6 +202,7 @@ function renderApp() {
         ${renderWorkspace()}
       </section>
       <input class="hidden" id="filePicker" type="file">
+      ${renderConversationContextMenu()}
       ${renderMessageContextMenu()}
       ${renderModal()}
       ${state.toast ? `<div class="toast">${escapeHTML(state.toast)}</div>` : ""}
@@ -239,10 +241,10 @@ function renderMessageSidebar() {
       </div>
       <div class="list">
         ${items.map(c => `
-          <article class="list-item ${c.id === state.selectedConversationId ? "active" : ""}" data-conversation="${c.id}">
+          <article class="list-item ${c.id === state.selectedConversationId ? "active" : ""} ${c.pinned ? "conversation-pinned" : ""}" data-conversation="${c.id}">
             <img class="avatar" src="${avatarSrc(c.avatar)}" alt="">
             <div>
-              <div class="item-title">${escapeHTML(c.title)}</div>
+              <div class="item-title">${escapeHTML(c.title)}${c.muted ? ` <span class="item-flag">免打扰</span>` : ""}${c.pinned ? ` <span class="item-flag">置顶</span>` : ""}</div>
               <div class="item-preview">${formatPreview(getConversationPreviewText(c))}</div>
             </div>
             <div class="item-meta">
@@ -505,6 +507,21 @@ function renderMessageContextMenu() {
       <button type="button" data-message-action="favorite">收藏</button>
       <button type="button" data-message-action="delete" class="${canDelete ? "" : "disabled"}">删除</button>
       <button type="button" data-message-action="multi">多选</button>
+    </div>`;
+}
+
+function renderConversationContextMenu() {
+  if (!state.conversationMenu) return "";
+  const conversation = getConversation(state.conversationMenu.conversationId);
+  if (!conversation) return "";
+  const left = Math.max(12, state.conversationMenu.x || 0);
+  const top = Math.max(12, state.conversationMenu.y || 0);
+  return `
+    <div class="conversation-context-menu" data-conversation-menu style="left:${left}px; top:${top}px;">
+      <button type="button" data-conversation-action="pin">${conversation.pinned ? "取消置顶" : "置顶"}</button>
+      <button type="button" data-conversation-action="mute">${conversation.muted ? "取消免打扰" : "免打扰"}</button>
+      <button type="button" data-conversation-action="unread">未读</button>
+      <button type="button" data-conversation-action="delete">删除</button>
     </div>`;
 }
 
@@ -986,11 +1003,28 @@ function bindEvents() {
     state.sidePage = null;
     state.mention = null;
     state.mentionIds = [];
+    state.conversationMenu = null;
     markConversationRead(state.selectedConversationId);
     await loadMessages(state.selectedConversationId);
     scheduleScrollToBottom();
     render();
   }));
+  document.querySelector(".sidebar .list")?.addEventListener("contextmenu", e => {
+    const item = e.target.closest("[data-conversation]");
+    if (!item) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = item.getBoundingClientRect();
+    const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+    const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+    state.suppressPointerUntil = Date.now() + 400;
+    state.conversationMenu = {
+      conversationId: item.dataset.conversation,
+      x: Math.min(Math.max(12, rect.left + rect.width - 84), Math.max(12, viewportWidth - 132)),
+      y: Math.min(Math.max(12, rect.top + 44), Math.max(12, viewportHeight - 220))
+    };
+    render();
+  });
   document.querySelectorAll("[data-sidepage]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     state.sidePage = el.dataset.sidepage;
@@ -1079,6 +1113,7 @@ function bindEvents() {
     render();
   }));
   document.querySelectorAll("[data-message-action]").forEach(el => el.addEventListener("click", () => handleMessageAction(el.dataset.messageAction)));
+  document.querySelectorAll("[data-conversation-action]").forEach(el => el.addEventListener("click", () => handleConversationAction(el.dataset.conversationAction)));
   document.querySelectorAll("[data-toggle-message-select]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     e.stopPropagation();
@@ -1143,6 +1178,12 @@ function bindEvents() {
     if (!state.messageMenu) return;
     if (e.target.closest("[data-message-menu]")) return;
     state.messageMenu = null;
+    render();
+  });
+  document.querySelector("#app")?.addEventListener("click", e => {
+    if (!state.conversationMenu) return;
+    if (e.target.closest("[data-conversation-menu]")) return;
+    state.conversationMenu = null;
     render();
   });
   document.querySelectorAll("[data-contact-action]").forEach(el => el.addEventListener("click", () => {
@@ -1445,6 +1486,7 @@ function filteredConversations() {
     const matchesFilter = state.filter === "all" || (state.filter === "unread" && c.unread) || (state.filter === "group" && c.kind === "group");
     return matchesQ && matchesFilter;
   }).sort((a, b) => {
+    if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
     const attentionA = conversationNeedsAttention(a) ? 1 : 0;
     const attentionB = conversationNeedsAttention(b) ? 1 : 0;
     if (attentionA !== attentionB) return attentionB - attentionA;
@@ -1884,6 +1926,47 @@ function handleMessageAction(action) {
     };
     toast("已进入多选");
     return;
+  }
+}
+
+function handleConversationAction(action) {
+  const menu = state.conversationMenu;
+  if (!menu) return;
+  const conversation = getConversation(menu.conversationId);
+  state.conversationMenu = null;
+  if (!conversation) {
+    render();
+    return;
+  }
+  if (action === "pin") {
+    conversation.pinned = !conversation.pinned;
+    toast(conversation.pinned ? "已置顶" : "已取消置顶");
+    return;
+  }
+  if (action === "mute") {
+    conversation.muted = !conversation.muted;
+    toast(conversation.muted ? "已开启免打扰" : "已取消免打扰");
+    return;
+  }
+  if (action === "unread") {
+    conversation.unread = Math.max(1, conversation.unread || 0);
+    conversation.mentionedMe = false;
+    toast("已标记未读");
+    return;
+  }
+  if (action === "delete") {
+    if (!confirm(`确定删除会话“${conversation.title}”吗？`)) {
+      render();
+      return;
+    }
+    state.data.conversations = state.data.conversations.filter(item => item.id !== conversation.id);
+    delete state.data.messages[conversation.id];
+    if (state.selectedConversationId === conversation.id) {
+      const nextConversation = state.data.conversations[0] || null;
+      state.selectedConversationId = nextConversation?.id || "";
+      state.sidePage = null;
+    }
+    toast("会话已删除");
   }
 }
 

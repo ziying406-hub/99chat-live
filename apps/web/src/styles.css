@@ -906,6 +906,52 @@ a {
   background: transparent;
 }
 
+.conversation-context-menu {
+  position: fixed;
+  z-index: 18;
+  width: 92px;
+  overflow: hidden;
+  border: 1px solid rgba(22, 31, 57, 0.08);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 18px 44px rgba(21, 29, 49, 0.14);
+  backdrop-filter: blur(8px);
+}
+
+.conversation-context-menu button {
+  width: 100%;
+  min-height: 38px;
+  border: 0;
+  border-bottom: 1px solid rgba(22, 31, 57, 0.08);
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.conversation-context-menu button:last-child {
+  border-bottom: 0;
+}
+
+.conversation-context-menu button:hover {
+  background: rgba(10, 47, 192, 0.06);
+}
+
+.conversation-pinned {
+  border-color: rgba(10, 47, 192, 0.14);
+}
+
+.item-flag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--brand);
+  background: rgba(10, 47, 192, 0.08);
+  vertical-align: middle;
+}
+
 .detail-pane {
   border-left: 1px solid var(--line);
   overflow: auto;
