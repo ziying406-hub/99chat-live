@@ -71,6 +71,12 @@ CREATE TABLE messages (
   sender_user_id TEXT NOT NULL REFERENCES users(id),
   type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'file', 'voice', 'contact', 'collection')),
   body TEXT NOT NULL DEFAULT '',
+  quote_message_id TEXT NOT NULL DEFAULT '',
+  quote_conversation_id TEXT NOT NULL DEFAULT '',
+  quote_sender_name TEXT NOT NULL DEFAULT '',
+  quote_preview TEXT NOT NULL DEFAULT '',
+  quote_type TEXT NOT NULL DEFAULT '',
+  quote_type_label TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 

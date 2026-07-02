@@ -19,7 +19,18 @@ const state = {
   scrollToBottom: false,
   preview: null,
   mention: null,
-  mentionIds: []
+  mentionIds: [],
+  messageScrollTopByConversation: {},
+  draftTextByConversation: {},
+  replyDraftByConversation: {},
+  highlightedMessageId: null,
+  forwardPayload: null,
+  forwardSelection: null,
+  forwardSearchRefreshTimer: null,
+  forwardSearchKeepAliveUntil: 0,
+  messageMenu: null,
+  multiSelect: null,
+  suppressPointerUntil: 0
 };
 
 const mock = createMockData();
@@ -125,10 +136,14 @@ function connectRealtime() {
 }
 
 function render() {
+  rememberMessageScrollPosition();
+  rememberTransientFocus();
   const app = document.querySelector("#app");
   app.innerHTML = state.authed ? renderApp() : renderAuth();
   bindEvents();
   flushScrollToBottom();
+  restoreMessageScrollPosition();
+  restoreTransientFocus();
 }
 
 function renderAuth() {
@@ -183,6 +198,7 @@ function renderApp() {
         ${renderWorkspace()}
       </section>
       <input class="hidden" id="filePicker" type="file">
+      ${renderMessageContextMenu()}
       ${renderModal()}
       ${state.toast ? `<div class="toast">${escapeHTML(state.toast)}</div>` : ""}
     </main>`;
@@ -224,7 +240,7 @@ function renderMessageSidebar() {
             <img class="avatar" src="${avatarSrc(c.avatar)}" alt="">
             <div>
               <div class="item-title">${escapeHTML(c.title)}</div>
-              <div class="item-preview">${formatPreview(c.lastText)}</div>
+              <div class="item-preview">${formatPreview(getConversationPreviewText(c))}</div>
             </div>
             <div class="item-meta">
               ${formatTime(c.lastAt)}
@@ -300,6 +316,7 @@ function renderWorkspace() {
 function renderChatPane(conv) {
   if (!conv) return `<section class="chat-pane"><div class="empty-state">选择一个会话开始聊天</div></section>`;
   const messages = state.data.messages[conv.id] || [];
+  const multiSelectActive = state.multiSelect?.conversationId === conv.id;
   return `
     <section class="chat-pane">
       <header class="chat-header">
@@ -307,21 +324,24 @@ function renderChatPane(conv) {
         <a class="chat-title" href="#" data-sidepage="members">${escapeHTML(conv.title)}</a>
         <button class="icon-btn" data-sidepage="settings" title="设置">${icons.settings}</button>
       </header>
-      <div class="messages">
+      <div class="messages ${multiSelectActive ? "multi-select-active" : ""}">
         <div class="day-divider">昨日下午 4:48</div>
         ${messages.map(renderMessage).join("")}
       </div>
       <div class="composer-shell">
-        <form class="composer" id="composer">
-          <button class="icon-btn" type="button" data-action="voice">${state.voiceMode ? "⌨" : icons.mic}</button>
-          ${state.voiceMode ? `<button class="ghost-btn" type="button" data-action="fake-voice">00:00 点击录音</button>` : `<textarea class="editor" id="editor" placeholder="输入消息"></textarea>`}
-          <button class="icon-btn" type="button" data-action="mention" title="提及成员">@</button>
-          <button class="icon-btn" type="button" data-tool="attachments" title="附件">${icons.attach}</button>
-          <button class="icon-btn" type="button" data-tool="emoji" title="表情">${icons.smile}</button>
-          <button class="primary-btn inline" type="submit">传送</button>
-        </form>
-        <div class="mention-menu" id="mentionMenu">${renderMentionMenu()}</div>
-        ${renderToolMenu()}
+        ${multiSelectActive ? renderMultiSelectBar() : `
+          ${renderReplyComposer()}
+          <form class="composer" id="composer">
+            <button class="icon-btn" type="button" data-action="voice">${state.voiceMode ? "⌨" : icons.mic}</button>
+            ${state.voiceMode ? `<button class="ghost-btn" type="button" data-action="fake-voice">00:00 点击录音</button>` : `<textarea class="editor" id="editor" placeholder="输入消息">${escapeHTML(getCurrentDraftText())}</textarea>`}
+            <button class="icon-btn" type="button" data-action="mention" title="提及成员">@</button>
+            <button class="icon-btn" type="button" data-tool="attachments" title="附件">${icons.attach}</button>
+            <button class="icon-btn" type="button" data-tool="emoji" title="表情">${icons.smile}</button>
+            <button class="primary-btn inline" type="submit">传送</button>
+          </form>
+          <div class="mention-menu" id="mentionMenu">${renderMentionMenu()}</div>
+          ${renderToolMenu()}
+        `}
       </div>
     </section>`;
 }
@@ -329,9 +349,13 @@ function renderChatPane(conv) {
 function renderMessage(message) {
   const mine = message.senderId === state.user.id;
   const mentionedMe = (message.mentions || []).includes(state.user.id);
+  const multiSelectActive = state.multiSelect?.conversationId === state.selectedConversationId;
+  const selected = Boolean(state.multiSelect?.selectedIds?.includes(message.id));
+  const highlighted = state.highlightedMessageId === message.id;
   return `
-    <article class="message ${mine ? "me" : ""}">
+    <article class="message ${mine ? "me" : ""} ${multiSelectActive ? "selecting" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}" data-message-id="${escapeAttr(message.id)}">
       <img class="avatar" src="${avatarSrc(mine ? state.user.avatar : avatar(message.senderName[0] || "友"))}" alt="">
+      ${multiSelectActive ? `<button class="message-select-toggle ${selected ? "active" : ""}" type="button" data-toggle-message-select="${escapeAttr(message.id)}" aria-label="${selected ? "取消选择" : "选择消息"}">${selected ? "✓" : ""}</button>` : ""}
       <div class="bubble">
         <div class="sender">${escapeHTML(message.senderName)} · ${formatTime(message.createdAt)}${mentionedMe ? ` <span class="mention-badge">@你</span>` : ""}</div>
         ${renderMessageBody(message)}
@@ -340,10 +364,12 @@ function renderMessage(message) {
 }
 
 function renderMessageBody(message) {
+  const quote = renderQuotedMessage(message.quote);
   if (message.type === "image") {
     const url = mediaURL(message.attachment?.url || "/public/demo-photo.svg");
     const name = escapeHTML(message.attachment?.name || message.body || "图片");
     return `
+      ${quote}
       <button class="media-card media-card-button" type="button" data-open-image="${escapeAttr(url)}" data-image-name="${name}">
         <img src="${url}" alt="${name}">
         <span class="media-card-overlay">点按查看大图</span>
@@ -355,6 +381,7 @@ function renderMessageBody(message) {
     const openable = url && url !== "#";
     if (!openable) {
       return `
+        ${quote}
         <div class="message-link message-file disabled" aria-disabled="true">
           <span class="message-link-icon">📄</span>
           <span class="message-link-body">
@@ -364,6 +391,7 @@ function renderMessageBody(message) {
         </div>`;
     }
     return `
+      ${quote}
       <a class="message-link message-file" href="${escapeAttr(url)}" target="_blank" rel="noreferrer">
         <span class="message-link-icon">📄</span>
         <span class="message-link-body">
@@ -372,13 +400,14 @@ function renderMessageBody(message) {
         </span>
       </a>`;
   }
-  if (message.type === "voice") return `🎙 语音消息 00:${String(message.body || "08").padStart(2, "0")}`;
+  if (message.type === "voice") return `${quote}<div>🎙 语音消息 00:${String(message.body || "08").padStart(2, "0")}</div>`;
   if (message.type === "contact") {
     const contact = findContactByName(message.body) || findContactByName(message.senderName);
     const title = escapeHTML(contact?.nickname || message.body || "联系人");
     const subtitle = escapeHTML(contact?.signature || contact?.chatId || "点按查看详情");
     const avatarSrcValue = avatarSrc(contact?.avatar || avatar((contact?.nickname || message.body || "联").slice(0, 1)));
     return `
+      ${quote}
       <button class="message-link message-contact" type="button" data-open-contact="${escapeAttr(contact?.nickname || message.body || message.senderName || "")}">
         <img class="message-contact-avatar" src="${avatarSrcValue}" alt="">
         <span class="message-link-body">
@@ -387,7 +416,40 @@ function renderMessageBody(message) {
         </span>
       </button>`;
   }
-  return renderMessageText(message.body || "");
+  return `${quote}${renderMessageText(message.body || "")}`;
+}
+
+function renderQuotedMessage(quote) {
+  if (!quote) return "";
+  const clickable = quote.conversationId === state.selectedConversationId && quote.messageId;
+  return `
+    <button class="quoted-message ${clickable ? "clickable" : ""}" type="button" ${clickable ? `data-jump-quote="${escapeAttr(quote.messageId)}"` : "disabled"}>
+      <div class="quoted-message-author">${escapeHTML(quote.senderName || "引用消息")}</div>
+      <div class="quoted-message-body">${escapeHTML(quote.preview || "")}</div>
+    </button>`;
+}
+
+function renderReplyComposer() {
+  const replyingTo = getCurrentReplyDraft();
+  if (!replyingTo) return "";
+  return `
+    <div class="reply-bar">
+      <div class="reply-bar-label">引用 ${escapeHTML(replyingTo.senderName || "")}${replyingTo.typeLabel ? ` · ${escapeHTML(replyingTo.typeLabel)}` : ""}</div>
+      <div class="reply-bar-body">${escapeHTML(replyingTo.preview || "")}</div>
+      <button class="icon-btn reply-bar-close" type="button" data-clear-reply>×</button>
+    </div>`;
+}
+
+function renderMultiSelectBar() {
+  const active = state.multiSelect?.conversationId === state.selectedConversationId;
+  if (!active) return "";
+  const count = state.multiSelect?.selectedIds?.length || 0;
+  return `
+    <div class="multi-select-bar">
+      <button class="multi-select-btn multi-select-btn-cancel" type="button" data-multi-action="cancel">取消</button>
+      <button class="multi-select-btn multi-select-btn-forward" type="button" data-multi-action="forward" ${count ? "" : "disabled"}>转发${count ? `(${count})` : ""}</button>
+      <button class="multi-select-btn multi-select-btn-delete" type="button" data-multi-action="delete" ${count ? "" : "disabled"}>删除${count ? `(${count})` : ""}</button>
+    </div>`;
 }
 
 function renderToolMenu() {
@@ -422,6 +484,24 @@ function renderMentionMenu() {
             <span class="mention-menu-subtitle">${escapeHTML(item.subtitle)}</span>
           </span>
         </button>`).join("") : `<div class="mention-menu-empty">没有匹配的成员</div>`}
+    </div>`;
+}
+
+function renderMessageContextMenu() {
+  if (!state.messageMenu) return "";
+  const message = getCurrentMessageById(state.messageMenu.messageId);
+  if (!message) return "";
+  const canDelete = state.useMock || message.senderId === state.user?.id;
+  const left = Math.max(12, state.messageMenu.x || 0);
+  const top = Math.max(12, state.messageMenu.y || 0);
+  return `
+    <div class="message-context-menu" data-message-menu style="left:${left}px; top:${top}px;">
+      <button type="button" data-message-action="forward">转发</button>
+      <button type="button" data-message-action="quote">引用</button>
+      <button type="button" data-message-action="copy">复制</button>
+      <button type="button" data-message-action="favorite">收藏</button>
+      <button type="button" data-message-action="delete" class="${canDelete ? "" : "disabled"}">删除</button>
+      <button type="button" data-message-action="multi">多选</button>
     </div>`;
 }
 
@@ -625,6 +705,9 @@ function page(title, body) {
 
 function renderModal() {
   if (!state.modal) return "";
+  if (state.modal === "forward-message") {
+    return renderForwardModal();
+  }
   if (state.modal === "image-preview" && state.preview) {
     const image = state.preview;
     const title = escapeHTML(image.name || "图片预览");
@@ -741,6 +824,7 @@ function renderModal() {
     invite: "新增成员",
     tag: "新增标签",
     "send-contact": "发送名片",
+    "forward-message": "选择转发到",
     "edit-profile": "编辑资料"
   };
   return `
@@ -750,10 +834,139 @@ function renderModal() {
         <div class="modal-body">${bodies[state.modal] || ""}</div>
         <footer class="modal-footer">
           <button class="ghost-btn inline" data-close-modal>取消</button>
-          ${state.modal === "quick-add" || state.modal === "send-contact" ? "" : `<button class="primary-btn inline" data-confirm-modal="${state.modal}">确認</button>`}
+          ${["quick-add", "send-contact", "forward-message"].includes(state.modal) ? "" : `<button class="primary-btn inline" data-confirm-modal="${state.modal}">确認</button>`}
         </footer>
       </div>
     </div>`;
+}
+
+function renderForwardModal() {
+  const selection = state.forwardSelection || createDefaultForwardSelection();
+  return `
+    <div class="modal-backdrop">
+      <div class="modal forward-modal">
+        <header class="forward-header">
+          <button class="icon-btn" data-close-modal>‹</button>
+          <strong>转发给</strong>
+          <button class="forward-send-btn" type="button" data-forward-send ${(selection.selectedTargetIds || []).length ? "" : "disabled"}>发送${(selection.selectedTargetIds || []).length ? `(${(selection.selectedTargetIds || []).length})` : ""}</button>
+        </header>
+        <div class="modal-body forward-modal-body">
+          <div class="forward-search">
+            <input class="input" id="forwardSearch" value="${escapeAttr(selection.query || "")}" placeholder="搜索">
+          </div>
+          <div id="forwardModalContent">${renderForwardModalContent(selection)}</div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function renderForwardModalContent(selection = state.forwardSelection || createDefaultForwardSelection()) {
+  const targets = getForwardTargets(selection);
+  const selectedIds = new Set(selection.selectedTargetIds || []);
+  const selectedTargets = getSelectedForwardTargets(selection);
+  const selectedVisibleCount = targets.filter(target => selectedIds.has(target.id)).length;
+  const allSelected = targets.length > 0 && selectedVisibleCount === targets.length;
+  const someSelected = selectedVisibleCount > 0 && !allSelected;
+  return `
+    ${selectedTargets.length ? `
+      <div class="forward-selected-list">
+        ${selectedTargets.map(target => `
+          <button class="forward-selected-chip" type="button" data-forward-target-remove="${escapeAttr(target.id)}">
+            <span>${escapeHTML(target.title)}</span>
+            <span>×</span>
+          </button>`).join("")}
+      </div>
+    ` : ""}
+    <div class="forward-tabs">
+      ${renderForwardTab("recent", "最近聊天", selection)}
+      ${renderForwardTab("contacts", "联系人", selection)}
+      ${renderForwardTab("groups", "群组", selection)}
+      ${renderForwardTab("tags", "标签", selection)}
+    </div>
+    <div class="forward-select-all">
+      <span>全选</span>
+      <button class="forward-check ${allSelected ? "active" : ""} ${someSelected ? "partial" : ""}" type="button" data-forward-toggle-all aria-label="全选">${allSelected ? "✓" : someSelected ? "−" : ""}</button>
+    </div>
+    <div class="forward-target-list">
+      ${targets.length ? targets.map(target => `
+        <button class="forward-target ${selectedIds.has(target.id) ? "selected" : ""}" type="button" data-forward-target="${escapeAttr(target.id)}">
+          <img class="avatar" src="${avatarSrc(target.avatar)}" alt="">
+          <span class="forward-target-meta">
+            <span class="forward-target-title">${escapeHTML(target.title)}</span>
+            <span class="forward-target-subtitle">${escapeHTML(target.subtitle || "")}</span>
+          </span>
+          <span class="forward-check ${selectedIds.has(target.id) ? "active" : ""}">${selectedIds.has(target.id) ? "✓" : ""}</span>
+        </button>`).join("") : `<div class="empty-state">${escapeHTML(getForwardEmptyState(selection))}</div>`}
+    </div>`;
+}
+
+function renderForwardTab(id, label, selection) {
+  const count = getForwardTargetCount(id);
+  return `<button class="forward-tab ${selection.tab === id ? "active" : ""}" type="button" data-forward-tab="${id}">${label}${count ? ` (${count})` : ""}</button>`;
+}
+
+function refreshForwardModalContent() {
+  const content = document.querySelector("#forwardModalContent");
+  if (!content) return;
+  content.innerHTML = renderForwardModalContent();
+  const sendButton = document.querySelector("[data-forward-send]");
+  if (sendButton) {
+    const count = state.forwardSelection?.selectedTargetIds?.length || 0;
+    sendButton.textContent = count ? `发送(${count})` : "发送";
+    sendButton.disabled = count === 0;
+  }
+  bindForwardModalEvents();
+}
+
+function clearForwardSearchRefresh() {
+  if (!state.forwardSearchRefreshTimer) return;
+  clearTimeout(state.forwardSearchRefreshTimer);
+  state.forwardSearchRefreshTimer = null;
+}
+
+function scheduleForwardSearchRefresh() {
+  clearForwardSearchRefresh();
+  state.forwardSearchRefreshTimer = setTimeout(() => {
+    state.forwardSearchRefreshTimer = null;
+    refreshForwardModalContent();
+  }, 120);
+}
+
+function scheduleForwardSearchKeepAlive() {
+  const keepAliveUntil = state.forwardSearchKeepAliveUntil || 0;
+  if (Date.now() > keepAliveUntil) return;
+  requestAnimationFrame(() => {
+    if (Date.now() > (state.forwardSearchKeepAliveUntil || 0)) return;
+    if (state.modal !== "forward-message") return;
+    const active = document.activeElement;
+    if (active && active.id === "forwardSearch") return;
+    const input = document.querySelector("#forwardSearch");
+    if (!(input instanceof HTMLInputElement)) return;
+    input.focus();
+    const caret = input.value.length;
+    input.setSelectionRange(caret, caret);
+  });
+}
+
+function bindForwardModalEvents() {
+  document.querySelectorAll("[data-forward-tab]").forEach(el => el.addEventListener("click", () => {
+    ensureForwardSelection();
+    clearForwardSearchRefresh();
+    state.forwardSelection.tab = el.dataset.forwardTab;
+    state.forwardSelection.selectedTargetIds = [];
+    refreshForwardModalContent();
+  }));
+  document.querySelectorAll("[data-forward-target]").forEach(el => el.addEventListener("click", () => {
+    toggleForwardTarget(el.dataset.forwardTarget);
+  }));
+  document.querySelectorAll("[data-forward-target-remove]").forEach(el => el.addEventListener("click", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleForwardTarget(el.dataset.forwardTargetRemove);
+  }));
+  document.querySelector("[data-forward-toggle-all]")?.addEventListener("click", () => {
+    toggleAllForwardTargets();
+  });
 }
 
 function bindEvents() {
@@ -797,8 +1010,26 @@ function bindEvents() {
     render();
   }));
   document.querySelector("#composer")?.addEventListener("submit", onSendMessage);
+  document.querySelector(".messages")?.addEventListener("contextmenu", e => {
+    const item = e.target.closest("[data-message-id]");
+    const container = e.currentTarget;
+    if (!item) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const { x, y } = resolveMessageMenuPosition(e, item, container);
+    state.suppressPointerUntil = Date.now() + 400;
+    state.messageMenu = {
+      x,
+      y,
+      messageId: item.dataset.messageId
+    };
+    render();
+  });
   const editor = document.querySelector("#editor");
   if (editor) {
+    editor.addEventListener("input", () => {
+      setCurrentDraftText(editor.value);
+    });
     editor.addEventListener("input", updateMentionSuggestions);
     editor.addEventListener("keyup", updateMentionSuggestions);
     editor.addEventListener("click", updateMentionSuggestions);
@@ -826,6 +1057,9 @@ function bindEvents() {
   document.querySelectorAll("[data-close-modal]").forEach(el => el.addEventListener("click", () => {
     state.modal = null;
     state.preview = null;
+    state.forwardPayload = null;
+    state.forwardSelection = null;
+    clearForwardSearchRefresh();
     state.scrollToBottom = true;
     render();
   }));
@@ -841,6 +1075,21 @@ function bindEvents() {
     state.query = el.dataset.searchMember || "";
     render();
   }));
+  document.querySelectorAll("[data-message-action]").forEach(el => el.addEventListener("click", () => handleMessageAction(el.dataset.messageAction)));
+  document.querySelectorAll("[data-toggle-message-select]").forEach(el => el.addEventListener("click", e => {
+    e.preventDefault();
+    e.stopPropagation();
+    toggleMessageSelection(el.dataset.toggleMessageSelect);
+  }));
+  document.querySelectorAll("[data-multi-action]").forEach(el => el.addEventListener("click", () => handleMultiSelectAction(el.dataset.multiAction)));
+  document.querySelectorAll("[data-clear-reply]").forEach(el => el.addEventListener("click", () => {
+    setCurrentReplyDraft(null);
+    render();
+  }));
+  document.querySelectorAll("[data-jump-quote]").forEach(el => el.addEventListener("click", e => {
+    e.preventDefault();
+    jumpToQuotedMessage(el.dataset.jumpQuote);
+  }));
   document.querySelectorAll("[data-copy]").forEach(el => el.addEventListener("click", () => {
     navigator.clipboard?.writeText(el.dataset.copy);
     toast("已复制");
@@ -850,24 +1099,49 @@ function bindEvents() {
     state.modal = null;
     sendMessage({ type: "contact", body: contact.nickname });
   }));
+  document.querySelector("#forwardSearch")?.addEventListener("input", e => {
+    ensureForwardSelection();
+    state.forwardSelection.query = e.target.value;
+    state.forwardSearchKeepAliveUntil = Date.now() + 400;
+    scheduleForwardSearchRefresh();
+  });
+  document.querySelector("#forwardSearch")?.addEventListener("focus", () => {
+    state.forwardSearchKeepAliveUntil = Date.now() + 400;
+  });
+  document.querySelector("#forwardSearch")?.addEventListener("focusout", () => {
+    scheduleForwardSearchKeepAlive();
+  });
+  bindForwardModalEvents();
+  document.querySelector("[data-forward-send]")?.addEventListener("click", async () => {
+    await submitForwardSelection();
+  });
   document.querySelectorAll("[data-action='mention']").forEach(el => el.addEventListener("click", () => openMentionPicker()));
   document.querySelector("#mentionMenu")?.addEventListener("click", e => {
     const target = e.target.closest("[data-mention-id]");
     if (!target) return;
     insertMentionById(target.dataset.mentionId);
   });
-  document.querySelectorAll("[data-open-contact]").forEach(el => el.addEventListener("click", () => {
+  document.querySelectorAll("[data-open-contact]").forEach(el => el.addEventListener("click", event => {
+    if (shouldSuppressPointerAction(event)) return;
     openContactDetail(el.dataset.openContact);
   }));
-  document.querySelectorAll("[data-open-image]").forEach(el => el.addEventListener("click", () => {
+  document.querySelectorAll("[data-open-image]").forEach(el => el.addEventListener("click", event => {
+    if (shouldSuppressPointerAction(event)) return;
     openImagePreview({
       url: el.dataset.openImage,
       name: el.dataset.imageName || "图片预览"
     });
   }));
-  document.querySelectorAll("[data-open-chat]").forEach(el => el.addEventListener("click", () => {
+  document.querySelectorAll("[data-open-chat]").forEach(el => el.addEventListener("click", event => {
+    if (shouldSuppressPointerAction(event)) return;
     openChatFromContactKey(el.dataset.openChat);
   }));
+  document.querySelector("#app")?.addEventListener("click", e => {
+    if (!state.messageMenu) return;
+    if (e.target.closest("[data-message-menu]")) return;
+    state.messageMenu = null;
+    render();
+  });
   document.querySelectorAll("[data-contact-action]").forEach(el => el.addEventListener("click", () => {
     const action = el.dataset.contactAction;
     state.modal = action === "tags" ? "contact-tags" : "contact-remark";
@@ -911,6 +1185,7 @@ async function onSendMessage(event) {
   ]);
   state.mentionIds = [];
   state.mention = null;
+  setCurrentDraftText("");
   await sendMessage({ type: "text", body, mentions });
 }
 
@@ -981,6 +1256,13 @@ async function uploadFile(file) {
 }
 
 async function sendMessage(payload) {
+  const replyingTo = getCurrentReplyDraft();
+  const finalPayload = replyingTo
+    ? {
+        ...payload,
+        quote: structuredClone(replyingTo)
+      }
+    : payload;
   let message;
   if (state.useMock) {
     message = {
@@ -989,18 +1271,19 @@ async function sendMessage(payload) {
       senderId: state.user.id,
       senderName: state.user.nickname,
       createdAt: new Date().toISOString(),
-      ...payload
+      ...finalPayload
     };
     state.data.messages[state.selectedConversationId] = [...(state.data.messages[state.selectedConversationId] || []), message];
   } else {
     message = await api(`/api/conversations/${state.selectedConversationId}/messages`, {
       method: "POST",
-      body: JSON.stringify(payload)
+      body: JSON.stringify(finalPayload)
     });
   }
   upsertConversationPreview(state.selectedConversationId, message);
   state.toolMenu = null;
   state.mentionIds = [];
+  setCurrentReplyDraft(null);
   scheduleScrollToBottom();
   render();
 }
@@ -1454,6 +1737,610 @@ function openChatFromContactKey(key) {
   state.mentionIds = [];
   markConversationRead(sessionId);
   render();
+}
+
+function rememberMessageScrollPosition() {
+  if (!state.authed) return;
+  const conversationId = state.selectedConversationId;
+  if (!conversationId) return;
+  const messages = document.querySelector(".messages");
+  if (!messages) return;
+  state.messageScrollTopByConversation[conversationId] = messages.scrollTop;
+}
+
+function rememberTransientFocus() {
+  const active = document.activeElement;
+  if (!(active instanceof HTMLInputElement) && !(active instanceof HTMLTextAreaElement)) return;
+  if (active.id === "forwardSearch") {
+    ensureForwardSelection();
+    state.forwardSelection.focus = {
+      id: "forwardSearch",
+      start: active.selectionStart ?? active.value.length,
+      end: active.selectionEnd ?? active.value.length
+    };
+    return;
+  }
+  if (state.forwardSelection?.focus) {
+    state.forwardSelection.focus = null;
+  }
+}
+
+function restoreTransientFocus() {
+  const focus = state.forwardSelection?.focus;
+  if (!focus?.id) return;
+  requestAnimationFrame(() => {
+    const input = document.querySelector(`#${focus.id}`);
+    if (!(input instanceof HTMLInputElement) && !(input instanceof HTMLTextAreaElement)) return;
+    input.focus();
+    const start = typeof focus.start === "number" ? focus.start : input.value.length;
+    const end = typeof focus.end === "number" ? focus.end : start;
+    input.setSelectionRange(start, end);
+  });
+}
+
+function restoreMessageScrollPosition() {
+  if (!state.authed || state.scrollToBottom) return;
+  const conversationId = state.selectedConversationId;
+  if (!conversationId) return;
+  const scrollTop = state.messageScrollTopByConversation[conversationId];
+  if (typeof scrollTop !== "number") return;
+  const applyScroll = () => {
+    const messages = document.querySelector(".messages");
+    if (!messages) return;
+    messages.scrollTop = scrollTop;
+  };
+  requestAnimationFrame(() => {
+    applyScroll();
+    requestAnimationFrame(applyScroll);
+  });
+}
+
+function shouldSuppressPointerAction(event) {
+  if (event?.button === 2) return true;
+  return Date.now() < (state.suppressPointerUntil || 0);
+}
+
+function resolveMessageMenuPosition(event, item, container) {
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth || 0;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+  const itemRect = item.getBoundingClientRect();
+  const rawX = Number(event.clientX);
+  const rawY = Number(event.clientY);
+  const safeX = Number.isFinite(rawX) ? rawX : itemRect.left + itemRect.width - 24;
+  const safeY = Number.isFinite(rawY) ? rawY : itemRect.top + 40;
+  const menuWidth = 160;
+  const menuHeight = 128;
+  return {
+    x: Math.min(Math.max(12, safeX), Math.max(12, viewportWidth - menuWidth - 12)),
+    y: Math.min(Math.max(12, safeY), Math.max(12, viewportHeight - menuHeight - 12))
+  };
+}
+
+function getCurrentMessageById(messageId) {
+  const messages = state.data.messages?.[state.selectedConversationId] || [];
+  return messages.find(message => message.id === messageId) || null;
+}
+
+function handleMessageAction(action) {
+  const menu = state.messageMenu;
+  if (!menu) return;
+  const message = getCurrentMessageById(menu.messageId);
+  state.messageMenu = null;
+  if (!message) {
+    render();
+    return;
+  }
+  if (action === "forward") {
+    state.forwardPayload = { messages: [message] };
+    state.forwardSelection = createDefaultForwardSelection();
+    state.modal = "forward-message";
+    render();
+    return;
+  }
+  if (action === "quote") {
+    quoteMessage(message);
+    return;
+  }
+  if (action === "copy") {
+    copyMessage(message);
+    return;
+  }
+  if (action === "favorite") {
+    favoriteMessage(message);
+    return;
+  }
+  if (action === "delete") {
+    deleteMessage(message);
+    return;
+  }
+  if (action === "multi") {
+    state.multiSelect = {
+      conversationId: state.selectedConversationId,
+      selectedIds: uniqueMentionIds([...(state.multiSelect?.selectedIds || []), message.id])
+    };
+    toast("已进入多选");
+    return;
+  }
+}
+
+function quoteMessage(message) {
+  setCurrentReplyDraft(buildQuotePayload(message));
+  state.voiceMode = false;
+  render();
+  requestAnimationFrame(() => {
+    const editor = document.querySelector("#editor");
+    if (!editor) return;
+    editor.focus();
+    const caret = editor.value.length;
+    editor.setSelectionRange(caret, caret);
+  });
+  toast("已进入引用");
+}
+
+async function copyMessage(message) {
+  const text = formatMessageForCopy(message);
+  if (!text) {
+    toast("这条消息暂不支持复制");
+    return;
+  }
+  try {
+    await navigator.clipboard?.writeText(text);
+    toast("已复制");
+  } catch (_) {
+    toast("复制失败");
+  }
+}
+
+function favoriteMessage(message) {
+  addMessageToCollections(message);
+  toast("已收藏");
+}
+
+function addMessageToCollections(message) {
+  state.data.collections.unshift({
+    id: id("col"),
+    kind: message.type === "image" ? "image" : message.type === "file" ? "file" : message.type === "voice" ? "voice" : "text",
+    title: `${message.senderName} 的消息`,
+    preview: message.type === "text" ? message.body : message.attachment?.name || message.body || "",
+    createdAt: new Date().toISOString()
+  });
+}
+
+function toggleMessageSelection(messageId) {
+  if (!messageId) return;
+  if (!state.multiSelect || state.multiSelect.conversationId !== state.selectedConversationId) {
+    state.multiSelect = { conversationId: state.selectedConversationId, selectedIds: [messageId] };
+    render();
+    return;
+  }
+  const selectedIds = new Set(state.multiSelect.selectedIds || []);
+  if (selectedIds.has(messageId)) {
+    selectedIds.delete(messageId);
+  } else {
+    selectedIds.add(messageId);
+  }
+  state.multiSelect = {
+    ...state.multiSelect,
+    selectedIds: [...selectedIds]
+  };
+  render();
+}
+
+async function handleMultiSelectAction(action) {
+  const active = state.multiSelect?.conversationId === state.selectedConversationId;
+  if (!active) return;
+  const selectedMessages = getSelectedMessages();
+  if (action === "cancel") {
+    state.multiSelect = null;
+    render();
+    return;
+  }
+  if (!selectedMessages.length) {
+    toast("请先选择消息");
+    return;
+  }
+  if (action === "forward") {
+    state.forwardPayload = { messages: selectedMessages };
+    state.forwardSelection = createDefaultForwardSelection();
+    state.modal = "forward-message";
+    render();
+    return;
+  }
+  if (action === "delete") {
+    deleteSelectedMessages(selectedMessages);
+    return;
+  }
+}
+
+function getSelectedMessages() {
+  const messages = state.data.messages?.[state.selectedConversationId] || [];
+  const selectedIds = new Set(state.multiSelect?.selectedIds || []);
+  return messages.filter(message => selectedIds.has(message.id));
+}
+
+function deleteSelectedMessages(selectedMessages) {
+  const canDeleteAll = state.useMock || selectedMessages.every(message => message.senderId === state.user?.id);
+  if (!canDeleteAll) {
+    toast("所选消息包含暂不支持删除的内容");
+    return;
+  }
+  if (!confirm(`确定删除选中的 ${selectedMessages.length} 条消息？`)) return;
+  const selectedIds = new Set(selectedMessages.map(message => message.id));
+  const conversationId = state.selectedConversationId;
+  state.data.messages[conversationId] = (state.data.messages[conversationId] || []).filter(message => !selectedIds.has(message.id));
+  refreshConversationPreview(conversationId);
+  state.multiSelect = null;
+  toast(`已删除 ${selectedMessages.length} 条消息`);
+}
+
+function buildQuotePayload(message) {
+  return {
+    messageId: message.id,
+    conversationId: message.conversationId || state.selectedConversationId,
+    senderName: message.senderName,
+    preview: summarizeMessage(message),
+    type: message.type || "text",
+    typeLabel: getMessageTypeLabel(message.type)
+  };
+}
+
+function summarizeMessage(message) {
+  if (message.type === "text") return message.body || "";
+  if (message.type === "contact") return `名片：${message.body || message.senderName || ""}`;
+  if (message.type === "image") return `[图片] ${message.attachment?.name || message.body || ""}`.trim();
+  if (message.type === "file") return `[文件] ${message.attachment?.name || message.body || ""}`.trim();
+  if (message.type === "voice") return `[语音] 00:${String(message.body || "08").padStart(2, "0")}`;
+  return message.body || "";
+}
+
+function getMessageTypeLabel(type) {
+  return {
+    text: "文字",
+    image: "图片",
+    file: "文件",
+    voice: "语音",
+    contact: "名片"
+  }[type || "text"] || "消息";
+}
+
+function getConversationPreviewText(conversation) {
+  if (conversation.id === state.selectedConversationId) {
+    const draft = String(getCurrentDraftText() || "").trim();
+    const replyDraft = getCurrentReplyDraft();
+    if (replyDraft && draft) {
+      return `[草稿] (引用 ${replyDraft.preview || replyDraft.senderName || "消息"}) ${draft}`;
+    }
+    if (replyDraft) {
+      return `[草稿] (引用 ${replyDraft.preview || replyDraft.senderName || "消息"})`;
+    }
+    if (draft) {
+      return `[草稿] ${draft}`;
+    }
+  }
+  return conversation.lastText || "";
+}
+
+function formatMessageForCopy(message) {
+  const base = summarizeMessage(message);
+  if (!base) return "";
+  if (!message.quote) return base;
+  return `引用 ${message.quote.senderName || "消息"}：${message.quote.preview || ""}\n${base}`;
+}
+
+async function forwardMessagesToConversation(conversationId) {
+  const messages = state.forwardPayload?.messages || [];
+  if (!conversationId || !messages.length) {
+    toast("没有可转发的消息");
+    return;
+  }
+  try {
+    await forwardMessageBatch(messages, conversationId);
+    toast(`已转发 ${messages.length} 条消息`);
+  } catch (error) {
+    toast(error?.message || "转发失败");
+  }
+}
+
+async function forwardMessageBatch(messages, conversationId) {
+  for (const message of messages) {
+    await deliverMessageToConversation(conversationId, buildForwardPayload(message));
+  }
+}
+
+function createDefaultForwardSelection() {
+  return {
+    tab: "recent",
+    query: "",
+    selectedTargetIds: []
+  };
+}
+
+function ensureForwardSelection() {
+  if (!state.forwardSelection) state.forwardSelection = createDefaultForwardSelection();
+}
+
+function getForwardTargets(selection = state.forwardSelection || createDefaultForwardSelection()) {
+  const query = String(selection.query || "").trim().toLowerCase();
+  const filterByQuery = item => !query || `${item.title} ${item.subtitle || ""}`.toLowerCase().includes(query);
+  if (selection.tab === "contacts") {
+    return state.data.contacts
+      .map(contact => ({
+        id: `contact:${contact.id}`,
+        type: "contact",
+        contactId: contact.id,
+        title: contact.nickname,
+        subtitle: contact.chatId || contact.signature || "",
+        avatar: contact.avatar
+      }))
+      .filter(target => !isCurrentForwardTarget(target))
+      .filter(filterByQuery);
+  }
+  if (selection.tab === "groups") {
+    return state.data.groups
+      .map(group => ({
+        id: `group:${group.id}`,
+        type: "conversation",
+        conversationId: `group-${group.id}`,
+        title: group.title,
+        subtitle: `${group.members.length} 位成员`,
+        avatar: group.avatar
+      }))
+      .filter(target => !isCurrentForwardTarget(target))
+      .filter(filterByQuery);
+  }
+  if (selection.tab === "tags") {
+    return state.data.contacts
+      .filter(contact => Array.isArray(contact.tags) && contact.tags.length)
+      .map(contact => ({
+        id: `tag-contact:${contact.id}`,
+        type: "contact",
+        contactId: contact.id,
+        title: contact.nickname,
+        subtitle: (contact.tags || []).join(" · "),
+        avatar: contact.avatar
+      }))
+      .filter(target => !isCurrentForwardTarget(target))
+      .filter(filterByQuery);
+  }
+  return [...state.data.conversations]
+    .sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt))
+    .map(conversation => ({
+      id: `conversation:${conversation.id}`,
+      type: "conversation",
+      conversationId: conversation.id,
+      title: conversation.title,
+      subtitle: conversation.lastText || "最近聊天",
+      avatar: conversation.avatar
+    }))
+    .filter(target => !isCurrentForwardTarget(target))
+    .filter(filterByQuery);
+}
+
+function getForwardTargetCount(tab) {
+  return getForwardTargets({ ...(state.forwardSelection || createDefaultForwardSelection()), tab, query: "" }).length;
+}
+
+function getForwardEmptyState(selection = state.forwardSelection || createDefaultForwardSelection()) {
+  if (selection.query) return "没有找到匹配的聊天";
+  if (selection.tab === "contacts") return "暂无可转发的联系人";
+  if (selection.tab === "groups") return "暂无可转发的群组";
+  if (selection.tab === "tags") return "暂无带标签的联系人";
+  return "最近没有可转发的聊天";
+}
+
+function isCurrentForwardTarget(target) {
+  if (!target) return false;
+  if (target.type === "conversation") {
+    return target.conversationId === state.selectedConversationId;
+  }
+  const currentConversation = getConversation(state.selectedConversationId);
+  if (!currentConversation || currentConversation.kind !== "session") return false;
+  return `session-${target.contactId}` === currentConversation.id;
+}
+
+function getSelectedForwardTargets(selection = state.forwardSelection || createDefaultForwardSelection()) {
+  return (selection.selectedTargetIds || [])
+    .map(findForwardTargetById)
+    .filter(Boolean);
+}
+
+function findForwardTargetById(targetId) {
+  if (!targetId) return null;
+  for (const tab of ["recent", "contacts", "groups", "tags"]) {
+    const target = getForwardTargets({ ...(state.forwardSelection || createDefaultForwardSelection()), tab, query: "" })
+      .find(item => item.id === targetId);
+    if (target) return target;
+  }
+  return null;
+}
+
+function toggleForwardTarget(targetId) {
+  ensureForwardSelection();
+  const selected = new Set(state.forwardSelection.selectedTargetIds || []);
+  if (selected.has(targetId)) {
+    selected.delete(targetId);
+  } else {
+    selected.add(targetId);
+  }
+  state.forwardSelection.selectedTargetIds = [...selected];
+  refreshForwardModalContent();
+}
+
+function toggleAllForwardTargets() {
+  ensureForwardSelection();
+  const targets = getForwardTargets(state.forwardSelection);
+  const selected = new Set(state.forwardSelection.selectedTargetIds || []);
+  const allSelected = targets.length > 0 && targets.every(target => selected.has(target.id));
+  if (allSelected) {
+    targets.forEach(target => selected.delete(target.id));
+  } else {
+    targets.forEach(target => selected.add(target.id));
+  }
+  state.forwardSelection.selectedTargetIds = [...selected];
+  refreshForwardModalContent();
+}
+
+async function submitForwardSelection() {
+  ensureForwardSelection();
+  clearForwardSearchRefresh();
+  const selectedIds = state.forwardSelection.selectedTargetIds || [];
+  if (!selectedIds.length) {
+    toast("请选择转发目标");
+    return;
+  }
+  const targets = getForwardTargets(state.forwardSelection).filter(target => selectedIds.includes(target.id));
+  if (!targets.length) {
+    toast("请选择有效的转发目标");
+    return;
+  }
+  try {
+    const deliveredConversationIds = [];
+    for (const target of targets) {
+      const conversationId = ensureConversationIdForForwardTarget(target);
+      await forwardMessageBatch(state.forwardPayload?.messages || [], conversationId);
+      deliveredConversationIds.push(conversationId);
+    }
+    const firstConversationId = deliveredConversationIds[0];
+    state.modal = null;
+    state.forwardPayload = null;
+    state.forwardSelection = null;
+    state.multiSelect = null;
+    if (firstConversationId) {
+      state.section = "messages";
+      state.selectedConversationId = firstConversationId;
+      state.sidePage = null;
+      markConversationRead(firstConversationId);
+      await loadMessages(firstConversationId);
+      scheduleScrollToBottom();
+    }
+    toast(`已转发到 ${targets.length} 个聊天`);
+    render();
+  } catch (error) {
+    toast(error?.message || "转发失败");
+  }
+}
+
+function ensureConversationIdForForwardTarget(target) {
+  if (target.type === "conversation" && target.conversationId) {
+    state.data.messages[target.conversationId] = state.data.messages[target.conversationId] || [];
+    return target.conversationId;
+  }
+  const contact = state.data.contacts.find(item => item.id === target.contactId);
+  if (!contact) throw new Error("未找到联系人");
+  const sessionId = `session-${contact.id}`;
+  let conversation = getConversation(sessionId);
+  if (!conversation) {
+    conversation = {
+      id: sessionId,
+      kind: "session",
+      title: contact.nickname,
+      avatar: contact.avatar,
+      unread: 0,
+      lastText: "",
+      lastAt: new Date().toISOString()
+    };
+    state.data.conversations.unshift(conversation);
+  }
+  state.data.messages[sessionId] = state.data.messages[sessionId] || [];
+  return sessionId;
+}
+
+function buildForwardPayload(message) {
+  return {
+    type: message.type,
+    body: message.body,
+    attachment: message.attachment ? structuredClone(message.attachment) : undefined,
+    mentions: Array.isArray(message.mentions) ? [...message.mentions] : [],
+    quote: message.quote ? structuredClone(message.quote) : undefined
+  };
+}
+
+async function deliverMessageToConversation(conversationId, payload) {
+  let message;
+  if (state.useMock) {
+    message = {
+      id: id("msg"),
+      conversationId,
+      senderId: state.user.id,
+      senderName: state.user.nickname,
+      createdAt: new Date().toISOString(),
+      ...payload
+    };
+    state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), message];
+  } else {
+    message = await api(`/api/conversations/${conversationId}/messages`, {
+      method: "POST",
+      body: JSON.stringify(payload)
+    });
+  }
+  upsertConversationPreview(conversationId, message);
+  return message;
+}
+
+function getCurrentDraftText() {
+  return state.draftTextByConversation?.[state.selectedConversationId] || "";
+}
+
+function setCurrentDraftText(value) {
+  if (!state.selectedConversationId) return;
+  state.draftTextByConversation[state.selectedConversationId] = value || "";
+}
+
+function getCurrentReplyDraft() {
+  return state.replyDraftByConversation?.[state.selectedConversationId] || null;
+}
+
+function setCurrentReplyDraft(value) {
+  if (!state.selectedConversationId) return;
+  if (!value) {
+    delete state.replyDraftByConversation[state.selectedConversationId];
+    return;
+  }
+  state.replyDraftByConversation[state.selectedConversationId] = value;
+}
+
+function jumpToQuotedMessage(messageId) {
+  if (!messageId) return;
+  const item = document.querySelector(`[data-message-id="${CSS.escape(String(messageId))}"]`);
+  if (!item) return;
+  item.scrollIntoView({ block: "center", behavior: "smooth" });
+  state.highlightedMessageId = messageId;
+  render();
+  setTimeout(() => {
+    if (state.highlightedMessageId !== messageId) return;
+    state.highlightedMessageId = null;
+    render();
+  }, 1400);
+}
+
+function deleteMessage(message) {
+  if (!state.useMock && message.senderId !== state.user?.id) {
+    toast("删除接口暂未接入");
+    return;
+  }
+  if (!confirm("确定删除这条消息？")) return;
+  const conversationId = state.selectedConversationId;
+  const messages = state.data.messages[conversationId] || [];
+  state.data.messages[conversationId] = messages.filter(item => item.id !== message.id);
+  refreshConversationPreview(conversationId);
+  toast("已删除");
+}
+
+function refreshConversationPreview(conversationId) {
+  const conv = getConversation(conversationId);
+  if (!conv) return;
+  const messages = state.data.messages[conversationId] || [];
+  const last = messages[messages.length - 1];
+  if (!last) {
+    conv.lastText = "";
+    conv.lastAt = new Date().toISOString();
+    conv.unread = 0;
+    return;
+  }
+  conv.lastText = last.type === "text" ? last.body : `[${{ image: "图片", file: "文件", voice: "语音", contact: "名片" }[last.type] || "消息"}]`;
+  conv.lastAt = last.createdAt;
+  conv.unread = 0;
+  conv.mentionedMe = false;
 }
 
 function upsertConversationPreview(conversationId, message, options = {}) {

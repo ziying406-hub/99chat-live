@@ -121,6 +121,12 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mentions TEXT[] NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_message_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_conversation_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_sender_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_preview TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_type_label TEXT NOT NULL DEFAULT ''`,
 		`CREATE TABLE IF NOT EXISTS message_attachments (
 			id TEXT PRIMARY KEY,
 			message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
@@ -340,6 +346,7 @@ func (pg *PostgresStore) loadConversations(ctx context.Context) ([]Conversation,
 
 func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string) ([]Message, error) {
 	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, m.type, m.body, m.mentions, m.created_at,
+			m.quote_message_id, m.quote_conversation_id, m.quote_sender_name, m.quote_preview, m.quote_type, m.quote_type_label,
 			a.id, a.name, a.object_key, a.mime_type, a.size_bytes
 		FROM messages m
 		JOIN users u ON u.id = m.sender_user_id
@@ -357,11 +364,23 @@ func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string
 		var attachmentID, name, objectKey, mimeType *string
 		var size *int64
 		var mentions []string
+		var quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel string
 		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.Type, &msg.Body, &mentions, &msg.CreatedAt,
+			&quoteMessageID, &quoteConversationID, &quoteSenderName, &quotePreview, &quoteType, &quoteTypeLabel,
 			&attachmentID, &name, &objectKey, &mimeType, &size); err != nil {
 			return nil, err
 		}
 		msg.Mentions = mentions
+		if quoteMessageID != "" || quotePreview != "" || quoteSenderName != "" {
+			msg.Quote = &Quote{
+				MessageID:      quoteMessageID,
+				ConversationID: quoteConversationID,
+				SenderName:     quoteSenderName,
+				Preview:        quotePreview,
+				Type:           quoteType,
+				TypeLabel:      quoteTypeLabel,
+			}
+		}
 		if attachmentID != nil {
 			attachment.ID = *attachmentID
 			attachment.Name = valueString(name)
@@ -883,9 +902,23 @@ func upsertGroup(ctx context.Context, tx pgx.Tx, ownerID string, group Group) er
 }
 
 func insertMessage(ctx context.Context, tx pgx.Tx, msg Message) error {
-	if _, err := tx.Exec(ctx, `INSERT INTO messages(id, conversation_id, sender_user_id, type, body, mentions, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (id) DO NOTHING`,
-		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.CreatedAt); err != nil {
+	quote := sanitizeQuote(msg.Quote)
+	var quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel string
+	if quote != nil {
+		quoteMessageID = quote.MessageID
+		quoteConversationID = quote.ConversationID
+		quoteSenderName = quote.SenderName
+		quotePreview = quote.Preview
+		quoteType = quote.Type
+		quoteTypeLabel = quote.TypeLabel
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO messages(
+			id, conversation_id, sender_user_id, type, body, mentions, created_at,
+			quote_message_id, quote_conversation_id, quote_sender_name, quote_preview, quote_type, quote_type_label
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (id) DO NOTHING`,
+		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.CreatedAt,
+		quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel); err != nil {
 		return err
 	}
 	if msg.Attachment != nil {

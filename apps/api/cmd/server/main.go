@@ -63,8 +63,18 @@ type Message struct {
 	Type           string      `json:"type"`
 	Body           string      `json:"body"`
 	Attachment     *Attachment `json:"attachment,omitempty"`
+	Quote          *Quote      `json:"quote,omitempty"`
 	Mentions       []string    `json:"mentions,omitempty"`
 	CreatedAt      time.Time   `json:"createdAt"`
+}
+
+type Quote struct {
+	MessageID      string `json:"messageId"`
+	ConversationID string `json:"conversationId"`
+	SenderName     string `json:"senderName"`
+	Preview        string `json:"preview"`
+	Type           string `json:"type,omitempty"`
+	TypeLabel      string `json:"typeLabel,omitempty"`
 }
 
 type Attachment struct {
@@ -374,6 +384,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			Type       string      `json:"type"`
 			Body       string      `json:"body"`
 			Attachment *Attachment `json:"attachment"`
+			Quote      *Quote      `json:"quote"`
 			Mentions   []string    `json:"mentions"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -391,6 +402,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			Type:           req.Type,
 			Body:           strings.TrimSpace(req.Body),
 			Attachment:     req.Attachment,
+			Quote:          sanitizeQuote(req.Quote),
 			Mentions:       uniqueStrings(req.Mentions),
 			CreatedAt:      time.Now(),
 		}
@@ -1181,4 +1193,22 @@ func uniqueStrings(values []string) []string {
 		out = append(out, value)
 	}
 	return out
+}
+
+func sanitizeQuote(quote *Quote) *Quote {
+	if quote == nil {
+		return nil
+	}
+	clean := &Quote{
+		MessageID:      strings.TrimSpace(quote.MessageID),
+		ConversationID: strings.TrimSpace(quote.ConversationID),
+		SenderName:     strings.TrimSpace(quote.SenderName),
+		Preview:        strings.TrimSpace(quote.Preview),
+		Type:           strings.TrimSpace(quote.Type),
+		TypeLabel:      strings.TrimSpace(quote.TypeLabel),
+	}
+	if clean.MessageID == "" && clean.Preview == "" && clean.SenderName == "" {
+		return nil
+	}
+	return clean
 }
