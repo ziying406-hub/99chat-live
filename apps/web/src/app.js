@@ -6,6 +6,7 @@ const state = {
   user: null,
   section: "messages",
   filter: "all",
+  requestFilter: "all",
   query: "",
   selectedConversationId: "group-21444",
   sidePage: null,
@@ -75,12 +76,14 @@ async function loadData() {
       api("/api/collections")
     ]);
     state.user = user;
+    ensureUserSettings();
     state.data = { conversations, contacts, groups, requests, collections, messages: {} };
     await loadMessages(state.selectedConversationId);
     scheduleScrollToBottom();
   } catch (error) {
     state.useMock = true;
     state.user = structuredClone(mock.user);
+    ensureUserSettings();
     state.data = structuredClone(mock);
     scheduleScrollToBottom();
   }
@@ -283,30 +286,56 @@ function renderContactSidebar() {
     </aside>`;
 }
 
-function sideEntry(page, title, preview) {
+function sideEntry(page, title, preview, options = {}) {
+  const active = state.sidePage === page;
+  const icon = options.icon || title[0];
   return `
-    <article class="list-item" data-sidepage="${page}">
-      <img class="avatar" src="${avatarSrc(avatar(title[0]))}" alt="">
+    <article class="list-item ${options.compact ? "profile-side-entry" : ""} ${active ? "active" : ""}" data-sidepage="${page}">
+      <div class="side-entry-icon">${escapeHTML(icon)}</div>
       <div>
         <div class="item-title">${title}</div>
         <div class="item-preview">${preview}</div>
       </div>
+      ${options.compact ? `<div class="side-entry-arrow">›</div>` : ""}
     </article>`;
 }
 
 function renderProfileSidebar() {
+  const entries = [
+    ["collections", "我的收藏", "", "☆"],
+    ["notifications", "通知设置", "", "◔"],
+    ["messaging", "聊天设置", "", "✉"],
+    ["privacy", "隐私", "", "⌂"],
+    ["security", "安全", "", "◍"],
+    ["general", "通用", "", "⚙"],
+    ["switch-user", "切换使用者", "", "↺"]
+  ];
   return `
     <aside class="sidebar">
       <header class="panel-header"><h2>个人中心</h2></header>
-      <div class="section" style="text-align:center">
-        <img class="avatar" style="width:92px;height:92px;border-radius:24px" src="${avatarSrc(state.user.avatar)}" alt="">
-        <h2>${escapeHTML(state.user.nickname)}</h2>
-        <p class="item-meta">${escapeHTML(state.user.signature || "暂无个性签名")}</p>
+      <div class="profile-card">
+        <div class="profile-card-top">
+          <img class="avatar profile-card-avatar" src="${avatarSrc(state.user.avatar)}" alt="">
+          <div class="profile-card-actions">
+            <button class="icon-btn" type="button" data-profile-action="avatar" title="更换头像">✎</button>
+            <button class="icon-btn" type="button" data-sidepage="qrcode" title="二维码">⌘</button>
+          </div>
+        </div>
+        <div class="profile-card-meta">
+          <div class="item-title">${escapeHTML(state.user.nickname)}</div>
+          <div class="item-preview">${escapeHTML(state.user.signature || "暂无个性签名")}</div>
+        </div>
       </div>
-      <div class="list">
-        ${sideEntry("profile", "个人资料", state.user.phone)}
-        ${sideEntry("qrcode", "二维码", state.user.chatId)}
-        ${sideEntry("account", "注销帐号", "危险操作需要确认")}
+      <div class="list profile-side-list">
+        ${entries.map(([page, title, preview, icon]) => sideEntry(page, title, preview, { compact: true, icon })).join("")}
+      </div>
+      <div class="list profile-side-footer">
+        <article class="list-item profile-side-entry danger-entry" data-action="logout">
+          <div class="side-entry-icon">⇠</div>
+          <div>
+            <div class="item-title">退出</div>
+          </div>
+        </article>
       </div>
     </aside>`;
 }
@@ -680,16 +709,55 @@ function renderReportPane() {
 
 function renderContactPage() {
   if (state.sidePage === "friend-requests") {
+    const settings = ensureUserSettings();
+    const requestGroups = getFriendRequestGroups();
     return page("好友申请", `
-      <h3>近期请求</h3>
-      ${state.data.requests.map(r => `
-        <article class="list-item">
-          <img class="avatar" src="${avatarSrc(r.user.avatar)}" alt="">
-          <div><div class="item-title">${escapeHTML(r.user.nickname)}</div><div class="item-preview">${escapeHTML(r.greeting)}</div></div>
-          <div class="icon-row">
-            ${r.status === "pending" ? `<button class="primary-btn inline" data-friend-request="${r.id}" data-status="accepted">同意</button><button class="ghost-btn inline" data-friend-request="${r.id}" data-status="rejected">拒绝</button>` : `<span class="item-meta">${r.status}</span>`}
+      <section class="section">
+        <div class="item-title">演示入口</div>
+        <div class="item-preview">用于模拟“别人加我”与“别人拉我进群”，会受隐私设置影响。</div>
+        <div class="request-policy-grid">
+          <div class="request-policy-card">
+            <strong>加我为好友</strong>
+            <span>${settings.friendVerification ? "当前需要验证" : "当前直接通过"}</span>
           </div>
-        </article>`).join("")}`);
+          <div class="request-policy-card">
+            <strong>拉我进群</strong>
+            <span>${settings.inviteGroupVerification ? "当前需要验证" : "当前直接入群"}</span>
+          </div>
+        </div>
+        <div class="item-meta">下方模拟按钮会处理“我发出的”分组里最新一条待处理申请。</div>
+        <div class="icon-row">
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-incoming-friend">模拟别人加我</button>
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-incoming-group">模拟别人拉我进群</button>
+          <button class="ghost-btn inline" type="button" data-profile-action="reset-incoming-simulations">重置演示入口</button>
+        </div>
+        <div class="icon-row">
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-outgoing-friend">生成我发出的好友申请</button>
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-outgoing-group">生成我发出的入群邀请</button>
+        </div>
+        <div class="icon-row">
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-outgoing-friend-accepted">模拟对方通过好友申请</button>
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-outgoing-friend-rejected">模拟对方未通过好友申请</button>
+        </div>
+        <div class="icon-row">
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-outgoing-group-accepted">模拟对方接受入群邀请</button>
+          <button class="ghost-btn inline" type="button" data-profile-action="simulate-outgoing-group-rejected">模拟对方未加入群聊</button>
+        </div>
+      </section>
+      <div class="segmented request-segmented">
+        ${requestSeg("all", "全部")}
+        ${requestSeg("pending", "待处理")}
+        ${requestSeg("outgoing", "我发出的")}
+        ${requestSeg("processed", "已处理")}
+      </div>
+      ${requestGroups.map(group => `
+        <section class="contact-section">
+          <div class="contact-section-heading">
+            <h3>${escapeHTML(group.title)}</h3>
+            <span class="request-count">${group.items.length}</span>
+          </div>
+          ${renderFriendRequestBuckets(group.items)}
+        </section>`).join("") || `<div class="empty-state">暂无申请记录</div>`}`);
   }
   if (state.sidePage === "tags") {
     return page("通讯录标签", `<p class="item-meta">更快速的搜索和管理联络人</p><button class="primary-btn inline" data-modal="tag">新增</button>`);
@@ -703,30 +771,487 @@ function renderContactPage() {
 }
 
 function renderProfilePage() {
+  if (state.sidePage === "collections") {
+    return page("我的收藏", `
+      <div class="segmented">${["全部", "文字", "图片与视频", "文件", "语音"].map((x, i) => `<button class="seg-btn ${i === 0 ? "active" : ""}">${x}</button>`).join("")}</div>
+      <div class="list">
+        ${state.data.collections.map(c => `
+          <article class="list-item">
+            <img class="avatar" src="${avatarSrc(avatar(c.kind[0].toUpperCase()))}" alt="">
+            <div><div class="item-title">${escapeHTML(c.title)}</div><div class="item-preview">${escapeHTML(c.preview)}</div></div>
+          </article>`).join("") || `<div class="empty-state">无收藏</div>`}
+      </div>`);
+  }
+  if (state.sidePage === "notifications") {
+    ensureUserSettings();
+    return page("通知设置", `
+      <section class="section">
+        ${settingToggle("消息免打扰", "notificationsEnabled", { offLabel: "已关闭", onLabel: "已开启" })}
+        ${settingToggle("新消息通知", "notificationBadge", { description: "应用未打开时" })}
+        ${settingToggle("声音", "notificationSound", { description: "应用打开时" })}
+        ${settingToggle("震动", "mentionAlerts")}
+      </section>`);
+  }
+  if (state.sidePage === "messaging") {
+    return page("聊天设置", `
+      <section class="section">
+        ${settingLink("messaging-batch", "群发助手", "›")}
+        ${settingLink("stickers", "我的表情", "›")}
+        <button class="setting-row setting-action-row danger-text-row" type="button" data-profile-action="clear-chat-history">
+          <span>清除聊天记录</span>
+        </button>
+      </section>`);
+  }
+  if (state.sidePage === "messaging-batch") {
+    return page("群发助手", `
+      <section class="section">
+        <div class="item-meta">选择要群发的对象与消息内容，适合活动通知或统一提醒。</div>
+      </section>
+      <section class="section">
+        ${settingLink("messaging-batch-history", "最近一次群发", getBatchDraft().history[0]?.title || "今晚八点活动提醒")}
+        ${settingLink("messaging-batch-draft", "新建群发任务", "选择会话并输入内容")}
+        ${settingLink("messaging-batch-targets", "群发范围", formatBatchTargetsSummary())}
+      </section>`);
+  }
+  if (state.sidePage === "messaging-batch-history") {
+    const batch = getBatchDraft();
+    return page("最近一次群发", `
+      <section class="section">
+        <div class="item-title">${escapeHTML(batch.history[0]?.title || "今晚八点活动提醒")}</div>
+        <div class="item-preview">${escapeHTML(batch.history[0]?.body || "今晚八点准时上线，记得查看最新通知。")}</div>
+      </section>
+      <div class="list">
+        ${(batch.history || []).map(item => `
+          <article class="list-item">
+            <img class="avatar" src="${avatarSrc(avatar("群"))}" alt="">
+            <div>
+              <div class="item-title">${escapeHTML(item.title)}</div>
+              <div class="item-preview">${escapeHTML(item.body)}</div>
+            </div>
+          </article>
+        `).join("")}
+      </div>`);
+  }
+  if (state.sidePage === "messaging-batch-draft") {
+    const batch = getBatchDraft();
+    return page("新建群发任务", `
+      <section class="section">
+        <label class="security-field">
+          <span>群发内容</span>
+          <textarea class="textarea" id="batchMessage" placeholder="请输入要群发的内容">${escapeHTML(batch.message)}</textarea>
+        </label>
+      </section>
+      <section class="section">
+        <div class="item-title">已选范围</div>
+        <div class="item-preview">${escapeHTML(formatBatchTargetsSummary())}</div>
+        <div class="icon-row">
+          <button class="ghost-btn inline" type="button" data-sidepage="messaging-batch-targets">调整范围</button>
+          <button class="primary-btn inline" type="button" data-profile-action="send-batch-message">立即群发</button>
+        </div>
+      </section>`);
+  }
+  if (state.sidePage === "messaging-batch-targets") {
+    const batch = getBatchDraft();
+    return page("群发范围", `
+      <section class="section">
+        <div class="item-meta">至少选择一个范围，群发时会把消息投递到对应会话。</div>
+      </section>
+      <div class="list">
+        ${[
+          ["recent", "最近聊天", "发送给最近对话中的对象"],
+          ["contacts", "联系人", "发送给已添加的联系人"],
+          ["groups", "群组", "发送给群聊会话"]
+        ].map(([key, title, preview]) => `
+          <button class="list-item option-row" type="button" data-batch-target-toggle="${key}">
+            <div>
+              <div class="item-title">${title}</div>
+              <div class="item-preview">${preview}</div>
+            </div>
+            <span class="forward-check ${batch.targets.includes(key) ? "active" : ""}">${batch.targets.includes(key) ? "✓" : ""}</span>
+          </button>
+        `).join("")}
+      </div>`);
+  }
+  if (state.sidePage === "stickers") {
+    const stickerStore = ensureStickerStore();
+    return page("我的表情", `
+      <section class="section">
+        <div class="item-meta">这里可以整理常用表情，也可以继续补充新的收藏。</div>
+      </section>
+      <div class="grid">
+        ${stickerStore.items.map(emoji => `
+          <button class="card sticker-card ${stickerStore.favorites.includes(emoji) ? "active" : ""}" type="button" data-toggle-sticker="${escapeAttr(emoji)}">${emoji}</button>
+        `).join("")}
+      </div>
+      <section class="section">
+        ${settingLink("stickers-manage", "添加到常用表情", "从现有收藏继续补充")}
+      </section>`);
+  }
+  if (state.sidePage === "stickers-manage") {
+    const stickerStore = ensureStickerStore();
+    return page("添加到常用表情", `
+      <section class="section">
+        <div class="item-meta">点按表情可加入或移出常用表情。</div>
+      </section>
+      <div class="grid">
+        ${["🤝", "🫡", "✅", "💡", "📌", "📣", "🌟", "😎"].map(emoji => `
+          <button class="card sticker-card ${stickerStore.items.includes(emoji) ? "active" : ""}" type="button" data-add-sticker="${escapeAttr(emoji)}">${emoji}</button>
+        `).join("")}
+      </div>`);
+  }
+  if (state.sidePage === "privacy") {
+    ensureUserSettings();
+    return page("隐私", `
+      <section class="section">
+        ${settingToggle("加我为好友需验证", "friendVerification")}
+        ${settingToggle("邀请我加入群聊需验证", "inviteGroupVerification")}
+        ${settingLink("blacklist", "黑名单", "›")}
+      </section>`);
+  }
+  if (state.sidePage === "blacklist") {
+    return page("黑名单", `
+      <section class="section">
+        <div class="item-meta">被加入黑名单的人将无法继续向你发消息或发起好友申请。</div>
+      </section>
+      <section class="section">
+        <button class="ghost-btn inline" type="button" data-sidepage="blacklist-add">新增黑名单</button>
+      </section>
+      <div class="list">
+        ${getBlockedContacts().length ? getBlockedContacts().map(contact => `
+          <button class="list-item" type="button" data-unblock-contact="${escapeAttr(contact.id)}">
+            <img class="avatar" src="${avatarSrc(contact.avatar)}" alt="">
+            <div>
+              <div class="item-title">${escapeHTML(contact.nickname)}</div>
+              <div class="item-preview">${escapeHTML(contact.chatId || "已加入黑名单")}</div>
+            </div>
+          </button>`).join("") : `<div class="empty-state">当前没有拉黑任何人</div>`}
+      </div>`);
+  }
+  if (state.sidePage === "blacklist-add") {
+    const blockedIds = new Set((state.user.blockedContactIds || []));
+    return page("新增黑名单", `
+      <section class="section">
+        <div class="item-meta">把联系人加入黑名单后，对方将无法再打扰你。</div>
+      </section>
+      <div class="list">
+        ${state.data.contacts.filter(contact => !blockedIds.has(contact.id)).map(contact => `
+          <button class="list-item" type="button" data-block-contact="${escapeAttr(contact.id)}">
+            <img class="avatar" src="${avatarSrc(contact.avatar)}" alt="">
+            <div>
+              <div class="item-title">${escapeHTML(contact.nickname)}</div>
+              <div class="item-preview">${escapeHTML(contact.chatId || "可加入黑名单")}</div>
+            </div>
+          </button>
+        `).join("") || `<div class="empty-state">所有联系人都已经在黑名单里了</div>`}
+      </div>`);
+  }
+  if (state.sidePage === "security") {
+    return page("安全", `
+      <section class="section">
+        <div class="setting-row"><span>手机号码</span><strong>${escapeHTML(state.user.country?.replace("+", "") || "60")} ${escapeHTML(state.user.phone)}</strong></div>
+      </section>
+      <section class="section">
+        <h3>修改密码</h3>
+        <div class="security-form">
+          <label class="security-field">
+            <span>旧密码</span>
+            <input class="input" id="securityOldPassword" type="password" placeholder="请输入旧密码">
+          </label>
+          <button class="ghost-btn inline security-eye" type="button" data-profile-action="toggle-password-visibility">显示</button>
+          <button class="primary-btn inline" type="button" data-sidepage="security-password-step2" data-security-next disabled>下一步</button>
+        </div>
+      </section>`);
+  }
+  if (state.sidePage === "security-password-step2") {
+    return page("修改密码", `
+      <section class="section">
+        <label class="security-field">
+          <span>新密码</span>
+          <input class="input" id="securityNewPassword" type="password" placeholder="请输入新密码">
+        </label>
+        <label class="security-field">
+          <span>确认新密码</span>
+          <input class="input" id="securityConfirmPassword" type="password" placeholder="请再次输入新密码">
+        </label>
+        <button class="primary-btn inline" type="button" data-profile-action="save-password">保存新密码</button>
+      </section>`);
+  }
+  if (state.sidePage === "general") {
+    return page("通用", `
+      <section class="section">
+        ${settingLink("general-language", "切换语言", state.user.language || "简体中文")}
+        ${settingLink("general-display", "显示模式", state.user.displayMode || "桌面版")}
+        ${settingLink("general-feedback", "意见反馈", "›")}
+        ${settingLink("general-about", "关于我们", "›")}
+        <button class="setting-row setting-action-row" type="button" data-profile-action="clear-local-cache">
+          <span>清除缓存数据</span>
+        </button>
+        <button class="setting-row setting-action-row" type="button" data-profile-action="reroute-line">
+          <span>重新选线</span>
+        </button>
+        ${settingLink("general-debug", "调试资讯", "›")}
+      </section>`);
+  }
+  if (state.sidePage === "general-language") {
+    const languages = ["简体中文", "English", "Bahasa Melayu"];
+    return page("切换语言", `
+      <section class="section">
+        <div class="item-meta">选择后会立即应用到当前演示界面。</div>
+      </section>
+      <div class="list">
+        ${languages.map(language => `
+          <button class="list-item option-row" type="button" data-select-language="${escapeAttr(language)}">
+            <div>
+              <div class="item-title">${escapeHTML(language)}</div>
+              <div class="item-preview">${language === state.user.language ? "当前使用中" : "点按切换到该语言"}</div>
+            </div>
+            <span class="forward-check ${language === state.user.language ? "active" : ""}">${language === state.user.language ? "✓" : ""}</span>
+          </button>
+        `).join("")}
+      </div>`);
+  }
+  if (state.sidePage === "general-display") {
+    const modes = ["桌面版", "移动版"];
+    return page("显示模式", `
+      <section class="section">
+        <div class="item-meta">切换后会调整布局展示方式。</div>
+      </section>
+      <div class="list">
+        ${modes.map(mode => `
+          <button class="list-item option-row" type="button" data-select-display-mode="${escapeAttr(mode)}">
+            <div>
+              <div class="item-title">${escapeHTML(mode)}</div>
+              <div class="item-preview">${mode === state.user.displayMode ? "当前显示模式" : "点按切换到该模式"}</div>
+            </div>
+            <span class="forward-check ${mode === state.user.displayMode ? "active" : ""}">${mode === state.user.displayMode ? "✓" : ""}</span>
+          </button>
+        `).join("")}
+      </div>`);
+  }
+  if (state.sidePage === "general-feedback") {
+    const feedbackStore = ensureFeedbackStore();
+    return page("意见反馈", `
+      <section class="section">
+        <label class="security-field">
+          <span>反馈类型</span>
+          <select class="select full-width" id="feedbackType">
+            ${["功能建议", "界面问题", "Bug 反馈"].map(type => `<option value="${escapeAttr(type)}" ${feedbackStore.type === type ? "selected" : ""}>${type}</option>`).join("")}
+          </select>
+        </label>
+        <label class="security-field">
+          <span>问题或建议</span>
+          <textarea class="textarea" id="feedbackText" placeholder="请输入你希望优化的内容">${escapeHTML(feedbackStore.draft)}</textarea>
+        </label>
+        <div class="icon-row">
+          <button class="ghost-btn inline" type="button" data-sidepage="feedback-history">查看提交记录</button>
+          <button class="primary-btn inline" type="button" data-profile-action="submit-feedback">提交</button>
+        </div>
+      </section>`);
+  }
+  if (state.sidePage === "feedback-history") {
+    const feedbackStore = ensureFeedbackStore();
+    return page("提交记录", `
+      <div class="list">
+        ${feedbackStore.history.map(item => `
+          <article class="list-item">
+            <img class="avatar" src="${avatarSrc(avatar("反"))}" alt="">
+            <div>
+              <div class="item-title">${escapeHTML(item.type)}</div>
+              <div class="item-preview">${escapeHTML(item.text)}</div>
+            </div>
+            <div class="item-meta">${escapeHTML(item.status)}</div>
+          </article>
+        `).join("")}
+      </div>`);
+  }
+  if (state.sidePage === "general-about") {
+    return page("关于我们", `
+      <section class="section">
+        <div class="item-title">66 快捷版</div>
+        <div class="item-preview">当前为本地演示版，已实现聊天、名片、右键菜单与个人中心主要交互。</div>
+      </section>
+      <section class="section">
+        ${settingAction("版本信息", "about-chatlite", "v0.1 Demo")}
+      </section>`);
+  }
+  if (state.sidePage === "general-debug") {
+    return page("调试资讯", `
+      <section class="section">
+        <div class="setting-row"><span>当前线路</span><strong>线路 A</strong></div>
+        <div class="setting-row"><span>运行模式</span><strong>${state.useMock ? "本地演示" : "在线接口"}</strong></div>
+        <div class="setting-row"><span>当前会话数</span><strong>${state.data.conversations.length}</strong></div>
+      </section>`);
+  }
+  if (state.sidePage === "switch-user") {
+    return page("切换使用者", `
+      <section class="section">
+        <div class="item-meta">下面的账号用于本地演示切换，点按后会立即切换资料和展示状态。</div>
+      </section>
+      <div class="list switch-user-list">
+        ${getAvailableAccounts().map(account => `
+          <button class="list-item switch-user-btn" type="button" data-switch-user="${escapeAttr(account.id)}">
+            <img class="avatar" src="${avatarSrc(account.avatar)}" alt="">
+            <div>
+              <div class="item-title">${escapeHTML(account.nickname)}${account.id === state.user.id ? ` <span class="item-flag">当前</span>` : ""}</div>
+              <div class="item-preview">${escapeHTML(account.country)} ${escapeHTML(account.phone)} · ${escapeHTML(account.chatId)}</div>
+              <div class="item-preview">${escapeHTML(account.signature || "这个账号还没有个性签名")}</div>
+            </div>
+          </button>`).join("")}
+      </div>`);
+  }
   if (state.sidePage === "qrcode") {
-    return page("二维码", `<div class="card" style="width:260px;text-align:center"><div style="font-size:120px;line-height:1">▦</div><strong>${state.user.chatId}</strong></div>`);
+    return page("二维码", `
+      <div class="card qrcode-card">
+        <img class="avatar profile-page-avatar" src="${avatarSrc(state.user.avatar)}" alt="">
+        <div class="qrcode-demo">▦</div>
+        <strong>${escapeHTML(state.user.chatId)}</strong>
+        <div class="item-meta">${escapeHTML(state.user.nickname)}</div>
+        <div class="item-meta">${escapeHTML(state.user.country)} ${escapeHTML(state.user.phone)}</div>
+        <div class="icon-row">
+          <button class="ghost-btn inline" type="button" data-copy="${escapeAttr(state.user.chatId)}">复制聊天号</button>
+          <button class="primary-btn inline" type="button" data-profile-action="save-qrcode">保存二维码</button>
+        </div>
+      </div>`);
+  }
+  if (state.sidePage === "profile-avatar") {
+    return page("更换头像", `
+      <section class="section profile-avatar-editor">
+        <img class="avatar profile-avatar-large" src="${avatarSrc(state.user.avatar)}" alt="">
+        <div class="item-title">${escapeHTML(state.user.nickname)}</div>
+        <div class="item-preview">头像会同步显示在聊天、通讯录和个人资料中。</div>
+      </section>
+      <section class="section">
+        <div class="icon-row">
+          <button class="primary-btn inline" type="button" data-profile-action="avatar">上传新头像</button>
+          <button class="ghost-btn inline" type="button" data-profile-action="reset-avatar">恢复默认头像</button>
+        </div>
+      </section>`);
+  }
+  if (state.sidePage === "profile-nickname") {
+    return page("昵称", `
+      <section class="section">
+        <label class="security-field">
+          <span>设置昵称</span>
+          <input class="input" id="profileNicknameInput" value="${escapeAttr(state.user.nickname)}" placeholder="请输入昵称">
+        </label>
+        <button class="primary-btn inline" type="button" data-profile-action="save-profile-nickname">保存昵称</button>
+      </section>`);
+  }
+  if (state.sidePage === "profile-signature") {
+    return page("个性签名", `
+      <section class="section">
+        <label class="security-field">
+          <span>编辑个性签名</span>
+          <textarea class="textarea" id="profileSignatureInput" placeholder="请输入个性签名">${escapeHTML(state.user.signature || "")}</textarea>
+        </label>
+        <button class="primary-btn inline" type="button" data-profile-action="save-profile-signature">保存签名</button>
+      </section>`);
   }
   if (state.sidePage === "account") {
-    return page("注销帐号", `<p>注销会清理当前账号数据。</p><button class="danger-btn inline" data-action="logout">退出登录</button>`);
+    return page("注销帐号", `
+      <section class="section">
+        <p class="item-meta">注销会清理当前账号的本地演示资料，这个操作不可撤销。</p>
+        <button class="danger-btn inline" type="button" data-profile-action="deactivate">注销帐号</button>
+      </section>`);
   }
   return page("个人资料", `
-    <div class="card">
-      <img class="avatar" style="width:96px;height:96px;border-radius:24px" src="${avatarSrc(state.user.avatar)}" alt="">
-      <div class="setting-row"><span>昵称</span><button class="ghost-btn inline" data-modal="edit-profile">${escapeHTML(state.user.nickname)}</button></div>
-      <div class="setting-row"><span>个性签名</span><span>${escapeHTML(state.user.signature || "")}</span></div>
-      <div class="setting-row"><span>电话号码</span><strong>${state.user.country} ${state.user.phone}</strong></div>
-      <div class="setting-row"><span>聊天号</span><button class="ghost-btn inline" data-copy="${state.user.chatId}">${state.user.chatId} 复制</button></div>
-    </div>`);
+    <div class="profile-page-head">
+      <img class="avatar profile-page-avatar" src="${avatarSrc(state.user.avatar)}" alt="">
+      <div>
+        <button class="ghost-btn inline" type="button" data-sidepage="profile-avatar">更换头像</button>
+        <div class="item-meta profile-avatar-tip">头像将同步显示在聊天与通讯录里</div>
+      </div>
+    </div>
+    <section class="section">
+      ${settingLink("profile-nickname", "昵称", state.user.nickname)}
+      ${settingLink("profile-signature", "个性签名", state.user.signature || "点击填写")}
+    </section>
+    <section class="section">
+      <div class="setting-row"><span>电话号码</span><strong>${escapeHTML(state.user.country)} ${escapeHTML(state.user.phone)}</strong></div>
+      <button class="setting-row" type="button" data-copy="${escapeAttr(state.user.chatId)}">
+        <span>聊天号</span>
+        <strong>${escapeHTML(state.user.chatId)} 复制</strong>
+      </button>
+      <button class="setting-row" type="button" data-sidepage="qrcode">
+        <span>二维码</span>
+        <strong>查看</strong>
+      </button>
+    </section>
+    <section class="section">
+      <button class="setting-row setting-action-row danger-text-row" type="button" data-sidepage="account">
+        <span>注销帐号</span>
+      </button>
+    </section>`);
 }
 
 function page(title, body) {
-  return `<section class="page-pane"><header class="panel-header"><h2>${title}</h2></header><div class="page-content">${body}</div></section>`;
+  const paneClass = state.section === "me" ? "page-pane profile-page-pane" : "page-pane";
+  const headerClass = state.section === "me" ? "panel-header profile-panel-header" : "panel-header";
+  return `<section class="${paneClass}"><header class="${headerClass}"><h2>${title}</h2></header><div class="page-content">${body}</div></section>`;
+}
+
+function settingToggle(label, key, options = {}) {
+  const enabled = Boolean(state.user?.settings?.[key]);
+  const description = options.description ? `<span class="item-meta">${escapeHTML(options.description)}</span>` : "";
+  return `
+    <button class="setting-row setting-toggle-row" type="button" data-setting-toggle="${escapeAttr(key)}">
+      <span class="setting-copy">
+        <span>${label}</span>
+        ${description}
+      </span>
+      <span class="switch ${enabled ? "on" : "off"}"></span>
+    </button>`;
+}
+
+function settingAction(label, action, value = "") {
+  return `
+    <button class="setting-row setting-action-row" type="button" data-profile-action="${escapeAttr(action)}">
+      <span>${label}</span>
+      <strong>${escapeHTML(value || "进入")}</strong>
+    </button>`;
 }
 
 function renderModal() {
   if (!state.modal) return "";
   if (state.modal === "forward-message") {
     return renderForwardModal();
+  }
+  if (state.modal === "group-invite-review" && state.preview) {
+    const request = state.preview;
+    const group = request.groupData || {};
+    const memberCount = Array.isArray(group.members) ? group.members.length : 0;
+    const announcement = group.announcement || "加入后即可查看群内最新消息与成员动态。";
+    return `
+      <div class="modal-backdrop">
+        <div class="modal contact-modal">
+          <header class="modal-header">
+            <strong>入群邀请</strong>
+            <button class="icon-btn" data-close-modal>×</button>
+          </header>
+          <div class="modal-body">
+            <div class="contact-summary">
+              <img class="avatar contact-avatar" src="${avatarSrc(group.avatar || avatar("群"))}" alt="">
+              <div>
+                <h3>${escapeHTML(request.groupTitle || "未命名群聊")}</h3>
+                <div class="item-meta">${escapeHTML(request.user?.nickname || "对方")} 邀请你加入此群聊</div>
+              </div>
+            </div>
+            <div class="contact-detail-grid">
+              <div class="setting-row"><span>邀请人</span><strong>${escapeHTML(request.user?.nickname || "未提供")}</strong></div>
+              <div class="setting-row"><span>群成员</span><strong>${memberCount ? `${memberCount} 人` : "等待加入后查看"}</strong></div>
+              <div class="setting-row"><span>群号</span><strong>${escapeHTML(group.chatId || request.groupId || "未提供")}</strong></div>
+            </div>
+            <section class="contact-section">
+              <div class="contact-section-title">群简介</div>
+              <div class="invite-review-note">${escapeHTML(announcement)}</div>
+            </section>
+          </div>
+          <footer class="modal-footer">
+            <button class="ghost-btn inline" data-close-modal>稍后处理</button>
+            <button class="primary-btn inline" data-confirm-group-invite="${escapeAttr(request.id)}">确认加入</button>
+          </footer>
+        </div>
+      </div>`;
   }
   if (state.modal === "image-preview" && state.preview) {
     const image = state.preview;
@@ -835,7 +1360,9 @@ function renderModal() {
     invite: `<p>选择联络人加入群聊。</p>${state.data.contacts.map(c => `<label class="setting-row"><span>${escapeHTML(c.nickname)}</span><input type="checkbox" name="inviteMember" value="${escapeAttr(c.id)}"></label>`).join("")}`,
     tag: `<input class="input" placeholder="标签名称" value="重要联系人">`,
     "send-contact": `${state.data.contacts.map(c => `<button class="list-item" data-send-contact="${c.id}"><img class="avatar" src="${avatarSrc(c.avatar)}"><div><div class="item-title">${escapeHTML(c.nickname)}</div><div class="item-preview">${c.chatId}</div></div></button>`).join("")}`,
-    "edit-profile": `<input class="input" id="nickname" value="${escapeAttr(state.user.nickname)}"><textarea class="textarea" id="signature">${escapeHTML(state.user.signature || "")}</textarea>`
+    "edit-profile": `<input class="input" id="nickname" value="${escapeAttr(state.user.nickname)}"><textarea class="textarea" id="signature">${escapeHTML(state.user.signature || "")}</textarea>`,
+    "edit-nickname": `<input class="input" id="nickname" value="${escapeAttr(state.user.nickname)}" placeholder="请输入昵称">`,
+    "edit-signature": `<textarea class="textarea" id="signature" placeholder="请输入个性签名">${escapeHTML(state.user.signature || "")}</textarea>`
   };
   const titles = {
     "quick-add": "快捷操作",
@@ -845,7 +1372,9 @@ function renderModal() {
     tag: "新增标签",
     "send-contact": "发送名片",
     "forward-message": "选择转发到",
-    "edit-profile": "编辑资料"
+    "edit-profile": "编辑资料",
+    "edit-nickname": "编辑昵称",
+    "edit-signature": "编辑个性签名"
   };
   return `
     <div class="modal-backdrop">
@@ -1029,11 +1558,15 @@ function bindEvents() {
     e.preventDefault();
     state.sidePage = el.dataset.sidepage;
     if (["friend-requests", "tags", "groups"].includes(state.sidePage)) state.section = "contact";
-    if (["profile", "qrcode", "account"].includes(state.sidePage)) state.section = "me";
+    if (["profile", "profile-avatar", "profile-nickname", "profile-signature", "qrcode", "account", "collections", "notifications", "messaging", "messaging-batch", "messaging-batch-history", "messaging-batch-draft", "messaging-batch-targets", "stickers", "stickers-manage", "privacy", "blacklist", "blacklist-add", "security", "security-password-step2", "general", "general-language", "general-display", "general-feedback", "feedback-history", "general-about", "general-debug", "switch-user"].includes(state.sidePage)) state.section = "me";
     render();
   }));
   document.querySelectorAll("[data-filter]").forEach(el => el.addEventListener("click", () => {
     state.filter = el.dataset.filter;
+    render();
+  }));
+  document.querySelectorAll("[data-request-filter]").forEach(el => el.addEventListener("click", () => {
+    state.requestFilter = el.dataset.requestFilter;
     render();
   }));
   document.querySelectorAll("[data-action='search']").forEach(el => el.addEventListener("input", e => {
@@ -1085,6 +1618,7 @@ function bindEvents() {
   }));
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
+  document.querySelectorAll("[data-profile-action]").forEach(el => el.addEventListener("click", () => handleProfileAction(el.dataset.profileAction)));
   document.querySelectorAll("[data-modal]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     state.modal = el.dataset.modal;
@@ -1114,6 +1648,15 @@ function bindEvents() {
   }));
   document.querySelectorAll("[data-message-action]").forEach(el => el.addEventListener("click", () => handleMessageAction(el.dataset.messageAction)));
   document.querySelectorAll("[data-conversation-action]").forEach(el => el.addEventListener("click", () => handleConversationAction(el.dataset.conversationAction)));
+  document.querySelectorAll("[data-setting-toggle]").forEach(el => el.addEventListener("click", () => toggleUserSetting(el.dataset.settingToggle)));
+  document.querySelectorAll("[data-switch-user]").forEach(el => el.addEventListener("click", () => switchUser(el.dataset.switchUser)));
+  document.querySelectorAll("[data-unblock-contact]").forEach(el => el.addEventListener("click", () => unblockContact(el.dataset.unblockContact)));
+  document.querySelectorAll("[data-select-language]").forEach(el => el.addEventListener("click", () => selectLanguage(el.dataset.selectLanguage)));
+  document.querySelectorAll("[data-select-display-mode]").forEach(el => el.addEventListener("click", () => selectDisplayMode(el.dataset.selectDisplayMode)));
+  document.querySelectorAll("[data-batch-target-toggle]").forEach(el => el.addEventListener("click", () => toggleBatchTarget(el.dataset.batchTargetToggle)));
+  document.querySelectorAll("[data-toggle-sticker]").forEach(el => el.addEventListener("click", () => toggleFavoriteSticker(el.dataset.toggleSticker)));
+  document.querySelectorAll("[data-add-sticker]").forEach(el => el.addEventListener("click", () => addStickerToStore(el.dataset.addSticker)));
+  document.querySelectorAll("[data-block-contact]").forEach(el => el.addEventListener("click", () => blockContact(el.dataset.blockContact)));
   document.querySelectorAll("[data-toggle-message-select]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     e.stopPropagation();
@@ -1193,7 +1736,13 @@ function bindEvents() {
   }));
   document.querySelectorAll("[data-confirm-contact-edit]").forEach(el => el.addEventListener("click", () => confirmContactEdit(el.dataset.confirmContactEdit)));
   document.querySelectorAll("[data-friend-request]").forEach(el => el.addEventListener("click", () => updateFriendRequest(el.dataset.friendRequest, el.dataset.status)));
+  document.querySelectorAll("[data-confirm-group-invite]").forEach(el => el.addEventListener("click", () => confirmIncomingGroupInvite(el.dataset.confirmGroupInvite)));
   document.querySelectorAll("[data-member-action]").forEach(el => el.addEventListener("click", () => updateGroupMember(el.dataset.memberAction, el.dataset.memberId, el.dataset.muted === "true")));
+  document.querySelector("#securityOldPassword")?.addEventListener("input", e => {
+    const nextButton = document.querySelector("[data-security-next]");
+    if (!(nextButton instanceof HTMLButtonElement)) return;
+    nextButton.disabled = !e.target.value.trim();
+  });
 }
 
 async function onLogin(event) {
@@ -1262,6 +1811,28 @@ async function pickAndUpload(kind) {
     } catch (error) {
       toast(`上传失败：${error.message || "请确认 API 已启动"}`);
     }
+  };
+  picker.click();
+}
+
+function pickProfileAvatar() {
+  const picker = document.querySelector("#filePicker");
+  if (!picker) return;
+  picker.accept = "image/*";
+  picker.value = "";
+  picker.onchange = async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    const nextAvatar = URL.createObjectURL(file);
+    state.user.avatar = nextAvatar;
+    if (!state.useMock) {
+      await api("/api/me", {
+        method: "PATCH",
+        body: JSON.stringify({ avatar: nextAvatar })
+      }).catch(() => {});
+    }
+    toast("头像已更新");
+    render();
   };
   picker.click();
 }
@@ -1363,6 +1934,201 @@ function handleAction(event, action) {
   }
 }
 
+function handleProfileAction(action) {
+  if (action === "avatar") {
+    pickProfileAvatar();
+    return;
+  }
+  if (action === "reset-avatar") {
+    state.user.avatar = avatar((state.user.nickname || "我").slice(0, 1));
+    toast("已恢复默认头像");
+    render();
+    return;
+  }
+  if (action === "edit-nickname") {
+    state.modal = "edit-nickname";
+    render();
+    return;
+  }
+  if (action === "edit-signature") {
+    state.modal = "edit-signature";
+    render();
+    return;
+  }
+  if (action === "change-password") {
+    toast("密码修改流程已预留");
+    return;
+  }
+  if (action === "manage-devices") {
+    toast("最近登录设备：当前浏览器");
+    return;
+  }
+  if (action === "clear-local-cache") {
+    if (confirm("确定清理本地缓存吗？")) {
+      state.query = "";
+      state.toast = "";
+      toast("本地缓存已清理");
+    }
+    return;
+  }
+  if (action === "about-chatlite") {
+    toast("ChatLite 演示版 · 个人中心功能已接通");
+    return;
+  }
+  if (action === "clear-chat-history") {
+    if (!confirm("确定清除当前账号的本地聊天记录吗？")) return;
+    state.data.messages = {};
+    state.data.conversations = state.data.conversations.map(conversation => ({
+      ...conversation,
+      lastText: "",
+      unread: 0,
+      mentionedMe: false
+    }));
+    state.selectedConversationId = state.data.conversations[0]?.id || null;
+    state.messageMenu = null;
+    state.multiSelect = false;
+    state.selectedMessageIds = [];
+    toast("聊天记录已清除");
+    render();
+    return;
+  }
+  if (action === "open-last-batch") {
+    state.sidePage = "messaging-batch-history";
+    render();
+    return;
+  }
+  if (action === "add-sticker") {
+    state.sidePage = "stickers-manage";
+    render();
+    return;
+  }
+  if (action === "toggle-password-visibility") {
+    const input = document.querySelector("#securityOldPassword") || document.querySelector("#securityNewPassword");
+    if (!(input instanceof HTMLInputElement)) return;
+    input.type = input.type === "password" ? "text" : "password";
+    toast(input.type === "text" ? "已显示旧密码" : "已隐藏旧密码");
+    return;
+  }
+  if (action === "reroute-line") {
+    toast("已为你切换到更稳定的线路");
+    return;
+  }
+  if (action === "submit-feedback") {
+    const text = document.querySelector("#feedbackText")?.value?.trim();
+    if (!text) {
+      toast("请先填写问题或建议");
+      return;
+    }
+    const store = ensureFeedbackStore();
+    const type = document.querySelector("#feedbackType")?.value || store.type;
+    store.type = type;
+    store.draft = "";
+    store.history.unshift({ type, text, status: "已提交" });
+    toast("反馈已提交");
+    state.sidePage = "feedback-history";
+    render();
+    return;
+  }
+  if (action === "send-batch-message") {
+    const batch = getBatchDraft();
+    const nextMessage = document.querySelector("#batchMessage")?.value?.trim();
+    if (!nextMessage) {
+      toast("请输入群发内容");
+      return;
+    }
+    batch.message = nextMessage;
+    batch.history.unshift({
+      title: "刚刚发送的群发任务",
+      body: nextMessage,
+      status: "已发送"
+    });
+    state.sidePage = "messaging-batch-history";
+    toast("群发任务已发送");
+    render();
+    return;
+  }
+  if (action === "save-password") {
+    const nextPassword = document.querySelector("#securityNewPassword")?.value?.trim() || "";
+    const confirmPassword = document.querySelector("#securityConfirmPassword")?.value?.trim() || "";
+    if (!nextPassword || !confirmPassword) {
+      toast("请完整填写新密码与确认密码");
+      return;
+    }
+    if (nextPassword !== confirmPassword) {
+      toast("两次输入的新密码不一致");
+      return;
+    }
+    toast("新密码已保存");
+    return;
+  }
+  if (action === "save-profile-nickname") {
+    const nextNickname = document.querySelector("#profileNicknameInput")?.value?.trim();
+    if (!nextNickname) {
+      toast("请输入昵称");
+      return;
+    }
+    state.user.nickname = nextNickname;
+    state.sidePage = "profile";
+    toast("昵称已保存");
+    render();
+    return;
+  }
+  if (action === "save-profile-signature") {
+    state.user.signature = document.querySelector("#profileSignatureInput")?.value?.trim() || "";
+    state.sidePage = "profile";
+    toast("个性签名已保存");
+    render();
+    return;
+  }
+  if (action === "save-qrcode") {
+    downloadQrCard();
+    toast("二维码已保存");
+    return;
+  }
+  if (action === "simulate-incoming-friend") {
+    simulateIncomingFriendRequest();
+    return;
+  }
+  if (action === "simulate-incoming-group") {
+    simulateIncomingGroupInvite();
+    return;
+  }
+  if (action === "simulate-outgoing-friend") {
+    simulateOutgoingFriendRequest();
+    return;
+  }
+  if (action === "simulate-outgoing-group") {
+    simulateOutgoingGroupInvite();
+    return;
+  }
+  if (action === "simulate-outgoing-friend-accepted") {
+    simulateOutgoingRequestDecision("friend", "accepted");
+    return;
+  }
+  if (action === "simulate-outgoing-friend-rejected") {
+    simulateOutgoingRequestDecision("friend", "rejected");
+    return;
+  }
+  if (action === "simulate-outgoing-group-accepted") {
+    simulateOutgoingRequestDecision("group-invite", "accepted");
+    return;
+  }
+  if (action === "simulate-outgoing-group-rejected") {
+    simulateOutgoingRequestDecision("group-invite", "rejected");
+    return;
+  }
+  if (action === "reset-incoming-simulations") {
+    resetIncomingSimulationState();
+    return;
+  }
+  if (action === "deactivate") {
+    if (!confirm("确定注销当前帐号吗？")) return;
+    localStorage.removeItem("chatlite-token");
+    state.authed = false;
+    render();
+  }
+}
+
 async function submitReport(reason) {
   if (!state.useMock) {
     await api("/api/reports", {
@@ -1374,6 +2140,7 @@ async function submitReport(reason) {
 }
 
 async function confirmModal(kind) {
+  let successToast = "已保存";
   if (kind === "add-friend") {
     const chatId = document.querySelector("#friendChatId").value.trim();
     const greeting = document.querySelector("#friendGreeting").value.trim();
@@ -1381,12 +2148,29 @@ async function confirmModal(kind) {
       toast("请输入聊天号");
       return;
     }
+    const match = findUserByChatId(chatId);
+    if (!match) {
+      toast("未找到这个聊天号");
+      return;
+    }
+    if (state.data.contacts.some(contact => contact.id === match.id)) {
+      toast("你们已经是好友了");
+      return;
+    }
     if (state.useMock) {
-      toast("本地演示模式已发送好友申请");
+      const privacy = getUserPrivacy(match);
+      if (privacy.friendVerification) {
+        state.data.requests.unshift(createLocalFriendRequest(match, greeting, "outgoing"));
+        successToast = "已发送好友申请，等待对方验证";
+      } else {
+        addContactToRoster(match);
+        ensureConversationForContact(match);
+        successToast = "已直接添加为好友";
+      }
     } else {
       await api("/api/friend-requests", { method: "POST", body: JSON.stringify({ chatId, greeting }) });
       state.data.requests = await api("/api/friend-requests");
-      toast("好友申请已发送");
+      successToast = "好友申请已发送";
     }
   }
   if (kind === "create-group") {
@@ -1406,14 +2190,39 @@ async function confirmModal(kind) {
       await api("/api/me", { method: "PATCH", body: JSON.stringify({ nickname: state.user.nickname, signature: state.user.signature }) }).catch(() => {});
     }
   }
+  if (kind === "edit-nickname") {
+    state.user.nickname = document.querySelector("#nickname").value.trim() || state.user.nickname;
+    if (!state.useMock) {
+      await api("/api/me", { method: "PATCH", body: JSON.stringify({ nickname: state.user.nickname }) }).catch(() => {});
+    }
+  }
+  if (kind === "edit-signature") {
+    state.user.signature = document.querySelector("#signature").value.trim();
+    if (!state.useMock) {
+      await api("/api/me", { method: "PATCH", body: JSON.stringify({ signature: state.user.signature }) }).catch(() => {});
+    }
+  }
   if (kind === "invite") {
     const group = currentGroup();
     const selected = [...document.querySelectorAll('input[name="inviteMember"]:checked')].map(input => input.value);
+    if (!selected.length) {
+      toast("请先选择要邀请的成员");
+      return;
+    }
+    let invitedDirectly = 0;
+    let invitedPending = 0;
     for (const userId of selected) {
       if (state.useMock) {
         const contact = state.data.contacts.find(c => c.id === userId);
         if (contact && !group.members.some(m => m.userId === userId)) {
-          group.members.push({ userId, nickname: contact.nickname, role: "member", muted: false });
+          const privacy = getUserPrivacy(contact);
+          if (privacy.inviteGroupVerification) {
+            state.data.requests.unshift(createLocalGroupInviteRequest(contact, group));
+            invitedPending += 1;
+          } else {
+            group.members.push({ userId, nickname: contact.nickname, role: "member", muted: false });
+            invitedDirectly += 1;
+          }
         }
       } else {
         await api(`/api/groups/${group.id}/members`, { method: "POST", body: JSON.stringify({ userId }) });
@@ -1423,20 +2232,53 @@ async function confirmModal(kind) {
       const updated = await api(`/api/groups/${group.id}`);
       Object.assign(group, updated);
     }
+    if (state.useMock) {
+      successToast = invitedPending && invitedDirectly
+        ? `已直接邀请 ${invitedDirectly} 人，另有 ${invitedPending} 人待验证`
+        : invitedPending
+          ? `已发送 ${invitedPending} 条入群邀请，等待对方验证`
+          : `已直接邀请 ${invitedDirectly} 人入群`;
+    }
   }
   state.modal = null;
-  toast("已保存");
+  toast(successToast);
   render();
 }
 
-async function updateFriendRequest(requestId, status) {
-  if (state.useMock) {
-    const request = state.data.requests.find(item => item.id === requestId);
-    if (request) {
-      request.status = status;
-      if (status === "accepted" && !state.data.contacts.some(contact => contact.id === request.user.id)) {
-        state.data.contacts.push(request.user);
+async function updateFriendRequest(requestId, status, options = {}) {
+  let acceptedConversationId = null;
+  const request = state.data.requests.find(item => item.id === requestId);
+  if (!request) return;
+  const direction = getRequestDirection(request);
+  const localOnly = state.useMock || Boolean(request.simulated);
+  if (status === "accepted" && request.type === "group-invite" && direction === "incoming" && !options.skipReview) {
+    state.preview = structuredClone(request);
+    state.modal = "group-invite-review";
+    render();
+    return;
+  }
+  if (localOnly) {
+    request.status = status;
+    if (status === "accepted" && request.type === "friend" && !state.data.contacts.some(contact => contact.id === request.user.id)) {
+      addContactToRoster(request.user);
+      ensureConversationForContact(request.user);
+      acceptedConversationId = `session-${request.user.id}`;
+    }
+    if (status === "accepted" && request.type === "group-invite" && direction === "outgoing") {
+      const group = state.data.groups.find(item => item.id === request.groupId);
+      if (group && !group.members.some(member => member.userId === request.user.id)) {
+        group.members.push({ userId: request.user.id, nickname: request.user.nickname, role: "member", muted: false });
       }
+    }
+    if (status === "accepted" && request.type === "group-invite" && direction === "incoming") {
+      ensureGroupConversation({
+        ...(request.groupData || { id: request.groupId, title: request.groupTitle, avatar: avatar("群"), members: [] }),
+        members: [
+          ...((request.groupData?.members || []).filter(member => member.userId !== state.user.id)),
+          { userId: state.user.id, nickname: state.user.nickname, role: "member", muted: false }
+        ]
+      });
+      acceptedConversationId = `group-${request.groupId}`;
     }
   } else {
     const updated = await api(`/api/friend-requests/${requestId}`, {
@@ -1448,7 +2290,31 @@ async function updateFriendRequest(requestId, status) {
       state.data.contacts = await api("/api/contacts");
     }
   }
-  toast(status === "accepted" ? "已同意好友申请" : "已拒绝好友申请");
+  toast(status === "accepted" ? "已处理请求" : "已拒绝请求");
+  if (status === "accepted" && acceptedConversationId) {
+    state.section = "messages";
+    state.selectedConversationId = acceptedConversationId;
+    state.sidePage = null;
+    await loadMessages(state.selectedConversationId);
+    scheduleScrollToBottom();
+  }
+  render();
+}
+
+async function confirmIncomingGroupInvite(requestId) {
+  state.modal = null;
+  state.preview = null;
+  await updateFriendRequest(requestId, "accepted", { skipReview: true });
+}
+
+async function simulateOutgoingRequestDecision(type, status) {
+  const request = getLatestPendingOutgoingRequest(type);
+  if (!request) {
+    toast(type === "group-invite" ? "当前没有待处理的入群邀请可模拟" : "当前没有待处理的好友申请可模拟");
+    return;
+  }
+  request.simulated = true;
+  await updateFriendRequest(request.id, status, { skipReview: true });
 }
 
 async function updateGroupMember(action, userId, muted) {
@@ -1477,6 +2343,10 @@ async function updateGroupMember(action, userId, muted) {
 
 function seg(filter, label) {
   return `<button class="seg-btn ${state.filter === filter ? "active" : ""}" data-filter="${filter}">${label}</button>`;
+}
+
+function requestSeg(filter, label) {
+  return `<button class="seg-btn ${state.requestFilter === filter ? "active" : ""}" data-request-filter="${filter}">${label}</button>`;
 }
 
 function filteredConversations() {
@@ -1566,6 +2436,621 @@ function findContactByName(name) {
   const query = String(name || "").trim().toLowerCase();
   if (!query) return null;
   return state.data.contacts.find(contact => contact.nickname.toLowerCase() === query) || null;
+}
+
+function getBlockedContacts() {
+  const blocked = state.user?.blockedContactIds || [];
+  return state.data.contacts.filter(contact => blocked.includes(contact.id));
+}
+
+function findUserByChatId(chatId) {
+  const query = String(chatId || "").trim().toLowerCase();
+  if (!query) return null;
+  const contacts = state.data.contacts || [];
+  const directory = state.data.directory || [];
+  return [...contacts, ...directory].find(user => String(user.chatId || "").toLowerCase() === query) || null;
+}
+
+function getUserPrivacy(user) {
+  return {
+    friendVerification: user?.privacy?.friendVerification ?? true,
+    inviteGroupVerification: user?.privacy?.inviteGroupVerification ?? true
+  };
+}
+
+function createLocalFriendRequest(user, greeting, direction = "incoming") {
+  return {
+    id: id("fr"),
+    type: "friend",
+    direction,
+    simulated: true,
+    user: structuredClone(user),
+    greeting: greeting || `你好，我是 ${user.nickname}`,
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+}
+
+function createLocalGroupInviteRequest(user, group) {
+  return {
+    id: id("gr"),
+    type: "group-invite",
+    direction: "outgoing",
+    simulated: true,
+    user: structuredClone(user),
+    groupId: group.id,
+    groupTitle: group.title,
+    greeting: `已邀请加入 ${group.title}`,
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+}
+
+function createIncomingGroupInviteRequest(inviter, group) {
+  return {
+    id: id("gr"),
+    type: "group-invite",
+    direction: "incoming",
+    simulated: true,
+    user: structuredClone(inviter),
+    groupId: group.id,
+    groupTitle: group.title,
+    groupData: structuredClone(group),
+    greeting: `${inviter.nickname} 邀请你加入 ${group.title}`,
+    status: "pending",
+    createdAt: new Date().toISOString()
+  };
+}
+
+function addContactToRoster(user) {
+  if (state.data.contacts.some(contact => contact.id === user.id)) return;
+  state.data.contacts.unshift(structuredClone(user));
+}
+
+function ensureConversationForContact(user) {
+  const conversationId = `session-${user.id}`;
+  if (state.data.conversations.some(conversation => conversation.id === conversationId)) return;
+  state.data.conversations.unshift({
+    id: conversationId,
+    kind: "session",
+    title: user.nickname,
+    avatar: user.avatar,
+    unread: 0,
+    lastText: "你们已是好友，可以开始聊天了!",
+    lastAt: new Date().toISOString()
+  });
+  state.data.messages[conversationId] ||= [];
+}
+
+function ensureGroupConversation(group) {
+  if (!state.data.groups.some(item => item.id === group.id)) {
+    state.data.groups.unshift(structuredClone(group));
+  }
+  const conversationId = `group-${group.id}`;
+  if (!state.data.conversations.some(conversation => conversation.id === conversationId)) {
+    state.data.conversations.unshift({
+      id: conversationId,
+      kind: "group",
+      title: group.title,
+      avatar: group.avatar,
+      unread: 0,
+      lastText: "你已加入群聊",
+      lastAt: new Date().toISOString()
+    });
+  }
+  state.data.messages[conversationId] ||= [];
+}
+
+function getNextIncomingFriendCandidate() {
+  const directory = state.data.directory?.length ? state.data.directory : (mock.directory || []);
+  return directory.find(user =>
+    !state.data.contacts.some(contact => contact.id === user.id) &&
+    !state.data.requests.some(request => request.type === "friend" && request.user?.id === user.id && request.status === "pending")
+  ) || null;
+}
+
+function getNextIncomingGroupCandidate() {
+  const directoryGroups = state.data.directoryGroups?.length ? state.data.directoryGroups : (mock.directoryGroups || []);
+  return directoryGroups.find(group =>
+    !state.data.groups.some(item => item.id === group.id) &&
+    !state.data.requests.some(request => request.type === "group-invite" && request.groupId === group.id && request.status === "pending")
+  ) || null;
+}
+
+function getNextOutgoingFriendCandidate() {
+  const directory = state.data.directory?.length ? state.data.directory : (mock.directory || []);
+  return directory.find(user =>
+    getUserPrivacy(user).friendVerification &&
+    !state.data.contacts.some(contact => contact.id === user.id) &&
+    !state.data.requests.some(request =>
+      request.type === "friend" &&
+      request.user?.id === user.id &&
+      getRequestDirection(request) === "outgoing" &&
+      request.status === "pending"
+    )
+  ) || null;
+}
+
+function getNextOutgoingGroupInviteCandidate() {
+  const groups = state.data.groups?.length ? state.data.groups : (mock.groups || []);
+  const contacts = state.data.contacts?.length ? state.data.contacts : (mock.contacts || []);
+  for (const group of groups) {
+    const contact = contacts.find(user =>
+      getUserPrivacy(user).inviteGroupVerification &&
+      !group.members.some(member => member.userId === user.id) &&
+      !state.data.requests.some(request =>
+        request.type === "group-invite" &&
+        request.user?.id === user.id &&
+        request.groupId === group.id &&
+        getRequestDirection(request) === "outgoing" &&
+        request.status === "pending"
+      )
+    );
+    if (contact) return { contact, group };
+  }
+  return null;
+}
+
+function getLatestPendingOutgoingRequest(type) {
+  return getSortedRequests().find(request =>
+    request.type === type &&
+    getRequestDirection(request) === "outgoing" &&
+    request.status === "pending"
+  ) || null;
+}
+
+function shouldShowRequestActions(request) {
+  return request.status === "pending" && request.direction !== "outgoing";
+}
+
+function getSortedRequests() {
+  return [...(state.data.requests || [])].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+}
+
+function getFriendRequestGroups() {
+  const requests = getSortedRequests();
+  const pending = requests.filter(request => request.status === "pending" && request.direction !== "outgoing");
+  const outgoing = requests.filter(request => request.status === "pending" && request.direction === "outgoing");
+  const processed = requests.filter(request => request.status !== "pending");
+  const groups = [
+    { key: "pending", title: "待处理", items: pending },
+    { key: "outgoing", title: "我发出的", items: outgoing },
+    { key: "processed", title: "已处理", items: processed }
+  ];
+  if (state.requestFilter === "pending") return groups.filter(group => group.key === "pending" && group.items.length > 0);
+  if (state.requestFilter === "outgoing") return groups.filter(group => group.key === "outgoing" && group.items.length > 0);
+  if (state.requestFilter === "processed") return groups.filter(group => group.key === "processed" && group.items.length > 0);
+  return groups.filter(group => group.items.length > 0);
+}
+
+function renderFriendRequestBuckets(items) {
+  return bucketRequestsByDate(items).map(bucket => `
+    <div class="request-bucket">
+      <div class="request-bucket-title">${escapeHTML(bucket.label)}</div>
+      <div class="request-list">
+        ${bucket.items.map(renderFriendRequestCard).join("")}
+      </div>
+    </div>`).join("");
+}
+
+function bucketRequestsByDate(items) {
+  const map = new Map();
+  for (const item of items) {
+    const label = formatRequestDateLabel(item.createdAt);
+    if (!map.has(label)) map.set(label, []);
+    map.get(label).push(item);
+  }
+  return [...map.entries()].map(([label, bucketItems]) => ({ label, items: bucketItems }));
+}
+
+function renderFriendRequestCard(request) {
+  return `
+    <article class="list-item request-card request-card-${escapeAttr(request.status)}">
+      <img class="avatar" src="${avatarSrc(request.user.avatar)}" alt="">
+      <div class="request-main">
+        <div class="request-title-row">
+          <div class="item-title">${escapeHTML(getRequestTitle(request))}</div>
+          <span class="request-status request-status-${escapeAttr(getRequestStatusTone(request))}">${escapeHTML(getRequestStatusLabel(request))}</span>
+        </div>
+        <div class="item-preview">${escapeHTML(getRequestPreview(request))}</div>
+        ${renderFriendRequestContext(request)}
+        ${renderFriendRequestOutcome(request)}
+        <div class="item-meta">${escapeHTML(getRequestMeta(request))}</div>
+      </div>
+      <div class="icon-row">
+        ${shouldShowRequestActions(request)
+          ? `<button class="primary-btn inline" data-friend-request="${request.id}" data-status="accepted">同意</button><button class="ghost-btn inline" data-friend-request="${request.id}" data-status="rejected">拒绝</button>`
+          : ``}
+      </div>
+    </article>`;
+}
+
+function renderFriendRequestOutcome(request) {
+  const text = getFriendRequestOutcomeText(request);
+  return text ? `<div class="request-outcome">${escapeHTML(text)}</div>` : "";
+}
+
+function renderFriendRequestContext(request) {
+  if (request.type !== "group-invite") return "";
+  const inviter = request.user?.nickname || "对方";
+  const groupTitle = request.groupTitle || "未命名群聊";
+  return `
+    <div class="request-context">
+      <span class="request-context-pill">邀请人：${escapeHTML(inviter)}</span>
+      <span class="request-context-pill">群聊：${escapeHTML(groupTitle)}</span>
+    </div>`;
+}
+
+function getRequestTitle(request) {
+  if (request.type === "group-invite") {
+    return `${request.user.nickname} · ${request.groupTitle}`;
+  }
+  return request.user.nickname;
+}
+
+function getRequestPreview(request) {
+  if (request.type === "group-invite") {
+    return request.direction === "outgoing"
+      ? `已邀请加入群聊：${request.groupTitle}`
+      : `${request.user.nickname} 邀请你加入群聊：${request.groupTitle}`;
+  }
+  return request.direction === "outgoing"
+    ? `已发送好友申请：${request.greeting}`
+    : request.greeting;
+}
+
+function getFriendRequestOutcomeText(request) {
+  if (request.status === "pending") return "";
+  const direction = getRequestDirection(request);
+  if (request.type === "group-invite") {
+    if (request.status === "accepted") {
+      return direction === "outgoing"
+        ? `${request.user.nickname} 已加入你邀请的群聊`
+        : `你已加入 ${request.groupTitle}`;
+    }
+    return direction === "outgoing"
+      ? `${request.user.nickname} 暂未加入 ${request.groupTitle}`
+      : `你已拒绝加入 ${request.groupTitle}`;
+  }
+  if (request.status === "accepted") {
+    return direction === "outgoing"
+      ? `${request.user.nickname} 已通过你的好友申请`
+      : `你已通过 ${request.user.nickname} 的好友申请`;
+  }
+  return direction === "outgoing"
+    ? `${request.user.nickname} 暂未通过你的好友申请`
+    : `你已拒绝 ${request.user.nickname} 的好友申请`;
+}
+
+function getRequestStatusLabel(request) {
+  const direction = getRequestDirection(request);
+  if (request.status === "pending" && direction === "outgoing") return request.type === "group-invite" ? "待对方入群验证" : "待对方好友验证";
+  if (request.status === "pending") return request.type === "group-invite" ? "等待你处理" : "等待你验证";
+  if (request.status === "accepted") return request.type === "group-invite" ? "已加入" : "已通过";
+  if (request.status === "rejected") {
+    if (request.type === "group-invite") return direction === "outgoing" ? "对方未加入" : "已拒绝加入";
+    return direction === "outgoing" ? "对方未通过" : "已拒绝";
+  }
+  return request.status || "处理中";
+}
+
+function getRequestStatusTone(request) {
+  if (request.status === "accepted") return "success";
+  if (request.status === "rejected") return "muted";
+  return getRequestDirection(request) === "outgoing" ? "info" : "warning";
+}
+
+function getRequestMeta(request) {
+  const direction = getRequestDirection(request);
+  const source = request.type === "group-invite"
+    ? direction === "incoming" ? "来自群邀请" : "你发出的群邀请"
+    : direction === "incoming" ? "来自好友申请" : "你发出的好友申请";
+  return `${source} · ${formatTime(request.createdAt)}`;
+}
+
+function getRequestDirection(request) {
+  return request?.direction === "outgoing" ? "outgoing" : "incoming";
+}
+
+function simulateIncomingFriendRequest() {
+  const candidate = getNextIncomingFriendCandidate();
+  if (!candidate) {
+    toast("当前没有可模拟的陌生人了");
+    return;
+  }
+  if (ensureUserSettings().friendVerification) {
+    state.data.requests.unshift(createLocalFriendRequest(candidate, `你好，我是 ${candidate.nickname}`, "incoming"));
+    state.section = "contact";
+    state.sidePage = "friend-requests";
+    toast("已生成一条待处理好友申请");
+    render();
+    return;
+  }
+  addContactToRoster(candidate);
+  ensureConversationForContact(candidate);
+  toast(`${candidate.nickname} 已直接成为你的好友`);
+  render();
+}
+
+function simulateIncomingGroupInvite() {
+  const group = getNextIncomingGroupCandidate();
+  if (!group) {
+    toast("当前没有可模拟的群邀请了");
+    return;
+  }
+  const inviter = state.data.contacts.find(contact => contact.id === group.inviterId) || state.data.directory?.[0];
+  if (ensureUserSettings().inviteGroupVerification) {
+    state.data.requests.unshift(createIncomingGroupInviteRequest(inviter, group));
+    state.section = "contact";
+    state.sidePage = "friend-requests";
+    toast("已生成一条待处理入群邀请");
+    render();
+    return;
+  }
+  ensureGroupConversation({
+    ...group,
+    members: [...(group.members || []), { userId: state.user.id, nickname: state.user.nickname, role: "member", muted: false }]
+  });
+  state.section = "messages";
+  state.selectedConversationId = `group-${group.id}`;
+  state.sidePage = null;
+  toast(`你已被直接加入 ${group.title}`);
+  render();
+}
+
+function simulateOutgoingFriendRequest() {
+  const candidate = getNextOutgoingFriendCandidate();
+  if (!candidate) {
+    toast("当前没有可模拟的好友申请对象了");
+    return;
+  }
+  state.data.requests.unshift(createLocalFriendRequest(candidate, `你好，我是 ${state.user.nickname}`, "outgoing"));
+  state.section = "contact";
+  state.sidePage = "friend-requests";
+  state.requestFilter = "outgoing";
+  toast(`已生成发给 ${candidate.nickname} 的好友申请`);
+  render();
+}
+
+function simulateOutgoingGroupInvite() {
+  const nextInvite = getNextOutgoingGroupInviteCandidate();
+  if (!nextInvite) {
+    toast("当前没有可模拟的入群邀请对象了");
+    return;
+  }
+  state.data.requests.unshift(createLocalGroupInviteRequest(nextInvite.contact, nextInvite.group));
+  state.section = "contact";
+  state.sidePage = "friend-requests";
+  state.requestFilter = "outgoing";
+  toast(`已生成发给 ${nextInvite.contact.nickname} 的入群邀请`);
+  render();
+}
+
+function resetIncomingSimulationState() {
+  const baseDirectory = structuredClone(mock.directory || []);
+  const baseDirectoryGroups = structuredClone(mock.directoryGroups || []);
+  const directoryUserIds = new Set(baseDirectory.map(user => user.id));
+  const directoryGroupIds = new Set(baseDirectoryGroups.map(group => group.id));
+
+  state.data.directory = baseDirectory;
+  state.data.directoryGroups = baseDirectoryGroups;
+  state.data.requests = structuredClone(mock.requests || []);
+  state.data.contacts = state.data.contacts.filter(contact => !directoryUserIds.has(contact.id));
+  state.data.groups = state.data.groups.filter(group => !directoryGroupIds.has(group.id));
+  state.data.conversations = state.data.conversations.filter(conversation => {
+    if (conversation.id.startsWith("session-")) {
+      return !directoryUserIds.has(conversation.id.replace("session-", ""));
+    }
+    if (conversation.id.startsWith("group-")) {
+      return !directoryGroupIds.has(conversation.id.replace("group-", ""));
+    }
+    return true;
+  });
+  for (const groupId of directoryGroupIds) {
+    delete state.data.messages[`group-${groupId}`];
+  }
+  for (const userId of directoryUserIds) {
+    delete state.data.messages[`session-${userId}`];
+  }
+  toast("演示入口已重置");
+  render();
+}
+
+function getBatchDraft() {
+  state.user.batchDraft ||= {
+    message: "今晚八点准时上线，记得查看最新通知。",
+    targets: ["recent", "groups"],
+    history: [
+      { title: "今晚八点活动提醒", body: "今晚八点准时上线，记得查看最新通知。", status: "已发送" },
+      { title: "系统维护通知", body: "明早 06:00 - 07:00 将进行短时维护。", status: "已发送" }
+    ]
+  };
+  return state.user.batchDraft;
+}
+
+function ensureStickerStore() {
+  state.user.stickerStore ||= {
+    items: ["😀", "🥳", "👍", "🔥", "❤️", "😄", "🎉", "🙌"],
+    favorites: ["😀", "🎉", "❤️"]
+  };
+  return state.user.stickerStore;
+}
+
+function ensureFeedbackStore() {
+  state.user.feedbackStore ||= {
+    type: "功能建议",
+    draft: "",
+    history: [
+      { type: "界面问题", text: "聊天窗口右键菜单希望再贴近移动端样式。", status: "已记录" },
+      { type: "功能建议", text: "希望群发助手支持草稿保存。", status: "处理中" }
+    ]
+  };
+  return state.user.feedbackStore;
+}
+
+function ensureUserSettings() {
+  if (!state.user) return {};
+  state.user.settings = {
+    notificationsEnabled: true,
+    notificationSound: true,
+    notificationBadge: true,
+    mentionAlerts: true,
+    enterToSend: false,
+    messagePreview: true,
+    autoPlayVoice: false,
+    collapseToolsAfterSend: true,
+    friendVerification: true,
+    inviteGroupVerification: true,
+    discoverByChatId: true,
+    discoverByPhone: false,
+    showSignatureToStrangers: false,
+    loginAlerts: true,
+    confirmDeletes: true,
+    darkMode: false,
+    showRecentMessage: true,
+    ...(state.user.settings || {})
+  };
+  state.user.language ||= "简体中文";
+  state.user.displayMode ||= "桌面版";
+  state.user.blockedContactIds ||= state.data?.contacts?.slice(0, 1).map(contact => contact.id) || [];
+  return state.user.settings;
+}
+
+function toggleUserSetting(key) {
+  const settings = ensureUserSettings();
+  settings[key] = !settings[key];
+  toast(settings[key] ? "已开启" : "已关闭");
+  render();
+}
+
+function getAvailableAccounts() {
+  return [
+    {
+      id: state.user?.id || "u1",
+      nickname: state.user?.nickname || "当前账号",
+      signature: state.user?.signature || "",
+      country: state.user?.country || "+60",
+      phone: state.user?.phone || "",
+      chatId: state.user?.chatId || "",
+      avatar: state.user?.avatar || avatar("我")
+    },
+    { id: "demo-a", nickname: "阿泽", signature: "欢迎交流。", country: "+60", phone: "1880000001", chatId: "aze66", avatar: avatar("泽") },
+    { id: "demo-b", nickname: "小橙", signature: "在线中", country: "+65", phone: "98880002", chatId: "orange8", avatar: avatar("橙") }
+  ];
+}
+
+function switchUser(accountId) {
+  const account = getAvailableAccounts().find(item => item.id === accountId);
+  if (!account) return;
+  const currentSettings = structuredClone(ensureUserSettings());
+  state.user = {
+    ...state.user,
+    ...account,
+    settings: currentSettings
+  };
+  state.sidePage = "profile";
+  toast(`已切换到 ${account.nickname}`);
+  render();
+}
+
+function unblockContact(contactId) {
+  state.user.blockedContactIds = (state.user.blockedContactIds || []).filter(id => id !== contactId);
+  toast("已移出黑名单");
+  render();
+}
+
+function selectLanguage(language) {
+  state.user.language = language;
+  toast(`已切换为 ${language}`);
+  render();
+}
+
+function selectDisplayMode(mode) {
+  state.user.displayMode = mode;
+  toast(`已切换到${mode}`);
+  render();
+}
+
+function toggleBatchTarget(key) {
+  const batch = getBatchDraft();
+  if (batch.targets.includes(key)) {
+    if (batch.targets.length === 1) {
+      toast("至少保留一个群发范围");
+      return;
+    }
+    batch.targets = batch.targets.filter(item => item !== key);
+  } else {
+    batch.targets = [...batch.targets, key];
+  }
+  render();
+}
+
+function formatBatchTargetsSummary() {
+  const batch = getBatchDraft();
+  const labels = {
+    recent: "最近聊天",
+    contacts: "联系人",
+    groups: "群组"
+  };
+  return batch.targets.map(key => labels[key]).join(" / ");
+}
+
+function toggleFavoriteSticker(emoji) {
+  const store = ensureStickerStore();
+  if (store.favorites.includes(emoji)) {
+    store.favorites = store.favorites.filter(item => item !== emoji);
+    toast("已移出常用表情");
+  } else {
+    store.favorites = [...store.favorites, emoji];
+    toast("已加入常用表情");
+  }
+  render();
+}
+
+function addStickerToStore(emoji) {
+  const store = ensureStickerStore();
+  if (!store.items.includes(emoji)) {
+    store.items = [...store.items, emoji];
+  }
+  if (!store.favorites.includes(emoji)) {
+    store.favorites = [...store.favorites, emoji];
+  }
+  toast("表情已加入常用列表");
+  render();
+}
+
+function blockContact(contactId) {
+  const blocked = new Set(state.user.blockedContactIds || []);
+  blocked.add(contactId);
+  state.user.blockedContactIds = [...blocked];
+  state.sidePage = "blacklist";
+  toast("已加入黑名单");
+  render();
+}
+
+function downloadQrCard() {
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="720" height="960" viewBox="0 0 720 960">
+      <rect width="720" height="960" rx="44" fill="#f4f8ff"/>
+      <rect x="60" y="60" width="600" height="840" rx="36" fill="#ffffff" stroke="#d9e4f2"/>
+      <rect x="270" y="110" width="180" height="180" rx="40" fill="#1d42c7"/>
+      <text x="360" y="222" text-anchor="middle" font-size="86" fill="#ffffff" font-family="Arial, sans-serif">${escapeHTML((state.user.nickname || "我").slice(0, 1))}</text>
+      <text x="360" y="340" text-anchor="middle" font-size="40" fill="#172033" font-family="Arial, sans-serif">${escapeHTML(state.user.nickname || "")}</text>
+      <text x="360" y="392" text-anchor="middle" font-size="28" fill="#69758a" font-family="Arial, sans-serif">${escapeHTML(state.user.chatId || "")}</text>
+      <rect x="160" y="470" width="400" height="400" rx="28" fill="#2450e0"/>
+      <rect x="188" y="498" width="344" height="344" rx="20" fill="#ffffff"/>
+      <path d="M220 530h80v80h-80zM420 530h80v80h-80zM220 730h80v80h-80zM320 530h20v20h-20zM360 570h20v20h-20zM400 610h20v20h-20zM340 650h20v20h-20zM380 690h20v20h-20zM440 730h20v20h-20zM320 770h20v20h-20zM360 810h20v20h-20z" fill="#101828"/>
+      <text x="360" y="904" text-anchor="middle" font-size="26" fill="#69758a" font-family="Arial, sans-serif">${escapeHTML(`${state.user.country || ""} ${state.user.phone || ""}`.trim())}</text>
+    </svg>`;
+  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `${state.user.chatId || "qrcode"}.svg`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
 }
 
 function openContactDetail(key) {
@@ -2552,11 +4037,33 @@ function createMockData() {
   const now = new Date();
   const user = { id: "u1", country: "+60", phone: "174319676", chatId: "o8tew3", nickname: "chenshao", signature: "保持专注，保持联系。", avatar: avatar("陈") };
   const contacts = [
-    { id: "388770", nickname: "陈刀仔（日进斗金）", signature: "愿你每天都好运", chatId: "cdz888", avatar: avatar("陈"), remark: "老朋友", tags: ["优先", "线下"] },
-    { id: "388769", nickname: "苏雅", signature: "在线接待", chatId: "suya66", avatar: avatar("苏"), tags: ["客服"] },
-    { id: "388754", nickname: "恋情客", signature: "忙碌中", chatId: "love66", avatar: avatar("恋") },
-    { id: "388786", nickname: "^魚. 𝙯ᙆ", signature: "保持联系", chatId: "fish66", avatar: avatar("魚"), remark: "常联系", tags: ["重点"] },
-    { id: "1278382", nickname: "小花朵接待号", signature: "会员接待", chatId: "flower", avatar: avatar("花") }
+    { id: "388770", nickname: "陈刀仔（日进斗金）", signature: "愿你每天都好运", chatId: "cdz888", avatar: avatar("陈"), remark: "老朋友", tags: ["优先", "线下"], privacy: { friendVerification: true, inviteGroupVerification: true } },
+    { id: "388769", nickname: "苏雅", signature: "在线接待", chatId: "suya66", avatar: avatar("苏"), tags: ["客服"], privacy: { friendVerification: false, inviteGroupVerification: false } },
+    { id: "388754", nickname: "恋情客", signature: "忙碌中", chatId: "love66", avatar: avatar("恋"), privacy: { friendVerification: true, inviteGroupVerification: true } },
+    { id: "388786", nickname: "^魚. 𝙯ᙆ", signature: "保持联系", chatId: "fish66", avatar: avatar("魚"), remark: "常联系", tags: ["重点"], privacy: { friendVerification: true, inviteGroupVerification: false } },
+    { id: "1278382", nickname: "小花朵接待号", signature: "会员接待", chatId: "flower", avatar: avatar("花"), privacy: { friendVerification: false, inviteGroupVerification: true } }
+  ];
+  const directory = [
+    { id: "500101", nickname: "阿明", signature: "新朋友", chatId: "aming1", avatar: avatar("明"), privacy: { friendVerification: false, inviteGroupVerification: false } },
+    { id: "500102", nickname: "小鹿", signature: "需要验证", chatId: "deer77", avatar: avatar("鹿"), privacy: { friendVerification: true, inviteGroupVerification: true } }
+  ];
+  const directoryGroups = [
+    {
+      id: "61001",
+      title: "新朋友交流 1 群",
+      avatar: avatar("新"),
+      chatId: "61001",
+      inviterId: "388769",
+      members: [{ userId: "388769", nickname: "苏雅", role: "owner", muted: false }]
+    },
+    {
+      id: "61002",
+      title: "效率协作 2 群",
+      avatar: avatar("效"),
+      chatId: "61002",
+      inviterId: "388770",
+      members: [{ userId: "388770", nickname: "陈刀仔（日进斗金）", role: "owner", muted: false }]
+    }
   ];
   const groups = [{
     id: "21444",
@@ -2578,10 +4085,12 @@ function createMockData() {
   return {
     user,
     contacts,
+    directory,
+    directoryGroups,
     groups,
     requests: [
-      { id: "fr1", user: contacts[0], greeting: "你好，我是 陈刀仔（日进斗金）", status: "pending", createdAt: addHours(now, -25) },
-      { id: "fr2", user: contacts[1], greeting: "你好，我是 苏雅", status: "pending", createdAt: addHours(now, -25) }
+      { id: "fr1", type: "friend", direction: "incoming", user: contacts[0], greeting: "你好，我是 陈刀仔（日进斗金）", status: "pending", createdAt: addHours(now, -25) },
+      { id: "fr2", type: "friend", direction: "incoming", user: contacts[1], greeting: "你好，我是 苏雅", status: "pending", createdAt: addHours(now, -25) }
     ],
     conversations: [
       { id: "group-19146", kind: "group", title: "VIP 会员讨论 08群", avatar: avatar("V"), unread: 0, lastText: "万顺下分专员1：[图片]", lastAt: addHours(now, -2) },
@@ -2630,6 +4139,19 @@ function formatTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
+
+function formatRequestDateLabel(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "更早";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const target = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const diffDays = Math.round((today - target) / (24 * 3600 * 1000));
+  if (diffDays <= 0) return "今天";
+  if (diffDays === 1) return "昨天";
+  if (diffDays < 7) return "近 7 天";
+  return date.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" });
 }
 
 function formatPreview(value) {
