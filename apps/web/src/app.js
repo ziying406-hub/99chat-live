@@ -36,7 +36,7 @@ import { collectMentionIdsFromText, findMentionTargetById, findMentionTargetByNa
 import { buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
-import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js";
+import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-friend-request-live";
+const APP_VERSION = "20260708-friend-request-cache";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
