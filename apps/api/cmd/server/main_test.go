@@ -818,6 +818,29 @@ func TestRuntimeStoreCanSeedDemoDataWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestRegisterRejectsDuplicatePhoneInMemoryStore(t *testing.T) {
+	store := emptyDemoStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	first := httptest.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewBufferString(`{"country":"+60","phone":"188888888","password":"Chat66Test1","nickname":"账号一"}`))
+	firstRec := httptest.NewRecorder()
+	mux.ServeHTTP(firstRec, first)
+	if firstRec.Code != http.StatusCreated {
+		t.Fatalf("expected first register 201, got %d: %s", firstRec.Code, firstRec.Body.String())
+	}
+
+	second := httptest.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewBufferString(`{"country":"+60","phone":"188888888","password":"Chat66Test1","nickname":"账号二"}`))
+	secondRec := httptest.NewRecorder()
+	mux.ServeHTTP(secondRec, second)
+	if secondRec.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate register 409, got %d: %s", secondRec.Code, secondRec.Body.String())
+	}
+	if !strings.Contains(secondRec.Body.String(), "user already exists") {
+		t.Fatalf("duplicate response = %s", secondRec.Body.String())
+	}
+}
+
 func TestRegisteredFriendAcceptDoesNotExposeDemoData(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()

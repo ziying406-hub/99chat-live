@@ -870,6 +870,11 @@ func (s *Store) createUser(ctx context.Context, country, phone, password, nickna
 		if s.passwordHashes == nil {
 			s.passwordHashes = map[string]string{s.user.ID: "demo:demo123456"}
 		}
+		for _, existing := range s.users {
+			if existing.Country == country && existing.Phone == phone {
+				return User{}, errAlreadyExists
+			}
+		}
 		s.users[user.ID] = user
 		s.passwordHashes[user.ID] = "demo:" + password
 		return user, nil

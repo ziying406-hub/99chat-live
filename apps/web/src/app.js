@@ -35,6 +35,7 @@ import { messageMatchesQuery } from "./messageSearch.js";
 import { collectMentionIdsFromText, findMentionTargetById, findMentionTargetByName, mentionCandidatesFromGroup } from "./mentionTargets.js?v=20260708-mention-menu-click";
 import { buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
+import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage } from "./friendRequestErrors.js";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
@@ -4034,7 +4035,7 @@ async function onLogin(event) {
       state.useMock = false;
       toast("API 未启动，无法进入真实账号");
     } else {
-      toast(state.authMode === "register" ? "注册失败，请检查手机号是否已注册" : "手机号或密码不正确");
+      toast(state.authMode === "register" ? registerErrorMessage(error) : "手机号或密码不正确");
     }
   }
   render();
