@@ -1,6 +1,6 @@
 {
-  "name": "ChatLite",
-  "short_name": "ChatLite",
+  "name": "99Chat",
+  "short_name": "99Chat",
   "description": "A functional chat PWA clone with contacts, groups, messages, media, and collections.",
   "id": "/",
   "scope": "/",

@@ -8,15 +8,16 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
-    "typescript": "latest",
+    "i18next": "latest",
+    "qrcode": "^1.5.4",
+    "quill": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "quill": "latest",
-    "i18next": "latest"
+    "typescript": "latest",
+    "vite": "latest"
   },
   "devDependencies": {
-    "tailwindcss": "latest",
-    "daisyui": "latest"
+    "daisyui": "latest",
+    "tailwindcss": "latest"
   }
 }

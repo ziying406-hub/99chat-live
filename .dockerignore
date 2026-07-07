@@ -1,0 +1,14 @@
+.DS_Store
+.git
+.gocache
+.gomodcache
+.graphify-venv
+.gstack
+.pnpm-store
+apps/api/file-*/
+apps/api/uploads/
+apps/web/node_modules/
+dist/
+build/
+graphify-out/
+*.log

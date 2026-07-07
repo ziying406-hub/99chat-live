@@ -2,8 +2,13 @@
 .gocache/
 .gomodcache/
 node_modules/
+.pnpm-store/
 dist/
 build/
 *.log
 apps/api/uploads/
 apps/api/file-*/
+.graphify-venv/
+.gstack/
+graphify-out/
+docs/superpowers/

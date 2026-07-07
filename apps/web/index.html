@@ -7,10 +7,26 @@
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/public/icon.svg" />
     <link rel="stylesheet" href="/src/styles.css" />
-    <title>ChatLite</title>
+    <title>99Chat</title>
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="/src/app.js"></script>
+    <script>
+      window.addEventListener("error", event => {
+        const app = document.querySelector("#app");
+        if (!app || app.innerHTML) return;
+        app.innerHTML = "<main style='font-family:system-ui;padding:24px;color:#111827'><h1>页面启动失败</h1><pre style='white-space:pre-wrap;background:#f3f4f6;padding:16px;border-radius:8px'>" +
+          String(event.message || "未知错误") + "\n" + String(event.filename || "") + ":" + String(event.lineno || "") +
+          "</pre></main>";
+      });
+      window.addEventListener("unhandledrejection", event => {
+        const app = document.querySelector("#app");
+        if (!app || app.innerHTML) return;
+        app.innerHTML = "<main style='font-family:system-ui;padding:24px;color:#111827'><h1>页面启动失败</h1><pre style='white-space:pre-wrap;background:#f3f4f6;padding:16px;border-radius:8px'>" +
+          String(event.reason?.stack || event.reason?.message || event.reason || "未知错误") +
+          "</pre></main>";
+      });
+    </script>
+    <script type="module" src="/src/app.js?v=20260708-mention-read-visible"></script>
   </body>
 </html>
