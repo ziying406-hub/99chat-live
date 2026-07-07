@@ -857,6 +857,29 @@ func TestRuntimeStoreCanSeedDemoDataWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestProductionAPIsRequireAuthentication(t *testing.T) {
+	store := emptyDemoStore()
+	store.pg = &PostgresStore{}
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	for _, path := range []string{"/api/me", "/api/conversations", "/api/contacts", "/api/friend-requests", "/api/groups", "/api/collections"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s status = %d, want 401", path, rec.Code)
+		}
+	}
+
+	healthReq := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	healthRec := httptest.NewRecorder()
+	mux.ServeHTTP(healthRec, healthReq)
+	if healthRec.Code != http.StatusOK {
+		t.Fatalf("health status = %d, want 200", healthRec.Code)
+	}
+}
+
 func TestRegisterRejectsDuplicatePhoneInMemoryStore(t *testing.T) {
 	store := emptyDemoStore()
 	mux := http.NewServeMux()

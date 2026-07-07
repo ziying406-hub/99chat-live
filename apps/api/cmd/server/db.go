@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -254,6 +256,11 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_collections_user_kind ON collections(user_id, kind, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_user_created_at ON feedback(user_id, created_at)`,
+		`CREATE TABLE IF NOT EXISTS app_metadata (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
 	}
 	for _, statement := range statements {
 		if _, err := pg.pool.Exec(ctx, statement); err != nil {
@@ -272,8 +279,13 @@ func (s *Store) syncFromPostgres(ctx context.Context) error {
 		return err
 	}
 	if !seeded {
-		if err := s.pg.seed(ctx, s); err != nil {
-			return err
+		if strings.EqualFold(strings.TrimSpace(os.Getenv("SEED_DEMO_DATA")), "true") {
+			if err := s.pg.seed(ctx, s); err != nil {
+				return err
+			}
+		} else {
+			s.clearRuntimeData()
+			return nil
 		}
 	}
 	loaded, err := s.pg.load(ctx, s.hub)
@@ -285,12 +297,105 @@ func (s *Store) syncFromPostgres(ctx context.Context) error {
 	return nil
 }
 
+func (s *Store) clearRuntimeData() {
+	s.user = User{}
+	s.users = map[string]User{}
+	s.contacts = []Contact{}
+	s.conversations = []Conversation{}
+	s.messages = map[string][]Message{}
+	s.messageReads = map[string]map[string]time.Time{}
+	s.messageClears = map[string]map[string]time.Time{}
+	s.conversationHides = map[string]map[string]bool{}
+	s.groups = map[string]Group{}
+	s.discoverGroups = []Group{}
+	s.requests = []FriendRequest{}
+	s.joinRequests = []GroupJoinRequest{}
+	s.blacklists = []GroupBlacklistEntry{}
+	s.groupBots = map[string][]GroupBot{}
+	s.collections = []Collection{}
+	s.reports = []Report{}
+	s.feedback = []Feedback{}
+	s.auditLogs = []AuditLog{}
+	s.passwordHashes = map[string]string{}
+	s.sessions = map[string]string{}
+	s.sessionCreatedAt = map[string]time.Time{}
+	if s.hub == nil {
+		s.hub = &Hub{clients: map[*WSConn]bool{}}
+	}
+}
+
+func (s *Store) resetPostgresOnce(ctx context.Context, marker string) error {
+	if s.pg == nil || marker == "" {
+		return nil
+	}
+	applied, err := s.pg.resetMarkerApplied(ctx, marker)
+	if err != nil {
+		return err
+	}
+	if applied {
+		log.Printf("postgres reset marker %q already applied", marker)
+		return nil
+	}
+	if err := s.pg.resetAllData(ctx); err != nil {
+		return err
+	}
+	if err := s.pg.markResetApplied(ctx, marker); err != nil {
+		return err
+	}
+	s.clearRuntimeData()
+	log.Printf("postgres data reset completed for marker %q", marker)
+	return nil
+}
+
 func (pg *PostgresStore) hasSeedData(ctx context.Context) (bool, error) {
 	var count int
 	if err := pg.pool.QueryRow(ctx, `SELECT count(*) FROM users`).Scan(&count); err != nil {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (pg *PostgresStore) resetMarkerApplied(ctx context.Context, marker string) (bool, error) {
+	var value string
+	err := pg.pool.QueryRow(ctx, `SELECT value FROM app_metadata WHERE key = 'reset_database_marker'`).Scan(&value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return value == marker, nil
+}
+
+func (pg *PostgresStore) markResetApplied(ctx context.Context, marker string) error {
+	_, err := pg.pool.Exec(ctx, `INSERT INTO app_metadata(key, value, updated_at)
+		VALUES ('reset_database_marker', $1, now())
+		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at`, marker)
+	return err
+}
+
+func (pg *PostgresStore) resetAllData(ctx context.Context) error {
+	_, err := pg.pool.Exec(ctx, `TRUNCATE TABLE
+		feedback,
+		reports,
+		collections,
+		conversation_hides,
+		conversation_clears,
+		message_reads,
+		message_attachments,
+		messages,
+		conversations,
+		group_bots,
+		group_audit_logs,
+		group_blacklist,
+		group_join_requests,
+		group_members,
+		groups,
+		friend_requests,
+		contacts,
+		users
+		RESTART IDENTITY CASCADE`)
+	return err
 }
 
 func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {

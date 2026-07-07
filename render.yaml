@@ -12,3 +12,5 @@ services:
         value: /app/web
       - key: UPLOAD_DIR
         value: /app/uploads
+      - key: RESET_DATABASE_MARKER
+        value: 20260708-clean-launch

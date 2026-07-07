@@ -294,6 +294,11 @@ func main() {
 			log.Fatalf("postgres: %v", err)
 		}
 		store.pg = pg
+		if marker := strings.TrimSpace(os.Getenv("RESET_DATABASE_MARKER")); marker != "" {
+			if err := store.resetPostgresOnce(ctx, marker); err != nil {
+				log.Fatalf("postgres reset: %v", err)
+			}
+		}
 		if err := store.syncFromPostgres(ctx); err != nil {
 			log.Fatalf("postgres sync: %v", err)
 		}
@@ -365,25 +370,25 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/auth/code-login", s.codeLogin)
 	mux.HandleFunc("/api/auth/register", s.register)
 	mux.HandleFunc("/api/auth/reset-password", s.resetPassword)
-	mux.HandleFunc("/api/me/devices", s.loginDevicesRoute)
-	mux.HandleFunc("/api/me/devices/", s.loginDeviceRoute)
-	mux.HandleFunc("/api/me", s.me)
-	mux.HandleFunc("/api/me/password", s.changePassword)
-	mux.HandleFunc("/api/conversations", s.conversationsRoute)
-	mux.HandleFunc("/api/conversations/", s.conversationRoute)
-	mux.HandleFunc("/api/contacts", s.contactsRoute)
-	mux.HandleFunc("/api/contacts/", s.contactRoute)
-	mux.HandleFunc("/api/friend-requests", s.friendRequestsRoute)
-	mux.HandleFunc("/api/friend-requests/", s.friendRequestRoute)
-	mux.HandleFunc("/api/groups/discover", s.discoverGroupsRoute)
-	mux.HandleFunc("/api/groups", s.groupsRoute)
-	mux.HandleFunc("/api/groups/", s.groupRoute)
-	mux.HandleFunc("/api/files/sign", s.signFile)
-	mux.HandleFunc("/api/files/upload/", s.uploadFile)
+	mux.HandleFunc("/api/me/devices", s.requireAuth(s.loginDevicesRoute))
+	mux.HandleFunc("/api/me/devices/", s.requireAuth(s.loginDeviceRoute))
+	mux.HandleFunc("/api/me", s.requireAuth(s.me))
+	mux.HandleFunc("/api/me/password", s.requireAuth(s.changePassword))
+	mux.HandleFunc("/api/conversations", s.requireAuth(s.conversationsRoute))
+	mux.HandleFunc("/api/conversations/", s.requireAuth(s.conversationRoute))
+	mux.HandleFunc("/api/contacts", s.requireAuth(s.contactsRoute))
+	mux.HandleFunc("/api/contacts/", s.requireAuth(s.contactRoute))
+	mux.HandleFunc("/api/friend-requests", s.requireAuth(s.friendRequestsRoute))
+	mux.HandleFunc("/api/friend-requests/", s.requireAuth(s.friendRequestRoute))
+	mux.HandleFunc("/api/groups/discover", s.requireAuth(s.discoverGroupsRoute))
+	mux.HandleFunc("/api/groups", s.requireAuth(s.groupsRoute))
+	mux.HandleFunc("/api/groups/", s.requireAuth(s.groupRoute))
+	mux.HandleFunc("/api/files/sign", s.requireAuth(s.signFile))
+	mux.HandleFunc("/api/files/upload/", s.requireAuth(s.uploadFile))
 	mux.HandleFunc("/uploads/", s.serveUpload)
-	mux.HandleFunc("/api/collections", s.collectionsRoute)
-	mux.HandleFunc("/api/feedback", s.feedbackRoute)
-	mux.HandleFunc("/api/reports", s.reportsRoute)
+	mux.HandleFunc("/api/collections", s.requireAuth(s.collectionsRoute))
+	mux.HandleFunc("/api/feedback", s.requireAuth(s.feedbackRoute))
+	mux.HandleFunc("/api/reports", s.requireAuth(s.reportsRoute))
 	mux.HandleFunc("/ws", s.websocket)
 	if webDir := strings.TrimSpace(os.Getenv("WEB_DIR")); webDir != "" {
 		mux.HandleFunc("/", staticWebRoute(webDir))
@@ -597,6 +602,21 @@ func (s *Store) currentUser(r *http.Request) User {
 		return user
 	}
 	return s.user
+}
+
+func (s *Store) requireAuth(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.pg == nil {
+			next(w, r)
+			return
+		}
+		token := s.currentToken(r)
+		if _, ok := s.userFromToken(r.Context(), token); !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		next(w, r)
+	}
 }
 
 func (s *Store) isSeedUser(userID string) bool {
