@@ -1010,20 +1010,38 @@ func (s *Store) conversationsRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	filter := r.URL.Query().Get("filter")
 	current := s.currentUser(r)
-	s.mu.RLock()
-	items := make([]Conversation, 0, len(s.conversations))
-	for _, conversation := range s.conversations {
-		if s.conversationVisibleToUserLocked(conversation, current.ID) {
-			items = append(items, s.conversationForUserLocked(conversation, current.ID))
-		}
-	}
+	var items []Conversation
 	hidden := map[string]bool{}
-	if s.conversationHides != nil {
-		for conversationID, isHidden := range s.conversationHides[current.ID] {
+	if s.pg != nil {
+		var err error
+		items, err = s.pg.loadVisibleConversations(r.Context(), current.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "conversation lookup failed")
+			return
+		}
+		hides, err := s.pg.loadConversationHides(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "conversation lookup failed")
+			return
+		}
+		for conversationID, isHidden := range hides[current.ID] {
 			hidden[conversationID] = isHidden
 		}
+	} else {
+		s.mu.RLock()
+		items = make([]Conversation, 0, len(s.conversations))
+		for _, conversation := range s.conversations {
+			if s.conversationVisibleToUserLocked(conversation, current.ID) {
+				items = append(items, s.conversationForUserLocked(conversation, current.ID))
+			}
+		}
+		if s.conversationHides != nil {
+			for conversationID, isHidden := range s.conversationHides[current.ID] {
+				hidden[conversationID] = isHidden
+			}
+		}
+		s.mu.RUnlock()
 	}
-	s.mu.RUnlock()
 	items = filterSlice(items, func(item Conversation) bool { return !hidden[item.ID] })
 	sort.Slice(items, func(i, j int) bool { return items[i].LastAt.After(items[j].LastAt) })
 	if filter == "unread" || filter == "group" {
@@ -1489,14 +1507,24 @@ func (s *Store) contactsRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	query := strings.ToLower(r.URL.Query().Get("q"))
 	current := s.currentUser(r)
-	s.mu.RLock()
-	items := make([]Contact, 0, len(s.contacts))
-	for _, contact := range s.contacts {
-		if s.contactVisibleToUserLocked(contact, current.ID) {
-			items = append(items, contact)
+	var items []Contact
+	if s.pg != nil {
+		var err error
+		items, err = s.pg.loadContacts(r.Context(), current.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "contact lookup failed")
+			return
 		}
+	} else {
+		s.mu.RLock()
+		items = make([]Contact, 0, len(s.contacts))
+		for _, contact := range s.contacts {
+			if s.contactVisibleToUserLocked(contact, current.ID) {
+				items = append(items, contact)
+			}
+		}
+		s.mu.RUnlock()
 	}
-	s.mu.RUnlock()
 	if query != "" {
 		filtered := items[:0]
 		for _, c := range items {
@@ -1518,7 +1546,8 @@ func (s *Store) contactRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		contact, ok, err := s.contactByID(r.Context(), id)
+		current := s.currentUser(r)
+		contact, ok, err := s.contactByIDForUser(r.Context(), current.ID, id)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "contact lookup failed")
 			return
@@ -1537,7 +1566,8 @@ func (s *Store) contactRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid json")
 			return
 		}
-		contact, err := s.updateContact(r.Context(), id, strings.TrimSpace(patch.Remark), patch.Tags)
+		current := s.currentUser(r)
+		contact, err := s.updateContact(r.Context(), current.ID, id, strings.TrimSpace(patch.Remark), patch.Tags)
 		if err != nil {
 			if errors.Is(err, errNotFound) {
 				writeError(w, http.StatusNotFound, "contact not found")
@@ -2798,7 +2828,7 @@ func (s *Store) canonicalConversationIDForUser(ctx context.Context, conversation
 	if !ok {
 		return conversationID
 	}
-	if _, found, err := s.contactByID(ctx, targetID); err != nil || !found {
+	if _, found, err := s.contactByIDForUser(ctx, userID, targetID); err != nil || !found {
 		return conversationID
 	}
 	if canonical := canonicalPrivateConversationID(userID, targetID); canonical != "" {
@@ -2812,7 +2842,7 @@ func (s *Store) privateConversationContact(ctx context.Context, conversationID, 
 	if !ok {
 		return Contact{}, false, nil
 	}
-	contact, found, err := s.contactByID(ctx, targetID)
+	contact, found, err := s.contactByIDForUser(ctx, senderID, targetID)
 	if err != nil || !found {
 		return Contact{}, true, err
 	}

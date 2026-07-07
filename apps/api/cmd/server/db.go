@@ -398,6 +398,56 @@ func (pg *PostgresStore) resetAllData(ctx context.Context) error {
 	return err
 }
 
+func (pg *PostgresStore) backfillAcceptedFriendships(ctx context.Context) error {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	rows, err := tx.Query(ctx, `SELECT from_user_id, to_user_id, created_at
+		FROM friend_requests WHERE status = 'accepted'`)
+	if err != nil {
+		return err
+	}
+	type acceptedFriendship struct {
+		fromUserID string
+		toUserID   string
+		createdAt  time.Time
+	}
+	var friendships []acceptedFriendship
+	for rows.Next() {
+		var item acceptedFriendship
+		if err := rows.Scan(&item.fromUserID, &item.toUserID, &item.createdAt); err != nil {
+			rows.Close()
+			return err
+		}
+		friendships = append(friendships, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, item := range friendships {
+		if _, err := tx.Exec(ctx, `INSERT INTO contacts(owner_user_id, contact_user_id)
+			VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING`, item.fromUserID, item.toUserID); err != nil {
+			return err
+		}
+		conversationID := canonicalPrivateConversationID(item.fromUserID, item.toUserID)
+		if conversationID == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, unread, last_text, last_at)
+			VALUES ($1, 'session', 0, '你们已是好友，可以开始聊天了!', $2)
+			ON CONFLICT (id) DO NOTHING`, conversationID, item.createdAt); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
+}
+
 func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
@@ -471,6 +521,10 @@ func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 }
 
 func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
+	if err := pg.backfillAcceptedFriendships(ctx); err != nil {
+		return nil, err
+	}
+
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
 	err := pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store
@@ -595,6 +649,53 @@ func (pg *PostgresStore) loadConversations(ctx context.Context) ([]Conversation,
 		conversations = append(conversations, conv)
 	}
 	return conversations, rows.Err()
+}
+
+func (pg *PostgresStore) loadVisibleConversations(ctx context.Context, userID string) ([]Conversation, error) {
+	conversations, err := pg.loadConversations(ctx)
+	if err != nil {
+		return nil, err
+	}
+	contacts, err := pg.loadContacts(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	contactsByID := map[string]Contact{}
+	for _, contact := range contacts {
+		contactsByID[contact.ID] = contact
+	}
+	allGroups, err := pg.loadGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	joinedGroups, _ := splitJoinedAndDiscoverGroups(allGroups, userID)
+	items := make([]Conversation, 0, len(conversations))
+	for _, conversation := range conversations {
+		switch conversation.Kind {
+		case "session":
+			targetID, ok := privateConversationTargetID(conversation.ID, userID)
+			if !ok {
+				continue
+			}
+			contact, ok := contactsByID[targetID]
+			if !ok {
+				continue
+			}
+			conversation.Title = contact.Nickname
+			conversation.Avatar = contact.Avatar
+			items = append(items, conversation)
+		case "group":
+			groupID := groupIDFromConversationID(conversation.ID)
+			group, ok := joinedGroups[groupID]
+			if !ok {
+				continue
+			}
+			conversation.Title = group.Title
+			conversation.Avatar = group.Avatar
+			items = append(items, conversation)
+		}
+	}
+	return items, nil
 }
 
 func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string) ([]Message, error) {
@@ -1142,6 +1243,10 @@ func (s *Store) findContactByChatID(ctx context.Context, chatID string) (Contact
 }
 
 func (s *Store) contactByID(ctx context.Context, id string) (Contact, bool, error) {
+	return s.contactByIDForUser(ctx, s.user.ID, id)
+}
+
+func (s *Store) contactByIDForUser(ctx context.Context, userID, id string) (Contact, bool, error) {
 	s.mu.RLock()
 	for _, contact := range s.contacts {
 		if contact.ID == id {
@@ -1157,7 +1262,7 @@ func (s *Store) contactByID(ctx context.Context, id string) (Contact, bool, erro
 	err := s.pg.pool.QueryRow(ctx, `SELECT c.contact_user_id, u.nickname, u.signature, u.chat_id, u.avatar_url, COALESCE(c.remark, ''), COALESCE(c.tags, '{}')
 		FROM contacts c JOIN users u ON u.id = c.contact_user_id
 		WHERE c.owner_user_id = $1 AND c.contact_user_id = $2`,
-		s.user.ID, id).Scan(&contact.ID, &contact.Nickname, &contact.Signature, &contact.ChatID, &contact.Avatar, &contact.Remark, &contact.Tags)
+		userID, id).Scan(&contact.ID, &contact.Nickname, &contact.Signature, &contact.ChatID, &contact.Avatar, &contact.Remark, &contact.Tags)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Contact{}, false, nil
 	}
@@ -1181,7 +1286,7 @@ func (s *Store) persistUser(ctx context.Context, user User) error {
 	return err
 }
 
-func (s *Store) updateContact(ctx context.Context, contactID, remark string, tags []string) (Contact, error) {
+func (s *Store) updateContact(ctx context.Context, userID, contactID, remark string, tags []string) (Contact, error) {
 	s.mu.Lock()
 	for i := range s.contacts {
 		if s.contacts[i].ID == contactID {
@@ -1190,7 +1295,7 @@ func (s *Store) updateContact(ctx context.Context, contactID, remark string, tag
 			s.mu.Unlock()
 			if s.pg != nil {
 				if _, err := s.pg.pool.Exec(ctx, `UPDATE contacts SET remark = $3, tags = $4 WHERE owner_user_id = $1 AND contact_user_id = $2`,
-					s.user.ID, contactID, remark, tags); err != nil {
+					userID, contactID, remark, tags); err != nil {
 					return Contact{}, err
 				}
 			}
@@ -1200,10 +1305,10 @@ func (s *Store) updateContact(ctx context.Context, contactID, remark string, tag
 	s.mu.Unlock()
 	if s.pg != nil {
 		if _, err := s.pg.pool.Exec(ctx, `UPDATE contacts SET remark = $3, tags = $4 WHERE owner_user_id = $1 AND contact_user_id = $2`,
-			s.user.ID, contactID, remark, tags); err != nil {
+			userID, contactID, remark, tags); err != nil {
 			return Contact{}, err
 		}
-		contact, ok, err := s.contactByID(ctx, contactID)
+		contact, ok, err := s.contactByIDForUser(ctx, userID, contactID)
 		if err != nil {
 			return Contact{}, err
 		}
