@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-private-notify";
+const APP_VERSION = "20260708-direct-notify";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -470,16 +470,6 @@ async function showBrowserMessageNotification(conversation, message, { incoming,
     data: { conversationId: conversation?.id || message?.conversationId || "" }
   };
   try {
-    const registration = await Promise.race([
-      navigator.serviceWorker?.ready,
-      new Promise(resolve => setTimeout(() => resolve(null), 800))
-    ]);
-    if (registration?.showNotification) {
-      await registration.showNotification(payload.title, options);
-      return;
-    }
-  } catch (_) {}
-  try {
     const notification = new Notification(payload.title, options);
     notification.onclick = () => {
       window.focus();
@@ -491,6 +481,17 @@ async function showBrowserMessageNotification(conversation, message, { incoming,
       }
       notification.close();
     };
+    return;
+  } catch (_) {}
+  try {
+    const registration = await Promise.race([
+      navigator.serviceWorker?.ready,
+      new Promise(resolve => setTimeout(() => resolve(null), 800))
+    ]);
+    if (registration?.showNotification) {
+      await registration.showNotification(payload.title, options);
+      return;
+    }
   } catch (_) {}
 }
 
