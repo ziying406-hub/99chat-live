@@ -847,16 +847,21 @@ func (s *Store) userByPhone(ctx context.Context, country, phone string) (User, b
 
 func (s *Store) createUser(ctx context.Context, country, phone, password, nickname string) (User, error) {
 	user := User{
-		ID:          newID("user"),
-		Country:     country,
-		Phone:       phone,
-		ChatID:      uniqueChatID(),
-		Nickname:    nickname,
-		Signature:   "",
-		Avatar:      avatar(firstRune(nickname)),
-		Settings:    defaultUserSettings(),
-		Language:    "简体中文",
-		DisplayMode: "桌面版",
+		ID:                newID("user"),
+		Country:           country,
+		Phone:             phone,
+		ChatID:            uniqueChatID(),
+		Nickname:          nickname,
+		Signature:         "",
+		Avatar:            avatar(firstRune(nickname)),
+		Settings:          defaultUserSettings(),
+		Language:          "简体中文",
+		DisplayMode:       "桌面版",
+		BlockedContactIDs: []string{},
+		StickerStore: StickerStore{
+			Items:     []string{},
+			Favorites: []string{},
+		},
 	}
 	if s.pg == nil {
 		s.mu.Lock()

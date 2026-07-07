@@ -771,6 +771,7 @@ func (s *Store) register(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "user already exists")
 			return
 		}
+		log.Printf("register failed for %s %s: %v", req.Country, req.Phone, err)
 		writeError(w, http.StatusInternalServerError, "registration failed")
 		return
 	}

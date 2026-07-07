@@ -532,6 +532,15 @@ func TestRegisterCreatesRandomChatID(t *testing.T) {
 	if strings.Contains(response.User.ChatID, response.User.Phone) {
 		t.Fatalf("chatId should not be derived from phone, got %q", response.User.ChatID)
 	}
+	store.mu.RLock()
+	created := store.users[response.User.ID]
+	store.mu.RUnlock()
+	if created.BlockedContactIDs == nil {
+		t.Fatal("blocked contacts should default to an empty list")
+	}
+	if created.StickerStore.Items == nil || created.StickerStore.Favorites == nil {
+		t.Fatalf("sticker store should default to empty lists, got %+v", created.StickerStore)
+	}
 }
 
 func TestRegisteredUserStartsWithIsolatedData(t *testing.T) {
