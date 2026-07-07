@@ -393,6 +393,7 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 func staticWebRoute(webDir string) http.HandlerFunc {
 	fileServer := http.FileServer(http.Dir(webDir))
 	return func(w http.ResponseWriter, r *http.Request) {
+		setStaticWebCacheHeaders(w)
 		if r.URL.Path == "/" {
 			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
 			return
@@ -408,6 +409,11 @@ func staticWebRoute(webDir string) http.HandlerFunc {
 		}
 		fileServer.ServeHTTP(w, r)
 	}
+}
+
+func setStaticWebCacheHeaders(w http.ResponseWriter) {
+	w.Header().Set("Cache-Control", "no-store, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
 }
 
 func (s *Store) login(w http.ResponseWriter, r *http.Request) {

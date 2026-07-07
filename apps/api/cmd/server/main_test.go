@@ -783,6 +783,36 @@ func TestStaticWebRouteServesIndexFallback(t *testing.T) {
 	}
 }
 
+func TestStaticWebRouteDisablesFrontendCaching(t *testing.T) {
+	webDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	srcDir := filepath.Join(webDir, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatalf("make src dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "app.js"), []byte("console.log('ok')"), 0o644); err != nil {
+		t.Fatalf("write app js: %v", err)
+	}
+
+	handler := staticWebRoute(webDir)
+	for _, path := range []string{"/", "/src/app.js"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store, max-age=0" {
+			t.Fatalf("%s Cache-Control = %q, want no-store, max-age=0", path, got)
+		}
+		if got := rec.Header().Get("Pragma"); got != "no-cache" {
+			t.Fatalf("%s Pragma = %q, want no-cache", path, got)
+		}
+	}
+}
+
 func TestRuntimeStoreKeepsDemoAccountEmptyByDefault(t *testing.T) {
 	t.Setenv("SEED_DEMO_DATA", "")
 
