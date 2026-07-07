@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-direct-notify";
+const APP_VERSION = "20260708-mention-notify-fix";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -353,7 +353,7 @@ function connectRealtime() {
         const incoming = message.senderId !== state.user?.id;
         const conv = ensureRealtimeConversation(id, message) || getConversation(id);
         state.data.messages[id] = [...(state.data.messages[id] || []), envelope.payload];
-        const mentionedMe = incoming && Array.isArray(message.mentions) && message.mentions.includes(state.user?.id);
+        const mentionedMe = incoming && messageMentionsCurrentUser(message);
         const shouldNotify = shouldNotifyConversation(conv) || mentionedMe;
         upsertConversationPreview(id, message, {
           bumpUnread: shouldNotify && incoming && id !== state.selectedConversationId,
@@ -6406,6 +6406,18 @@ function getGroupMentionStats(group) {
 
 function conversationMentionsCurrentUser(conversation) {
   return shouldShowMentionReminder(conversation);
+}
+
+function messageMentionsCurrentUser(message = {}) {
+  const mentionIds = Array.isArray(message.mentions) ? message.mentions.map(value => String(value)) : [];
+  const currentUserKeys = [state.user?.id, state.user?.chatId, state.user?.phone]
+    .filter(Boolean)
+    .map(value => String(value));
+  if (currentUserKeys.some(key => mentionIds.includes(key))) return true;
+
+  const body = String(message.body || "");
+  const nickname = String(state.user?.nickname || "").trim();
+  return Boolean(nickname && body.includes(`@${nickname}`));
 }
 
 function getMentionCandidates(query = "") {

@@ -12,7 +12,7 @@ export function shouldShowBrowserNotification({
   if (!settings?.notificationsEnabled) return false;
   if (!incoming) return false;
   if (conversation?.muted && !mentionedMe) return false;
-  if (activeConversationOpen) return false;
+  if (activeConversationOpen && !mentionedMe) return false;
   return true;
 }
 

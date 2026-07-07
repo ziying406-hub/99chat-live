@@ -33,7 +33,7 @@ test("browser notification still shows mentions from muted conversations", () =>
   }), true);
 });
 
-test("browser notification requires support, permission, incoming message, and inactive conversation", () => {
+test("browser notification requires support, permission, incoming message, and inactive conversation for ordinary messages", () => {
   assert.equal(shouldShowBrowserNotification({ ...base, supported: false }), false);
   assert.equal(shouldShowBrowserNotification({ ...base, permission: "default" }), false);
   assert.equal(shouldShowBrowserNotification({ ...base, incoming: false }), false);
@@ -42,6 +42,10 @@ test("browser notification requires support, permission, incoming message, and i
 
 test("browser notification can show for selected conversation when app is not actively viewing it", () => {
   assert.equal(shouldShowBrowserNotification({ ...base, activeConversationOpen: false }), true);
+});
+
+test("browser notification still shows mentions for the active open conversation", () => {
+  assert.equal(shouldShowBrowserNotification({ ...base, activeConversationOpen: true, mentionedMe: true }), true);
 });
 
 test("browser notification payload uses conversation and sender text", () => {
