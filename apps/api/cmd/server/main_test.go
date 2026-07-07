@@ -931,21 +931,39 @@ func TestRegisteredFriendAcceptDoesNotExposeDemoData(t *testing.T) {
 		t.Fatalf("expected accept 200, got %d: %s", acceptRec.Code, acceptRec.Body.String())
 	}
 
-	for _, path := range []string{"/api/conversations", "/api/groups"} {
-		req := httptest.NewRequest(http.MethodGet, path, nil)
-		req.Header.Set("Authorization", "Bearer "+second.Token)
-		rec := httptest.NewRecorder()
-		mux.ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("expected %s 200, got %d: %s", path, rec.Code, rec.Body.String())
-		}
-		var items []any
-		if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
-			t.Fatalf("decode %s response: %v", path, err)
-		}
-		if len(items) != 0 {
-			t.Fatalf("expected %s to stay empty after accepting friend request, got %+v", path, items)
-		}
+	groupsReq := httptest.NewRequest(http.MethodGet, "/api/groups", nil)
+	groupsReq.Header.Set("Authorization", "Bearer "+second.Token)
+	groupsRec := httptest.NewRecorder()
+	mux.ServeHTTP(groupsRec, groupsReq)
+	if groupsRec.Code != http.StatusOK {
+		t.Fatalf("expected groups 200, got %d: %s", groupsRec.Code, groupsRec.Body.String())
+	}
+	var groups []any
+	if err := json.NewDecoder(groupsRec.Body).Decode(&groups); err != nil {
+		t.Fatalf("decode groups response: %v", err)
+	}
+	if len(groups) != 0 {
+		t.Fatalf("expected groups to stay empty after accepting friend request, got %+v", groups)
+	}
+
+	conversationsReq := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	conversationsReq.Header.Set("Authorization", "Bearer "+second.Token)
+	conversationsRec := httptest.NewRecorder()
+	mux.ServeHTTP(conversationsRec, conversationsReq)
+	if conversationsRec.Code != http.StatusOK {
+		t.Fatalf("expected conversations 200, got %d: %s", conversationsRec.Code, conversationsRec.Body.String())
+	}
+	var conversations []Conversation
+	if err := json.NewDecoder(conversationsRec.Body).Decode(&conversations); err != nil {
+		t.Fatalf("decode conversations response: %v", err)
+	}
+	conversationID := canonicalPrivateConversationID(first.User.ID, second.User.ID)
+	conversation := conversationByID(conversations, conversationID)
+	if conversation.ID == "" || conversation.Title != "测试账号1" {
+		t.Fatalf("accepted friend conversation = %+v, all=%+v", conversation, conversations)
+	}
+	if conversation.LastText != "你们已是好友，可以开始聊天了!" {
+		t.Fatalf("conversation lastText = %q", conversation.LastText)
 	}
 
 	contactsReq := httptest.NewRequest(http.MethodGet, "/api/contacts", nil)

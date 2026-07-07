@@ -2877,6 +2877,26 @@ func (s *Store) ensurePrivateConversationLocked(conversationID string, contact C
 	})
 }
 
+func (s *Store) ensureAcceptedFriendConversationLocked(currentUserID string, contact Contact) {
+	conversationID := canonicalPrivateConversationID(currentUserID, contact.ID)
+	if conversationID == "" {
+		return
+	}
+	for i := range s.conversations {
+		if s.conversations[i].ID == conversationID {
+			return
+		}
+	}
+	s.conversations = append([]Conversation{{
+		ID:       conversationID,
+		Kind:     "session",
+		Title:    contact.Nickname,
+		Avatar:   contact.Avatar,
+		LastText: "你们已是好友，可以开始聊天了!",
+		LastAt:   time.Now(),
+	}}, s.conversations...)
+}
+
 func (s *Store) userBlocksContact(ctx context.Context, userID, contactID string) (bool, error) {
 	user, ok, err := s.userByID(ctx, userID)
 	if err != nil || !ok {

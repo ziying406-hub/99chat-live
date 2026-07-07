@@ -1718,6 +1718,9 @@ func (s *Store) updateFriendRequest(ctx context.Context, currentUserID, requestI
 			if status == "accepted" && !contactExists(s.contacts, request.User.ID) {
 				s.contacts = append(s.contacts, request.User)
 			}
+			if status == "accepted" {
+				s.ensureAcceptedFriendConversationLocked(currentUserID, request.User)
+			}
 		}
 		if !found {
 			return FriendRequest{}, errNotFound
@@ -1747,6 +1750,15 @@ func (s *Store) updateFriendRequest(ctx context.Context, currentUserID, requestI
 	if status == "accepted" {
 		if _, err := tx.Exec(ctx, `INSERT INTO contacts(owner_user_id, contact_user_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING`, currentUserID, fromUserID); err != nil {
 			return FriendRequest{}, err
+		}
+		conversationID := canonicalPrivateConversationID(currentUserID, fromUserID)
+		if conversationID != "" {
+			if _, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, title, avatar_url, unread, last_text, last_at)
+				VALUES ($1, 'session', $2, $3, 0, '你们已是好友，可以开始聊天了!', now())
+				ON CONFLICT (id) DO NOTHING`,
+				conversationID, request.User.Nickname, request.User.Avatar); err != nil {
+				return FriendRequest{}, err
+			}
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
