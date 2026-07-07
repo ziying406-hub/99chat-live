@@ -285,7 +285,7 @@ type WSConn struct {
 }
 
 func main() {
-	store := seedStore()
+	store := runtimeStore()
 	store.uploadDir = defaultString(os.Getenv("UPLOAD_DIR"), "uploads")
 	if databaseURL := os.Getenv("DATABASE_URL"); databaseURL != "" {
 		ctx := context.Background()
@@ -308,6 +308,52 @@ func main() {
 	if err := http.ListenAndServe(addr, withCORS(mux)); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func runtimeStore() *Store {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("SEED_DEMO_DATA")), "true") {
+		return seedStore()
+	}
+	return emptyDemoStore()
+}
+
+func emptyDemoStore() *Store {
+	return &Store{
+		user:              demoUser(),
+		users:             map[string]User{},
+		passwordHashes:    map[string]string{"u1": "demo:demo123456"},
+		contacts:          []Contact{},
+		conversations:     []Conversation{},
+		messages:          map[string][]Message{},
+		messageReads:      map[string]map[string]time.Time{},
+		messageClears:     map[string]map[string]time.Time{},
+		conversationHides: map[string]map[string]bool{},
+		groups:            map[string]Group{},
+		discoverGroups:    []Group{},
+		joinRequests:      []GroupJoinRequest{},
+		blacklists:        []GroupBlacklistEntry{},
+		groupBots:         map[string][]GroupBot{},
+		requests:          []FriendRequest{},
+		collections:       []Collection{},
+		reports:           []Report{},
+		feedback:          []Feedback{},
+		auditLogs:         []AuditLog{},
+		hub:               &Hub{clients: map[*WSConn]bool{}},
+		sessions:          map[string]string{},
+		sessionCreatedAt:  map[string]time.Time{},
+	}
+}
+
+func demoUser() User {
+	return normalizeUserPreferences(User{
+		ID:        "u1",
+		Country:   "+60",
+		Phone:     "174319676",
+		ChatID:    "o8tew3",
+		Nickname:  "chenshao",
+		Signature: "保持专注，保持联系。",
+		Avatar:    avatar("陈"),
+	})
 }
 
 func registerRoutes(mux *http.ServeMux, s *Store) {
@@ -3673,7 +3719,7 @@ func seedStore() *Store {
 		},
 	}
 	return &Store{
-		user:           normalizeUserPreferences(User{ID: "u1", Country: "+60", Phone: "174319676", ChatID: "o8tew3", Nickname: "chenshao", Signature: "保持专注，保持联系。", Avatar: avatar("陈"), BlockedContactIDs: []string{"388770"}}),
+		user:           mergeSeedUserPreferences(demoUser()),
 		users:          map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公")}},
 		passwordHashes: map[string]string{"u1": "demo:demo123456"},
 		contacts:       contacts,
@@ -3695,6 +3741,11 @@ func seedStore() *Store {
 		hub:      &Hub{clients: map[*WSConn]bool{}},
 		sessions: map[string]string{},
 	}
+}
+
+func mergeSeedUserPreferences(user User) User {
+	user.BlockedContactIDs = []string{"388770"}
+	return normalizeUserPreferences(user)
 }
 
 func (h *Hub) Add(c *WSConn) {

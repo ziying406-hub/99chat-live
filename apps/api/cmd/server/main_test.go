@@ -783,6 +783,41 @@ func TestStaticWebRouteServesIndexFallback(t *testing.T) {
 	}
 }
 
+func TestRuntimeStoreKeepsDemoAccountEmptyByDefault(t *testing.T) {
+	t.Setenv("SEED_DEMO_DATA", "")
+
+	store := runtimeStore()
+
+	if store.user.Phone != "174319676" {
+		t.Fatalf("demo phone = %q", store.user.Phone)
+	}
+	if len(store.contacts) != 0 {
+		t.Fatalf("expected no contacts, got %d", len(store.contacts))
+	}
+	if len(store.conversations) != 0 {
+		t.Fatalf("expected no conversations, got %d", len(store.conversations))
+	}
+	if len(store.groups) != 0 {
+		t.Fatalf("expected no groups, got %d", len(store.groups))
+	}
+	if len(store.messages) != 0 {
+		t.Fatalf("expected no messages, got %d", len(store.messages))
+	}
+}
+
+func TestRuntimeStoreCanSeedDemoDataWhenEnabled(t *testing.T) {
+	t.Setenv("SEED_DEMO_DATA", "true")
+
+	store := runtimeStore()
+
+	if len(store.conversations) == 0 {
+		t.Fatal("expected seeded conversations when SEED_DEMO_DATA=true")
+	}
+	if len(store.contacts) == 0 {
+		t.Fatal("expected seeded contacts when SEED_DEMO_DATA=true")
+	}
+}
+
 func TestRegisteredFriendAcceptDoesNotExposeDemoData(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()
