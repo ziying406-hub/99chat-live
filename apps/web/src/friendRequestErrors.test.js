@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { friendRequestErrorMessage } from "./friendRequestErrors.js";
+import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js";
 
 test("friend request errors translate backend validation messages", () => {
 	assert.equal(friendRequestErrorMessage(new Error("cannot add yourself")), "不能添加自己");
@@ -23,4 +23,9 @@ test("friend request errors parse json api error bodies", () => {
 
 test("friend request errors use fallback for unknown failures", () => {
   assert.equal(friendRequestErrorMessage(new Error("network failed")), "好友申请发送失败，请稍后再试");
+});
+
+test("friend request review errors explain stale requests", () => {
+  assert.equal(friendRequestReviewErrorMessage(new Error('{"error":"request not found"}')), "这条申请已失效，请刷新后重试");
+  assert.equal(friendRequestReviewErrorMessage(new Error("network failed")), "好友申请处理失败，请稍后再试");
 });

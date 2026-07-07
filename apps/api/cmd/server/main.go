@@ -1540,13 +1540,25 @@ func (s *Store) friendRequestsRoute(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		current := s.currentUser(r)
-		s.mu.RLock()
-		items := make([]FriendRequest, 0, len(s.requests))
-		for _, request := range s.requests {
-			if s.friendRequestVisibleToUser(request, current.ID) {
-				items = append(items, request)
+		var items []FriendRequest
+		if s.pg != nil {
+			var err error
+			items, err = s.pg.loadFriendRequests(r.Context(), current.ID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "friend request lookup failed")
+				return
 			}
+		} else {
+			s.mu.RLock()
+			items = make([]FriendRequest, 0, len(s.requests))
+			for _, request := range s.requests {
+				if s.friendRequestVisibleToUser(request, current.ID) {
+					items = append(items, request)
+				}
+			}
+			s.mu.RUnlock()
 		}
+		s.mu.RLock()
 		items = append(items, s.groupInviteInboxItemsLocked(current.ID)...)
 		s.mu.RUnlock()
 		for i := range items {

@@ -36,7 +36,7 @@ import { collectMentionIdsFromText, findMentionTargetById, findMentionTargetByNa
 import { buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
-import { friendRequestErrorMessage } from "./friendRequestErrors.js";
+import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-register-cache-fix";
+const APP_VERSION = "20260708-friend-request-live";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -4956,52 +4956,59 @@ async function updateFriendRequest(requestId, status, options = {}) {
     render();
     return;
   }
-  if (localOnly) {
-    request.status = status;
-    if (status === "accepted" && request.type === "friend" && !state.data.contacts.some(contact => contact.id === request.user.id)) {
-      addContactToRoster(request.user);
-    }
-    if (status === "accepted" && request.type === "group-invite" && direction === "outgoing") {
-      const group = state.data.groups.find(item => item.id === request.groupId);
-      if (group && !group.members.some(member => member.userId === request.user.id)) {
-        group.members.push({ userId: request.user.id, nickname: request.user.nickname, role: "member", muted: false });
+  try {
+    if (localOnly) {
+      request.status = status;
+      if (status === "accepted" && request.type === "friend" && !state.data.contacts.some(contact => contact.id === request.user.id)) {
+        addContactToRoster(request.user);
       }
-    }
-    if (status === "accepted" && request.type === "group-invite" && direction === "incoming") {
-      ensureGroupConversation({
-        ...(request.groupData || { id: request.groupId, title: request.groupTitle, avatar: avatar("群"), members: [] }),
-        members: [
-          ...((request.groupData?.members || []).filter(member => member.userId !== state.user.id)),
-          { userId: state.user.id, nickname: state.user.nickname, role: "member", muted: false }
-        ]
-      });
-      acceptedConversationId = `group-${request.groupId}`;
-    }
-  } else {
-    if (request.type === "group-invite") {
-      const updated = await api(`/api/groups/${request.groupId}/join-requests/${requestId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status })
-      });
-      state.data.requests = state.data.requests.map(item => item.id === requestId ? { ...item, ...updated, type: "group-invite" } : item);
-      await Promise.all([
-        loadFriendRequests(),
-        refreshGroupsAndConversations()
-      ]);
-      if (status === "accepted") {
+      if (status === "accepted" && request.type === "group-invite" && direction === "outgoing") {
+        const group = state.data.groups.find(item => item.id === request.groupId);
+        if (group && !group.members.some(member => member.userId === request.user.id)) {
+          group.members.push({ userId: request.user.id, nickname: request.user.nickname, role: "member", muted: false });
+        }
+      }
+      if (status === "accepted" && request.type === "group-invite" && direction === "incoming") {
+        ensureGroupConversation({
+          ...(request.groupData || { id: request.groupId, title: request.groupTitle, avatar: avatar("群"), members: [] }),
+          members: [
+            ...((request.groupData?.members || []).filter(member => member.userId !== state.user.id)),
+            { userId: state.user.id, nickname: state.user.nickname, role: "member", muted: false }
+          ]
+        });
         acceptedConversationId = `group-${request.groupId}`;
       }
     } else {
-      const updated = await api(`/api/friend-requests/${requestId}`, {
-        method: "PATCH",
-        body: JSON.stringify({ status })
-      });
-      state.data.requests = state.data.requests.map(item => item.id === requestId ? { ...item, ...updated } : item);
-      await loadFriendRequests();
-      if (status === "accepted") {
-        state.data.contacts = await api("/api/contacts");
+      if (request.type === "group-invite") {
+        const updated = await api(`/api/groups/${request.groupId}/join-requests/${requestId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status })
+        });
+        state.data.requests = state.data.requests.map(item => item.id === requestId ? { ...item, ...updated, type: "group-invite" } : item);
+        await Promise.all([
+          loadFriendRequests(),
+          refreshGroupsAndConversations()
+        ]);
+        if (status === "accepted") {
+          acceptedConversationId = `group-${request.groupId}`;
+        }
+      } else {
+        const updated = await api(`/api/friend-requests/${requestId}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status })
+        });
+        state.data.requests = state.data.requests.map(item => item.id === requestId ? { ...item, ...updated } : item);
+        await loadFriendRequests();
+        if (status === "accepted") {
+          state.data.contacts = await api("/api/contacts");
+        }
       }
     }
+  } catch (error) {
+    toast(friendRequestReviewErrorMessage(error));
+    await loadFriendRequests().catch(() => {});
+    render();
+    return;
   }
   toast(status === "accepted" ? "已处理请求" : "已拒绝请求");
   if (status === "accepted" && acceptedConversationId) {

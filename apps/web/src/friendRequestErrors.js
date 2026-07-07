@@ -18,6 +18,15 @@ export function friendRequestErrorMessage(error) {
   return label || "好友申请发送失败，请稍后再试";
 }
 
+export function friendRequestReviewErrorMessage(error) {
+  const raw = String(error?.message || "");
+  const message = parseErrorBody(raw) || raw;
+  const lower = message.toLowerCase();
+  if (lower.includes("request not found")) return "这条申请已失效，请刷新后重试";
+  const label = friendRequestErrorLabels.find(([key]) => lower.includes(key))?.[1];
+  return label || "好友申请处理失败，请稍后再试";
+}
+
 function parseErrorBody(value) {
   try {
     const data = JSON.parse(value);
