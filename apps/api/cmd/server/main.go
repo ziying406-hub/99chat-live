@@ -1842,11 +1842,16 @@ func (s *Store) groupsRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		gid := newID("group")
+		chatID, err := s.uniqueGroupChatID(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "group id generation failed")
+			return
+		}
 		group := Group{
 			ID:         gid,
 			Title:      defaultString(req.Title, "新的群聊"),
 			Avatar:     avatar("群"),
-			ChatID:     fmt.Sprintf("%06d", rand.Intn(900000)+100000),
+			ChatID:     chatID,
 			JoinMode:   "public_qr",
 			MyNickname: current.Nickname,
 			CreatedAt:  time.Now(),
@@ -3437,6 +3442,53 @@ func isGroupQRCodeExpired(group Group, now time.Time) bool {
 
 func newQRCode() string {
 	return "qr-" + newID("code")
+}
+
+func (s *Store) uniqueGroupChatID(ctx context.Context) (string, error) {
+	for i := 0; i < 20; i++ {
+		chatID := newGroupChatID()
+		exists, err := s.groupChatIDExists(ctx, chatID)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return chatID, nil
+		}
+	}
+	return "", errors.New("could not generate unique group chat id")
+}
+
+func (s *Store) groupChatIDExists(ctx context.Context, chatID string) (bool, error) {
+	s.mu.RLock()
+	for _, group := range s.groups {
+		if group.ChatID == chatID {
+			s.mu.RUnlock()
+			return true, nil
+		}
+	}
+	s.mu.RUnlock()
+	if s.pg == nil {
+		return false, nil
+	}
+	var exists bool
+	err := s.pg.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM groups WHERE chat_id = $1)`, chatID).Scan(&exists)
+	return exists, err
+}
+
+func newGroupChatID() string {
+	return fmt.Sprintf("%06d", rand.Intn(900000)+100000)
+}
+
+func isNumericGroupChatID(chatID string) bool {
+	if len(chatID) != 6 {
+		return false
+	}
+	for _, r := range chatID {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func newChatID() string {

@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-live-friend-lists";
+const APP_VERSION = "20260708-numeric-group-id";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -962,7 +962,7 @@ function renderJoinGroupPage() {
           <img class="avatar profile-page-avatar" src="${avatarSrc(group?.avatar || avatar("群"))}" alt="">
           <div>
             <h2>${escapeHTML(group?.title || "正在读取群信息")}</h2>
-            <div class="item-meta">群聊ID ${escapeHTML(group?.chatId || join?.code || "")}</div>
+            <div class="item-meta">群号 ${escapeHTML(group?.chatId || join?.code || "")}</div>
           </div>
         </div>
         <div class="join-status ${statusTone}">${escapeHTML(joinStatus)}</div>
@@ -1130,8 +1130,7 @@ function getConversationHeaderMeta(conv) {
   if (conv.kind === "group") {
     const group = currentGroup();
     const members = group?.members?.length || 0;
-    const joinMode = group ? joinModeLabel(group.joinMode) : "群聊";
-    return `${members} 人 · ${joinMode}`;
+    return group?.chatId ? `群号 ${group.chatId} · ${members} 人` : `${members} 人 · 群聊`;
   }
   const updated = conv.lastAt ? formatTime(conv.lastAt) : "";
   return updated ? `最近活跃 ${updated}` : "好友会话";
@@ -1266,6 +1265,7 @@ function renderSettingsPane(conv) {
           <div class="conversation-profile-copy">
             <div class="item-title">${escapeHTML(conv.title)}</div>
             <div class="item-preview">${escapeHTML(getConversationHeaderMeta(conv))}</div>
+            ${group ? `<div class="conversation-profile-code">群号 ${escapeHTML(group.chatId)}</div>` : ""}
           </div>
         </div>
         <div class="conversation-profile-stats">
@@ -1276,7 +1276,7 @@ function renderSettingsPane(conv) {
         ${group ? `
           <div class="conversation-control-strip">
             <button type="button" data-sidepage="members"><strong>${group.members.length}</strong><small>成员</small></button>
-            <button type="button" data-sidepage="join-mode"><strong>${escapeHTML(joinModeLabel(group.joinMode))}</strong><small>入群</small></button>
+            <button type="button" data-sidepage="join-mode"><strong>${escapeHTML(joinModeShortLabel(group.joinMode))}</strong><small>入群</small></button>
             <button type="button" data-sidepage="applications"><strong>${pendingApplications || "0"}</strong><small>申请</small></button>
             <button type="button" data-conversation-quick="mute"><strong>${conv.muted ? "关" : "开"}</strong><small>通知</small></button>
           </div>
@@ -1296,7 +1296,7 @@ function renderSettingsPane(conv) {
           ${settingLink("applications", "入群申请", pendingApplications ? `${pendingApplications} 条待处理` : "近期请求")}
           ${settingLink("rename", "群组名称", group.title)}
           ${settingLink("announcement", "群公告", group.announcement || "未设置")}
-          ${settingLink("qrcode", "群二维码", group.chatId)}
+          ${settingLink("qrcode", "群二维码", `群号 ${group.chatId}`)}
           ${settingLink("nickname", "我在本群的昵称", groupNicknameForConversation(conv))}
         </section>` : ""}
       <section class="section">
@@ -1320,6 +1320,12 @@ function settingLink(page, label, value) {
 
 function settingButton(action, label, klass) {
   return `<div class="setting-row"><span>${label}</span><button class="${klass}" data-action="${action}">${label}</button></div>`;
+}
+
+function joinModeShortLabel(joinMode) {
+  if (joinMode === "approval") return "审核";
+  if (joinMode === "closed") return "关闭";
+  return "公开";
 }
 
 function renderMembersPane() {
@@ -1346,7 +1352,7 @@ function renderMembersPane() {
           <img class="avatar" src="${avatarSrc(group.avatar)}" alt="">
           <div>
             <h3>${escapeHTML(group.title)}</h3>
-            <p>群聊ID ${escapeHTML(group.chatId)} · ${escapeHTML(joinModeLabel(group.joinMode))}</p>
+            <p>群号 ${escapeHTML(group.chatId)} · ${escapeHTML(joinModeLabel(group.joinMode))}</p>
           </div>
         </div>
         <div class="members-stats">
@@ -1828,7 +1834,7 @@ function renderGroupQRCodePane() {
           ${qrCodeBox(inviteText, "群二维码")}
         </div>
         <div class="group-qr-facts">
-          <span><strong>${escapeHTML(group.chatId)}</strong><small>群聊ID</small></span>
+          <span><strong>${escapeHTML(group.chatId)}</strong><small>群号</small></span>
           <span><strong>${escapeHTML(groupJoinCode(group))}</strong><small>入群码</small></span>
           <span class="${expired ? "danger-text-row" : ""}"><strong>${escapeHTML(expiryLabel)}</strong><small>有效期</small></span>
         </div>
@@ -2208,7 +2214,7 @@ function renderExplorePage() {
       <button class="explore-card" type="button" data-modal="join-group">
         <span class="explore-icon">⌗</span>
         <strong>扫一扫入群</strong>
-        <small>粘贴群二维码链接或输入群号</small>
+        <small>粘贴群二维码链接或输入 6 位群号</small>
       </button>
       <button class="explore-card" type="button" data-sidepage="qrcode">
         <span class="explore-icon">▣</span>
@@ -2293,7 +2299,7 @@ function renderExploreGroupCard(group) {
           <div class="item-title">${escapeHTML(group.title)}</div>
           <span class="explore-group-mode">${escapeHTML(joinLabel)}</span>
         </div>
-        <div class="item-preview">群聊ID ${escapeHTML(group.chatId || group.id)}</div>
+        <div class="item-preview">群号 ${escapeHTML(group.chatId || "")}</div>
         <div class="explore-group-tags">
           <span>${joined ? "已加入" : "未加入"}</span>
           <span>${memberCount} 位成员</span>
@@ -3305,7 +3311,7 @@ function renderModal() {
           <span class="quick-add-icon">群</span>
           <div>
             <strong>通过二维码或群号入群</strong>
-            <span>粘贴群二维码链接，或输入群 ID / 群号。</span>
+            <span>粘贴群二维码链接，或输入 6 位数字群号。</span>
           </div>
         </div>
         <label class="security-field">
@@ -7234,7 +7240,7 @@ async function downloadGroupQrCard(group) {
       <rect x="270" y="110" width="180" height="180" rx="40" fill="#1d42c7"/>
       <text x="360" y="222" text-anchor="middle" font-size="86" fill="#ffffff" font-family="Arial, sans-serif">${escapeHTML((group.title || "群").slice(0, 1))}</text>
       <text x="360" y="340" text-anchor="middle" font-size="40" fill="#172033" font-family="Arial, sans-serif">${escapeHTML(group.title || "")}</text>
-      <text x="360" y="392" text-anchor="middle" font-size="28" fill="#69758a" font-family="Arial, sans-serif">群聊ID ${escapeHTML(group.chatId || "")}</text>
+      <text x="360" y="392" text-anchor="middle" font-size="28" fill="#69758a" font-family="Arial, sans-serif">群号 ${escapeHTML(group.chatId || "")}</text>
       ${positionQrSvg(qr, 160, 470, 400)}
       <text x="360" y="904" text-anchor="middle" font-size="26" fill="#69758a" font-family="Arial, sans-serif">扫码进群</text>
     </svg>`;

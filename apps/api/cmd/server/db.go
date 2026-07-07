@@ -448,6 +448,57 @@ func (pg *PostgresStore) backfillAcceptedFriendships(ctx context.Context) error 
 	return tx.Commit(ctx)
 }
 
+func (pg *PostgresStore) backfillGroupChatIDs(ctx context.Context) error {
+	rows, err := pg.pool.Query(ctx, `SELECT id, chat_id FROM groups`)
+	if err != nil {
+		return err
+	}
+	type groupChatID struct {
+		id     string
+		chatID string
+	}
+	var groups []groupChatID
+	used := map[string]bool{}
+	for rows.Next() {
+		var group groupChatID
+		if err := rows.Scan(&group.id, &group.chatID); err != nil {
+			rows.Close()
+			return err
+		}
+		groups = append(groups, group)
+		if isNumericGroupChatID(group.chatID) {
+			used[group.chatID] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for _, group := range groups {
+		if isNumericGroupChatID(group.chatID) {
+			continue
+		}
+		chatID := ""
+		for i := 0; i < 20; i++ {
+			candidate := newGroupChatID()
+			if !used[candidate] {
+				chatID = candidate
+				used[candidate] = true
+				break
+			}
+		}
+		if chatID == "" {
+			return errors.New("could not backfill group chat id")
+		}
+		if _, err := pg.pool.Exec(ctx, `UPDATE groups SET chat_id = $2 WHERE id = $1`, group.id, chatID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
@@ -522,6 +573,9 @@ func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 
 func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 	if err := pg.backfillAcceptedFriendships(ctx); err != nil {
+		return nil, err
+	}
+	if err := pg.backfillGroupChatIDs(ctx); err != nil {
 		return nil, err
 	}
 

@@ -1213,6 +1213,9 @@ func TestCreateGroupUsesSelectedContactNicknames(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&group); err != nil {
 		t.Fatalf("decode group: %v", err)
 	}
+	if !regexp.MustCompile(`^[0-9]{6}$`).MatchString(group.ChatID) {
+		t.Fatalf("expected group chat id to be a 6-digit number, got %q", group.ChatID)
+	}
 	names := map[string]string{}
 	for _, member := range group.Members {
 		names[member.UserID] = member.Nickname
