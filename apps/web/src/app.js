@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-numeric-group-id";
+const APP_VERSION = "20260708-private-notify";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -350,9 +350,9 @@ function connectRealtime() {
       if (envelope.type === "message.created") {
         const id = envelope.conversationId;
         const message = envelope.payload;
-        state.data.messages[id] = [...(state.data.messages[id] || []), envelope.payload];
         const incoming = message.senderId !== state.user?.id;
-        const conv = getConversation(id);
+        const conv = ensureRealtimeConversation(id, message) || getConversation(id);
+        state.data.messages[id] = [...(state.data.messages[id] || []), envelope.payload];
         const mentionedMe = incoming && Array.isArray(message.mentions) && message.mentions.includes(state.user?.id);
         const shouldNotify = shouldNotifyConversation(conv) || mentionedMe;
         upsertConversationPreview(id, message, {
@@ -6114,6 +6114,63 @@ function filteredContacts() {
 
 function getConversation(id) {
   return state.data.conversations.find(c => c.id === id);
+}
+
+function ensureRealtimeConversation(conversationId, message = {}) {
+  if (!conversationId) return null;
+  const existing = getConversation(conversationId);
+  if (existing) return existing;
+  if (!conversationId.startsWith("session-")) return null;
+
+  const peerId = message.senderId && message.senderId !== state.user?.id
+    ? message.senderId
+    : privateConversationPeerId(conversationId);
+  const legacyId = peerId ? `session-${peerId}` : "";
+  const legacy = legacyId ? getConversation(legacyId) : null;
+  if (legacy) {
+    legacy.id = conversationId;
+    if (state.selectedConversationId === legacyId) {
+      state.selectedConversationId = conversationId;
+    }
+    state.data.messages[conversationId] = [
+      ...(state.data.messages[legacyId] || []),
+      ...(state.data.messages[conversationId] || [])
+    ];
+    delete state.data.messages[legacyId];
+    return legacy;
+  }
+
+  const peer = findPrivateMessagePeer(peerId, message);
+  const title = peer.nickname || message.senderName || "私聊";
+  const conversation = {
+    id: conversationId,
+    kind: "session",
+    title,
+    avatar: peer.avatar || avatar(title.slice(0, 1) || "私"),
+    unread: 0,
+    lastText: "",
+    lastAt: message.createdAt || new Date().toISOString(),
+    muted: false
+  };
+  state.data.conversations.unshift(conversation);
+  state.data.messages[conversationId] ||= [];
+  return conversation;
+}
+
+function findPrivateMessagePeer(peerId, message = {}) {
+  const pools = [
+    state.data.contacts || [],
+    state.data.directory || []
+  ];
+  for (const pool of pools) {
+    const match = pool.find(user => user.id === peerId);
+    if (match) return match;
+  }
+  return {
+    id: peerId || message.senderId || "",
+    nickname: message.senderName || "",
+    avatar: ""
+  };
 }
 
 function upsertGroup(group) {
