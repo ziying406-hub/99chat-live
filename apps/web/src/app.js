@@ -1,6 +1,7 @@
 import { toSvg as renderQrSvg } from "/public/vendor/qrcode-bundle.js";
 import { accountActionCopy, aboutDescription, authCodeHint, generalSettingHint, profileSidebarEntries } from "./accountMode.js";
 import { buildAboutInfo } from "./aboutInfo.js";
+import { emptyAuthDefaults } from "./authDefaults.js";
 import { buildAttachmentDescriptor, buildAttachmentMessagePayload, uploadMimeType } from "./attachmentPayload.js";
 import { auditLogSentence, sortAuditLogs } from "./auditLogDisplay.js";
 import {
@@ -533,6 +534,7 @@ function renderAuth() {
   const isCodeLogin = state.authMode === "code-login";
   const isForgotPassword = state.authMode === "forgot-password";
   const isPasswordLogin = !isRegister && !isCodeLogin && !isForgotPassword;
+  const authDefaults = emptyAuthDefaults();
   return `
     <main class="auth-shell">
       <section class="auth-stage">
@@ -585,13 +587,13 @@ function renderAuth() {
             ${isRegister ? `<input class="input" style="margin-bottom:16px" name="nickname" value="新用户" placeholder="请输入昵称" autocomplete="nickname">` : ""}
             <div class="field-row">
               <select class="select" name="country">
-                <option value="+86">+86</option>
-                <option value="+852">+852</option>
-                <option value="+65">+65</option>
-                <option value="+60" selected>+60</option>
-                <option value="+84">+84</option>
+                <option value="+86" ${authDefaults.country === "+86" ? "selected" : ""}>+86</option>
+                <option value="+852" ${authDefaults.country === "+852" ? "selected" : ""}>+852</option>
+                <option value="+65" ${authDefaults.country === "+65" ? "selected" : ""}>+65</option>
+                <option value="+60" ${authDefaults.country === "+60" ? "selected" : ""}>+60</option>
+                <option value="+84" ${authDefaults.country === "+84" ? "selected" : ""}>+84</option>
               </select>
-              <input class="input" name="phone" value="174319676" placeholder="请输入手机号码" autocomplete="tel-local">
+              <input class="input" name="phone" value="${escapeAttr(authDefaults.phone)}" placeholder="请输入手机号码" autocomplete="tel-local">
             </div>
             ${isForgotPassword
               ? `<div class="field-row">
@@ -607,7 +609,7 @@ function renderAuth() {
                   <button class="ghost-btn inline auth-code-btn" type="button" data-send-auth-code>获取验证码</button>
                 </div>
                 <div class="auth-links"><span>${authCodeHint(state.useMock, DEMO_LOGIN_CODE)}</span></div>`
-              : `<input class="input" name="password" value="${isRegister ? "" : "demo123456"}" placeholder="请输入密码" type="password" autocomplete="${isRegister ? "new-password" : "current-password"}">
+              : `<input class="input" name="password" value="${isRegister ? "" : escapeAttr(authDefaults.password)}" placeholder="请输入密码" type="password" autocomplete="${isRegister ? "new-password" : "current-password"}">
                 <div class="auth-links"><a href="#" data-auth-mode="forgot-password">忘记密码</a></div>`}
             <button class="primary-btn" type="submit">${isRegister ? "注册并登录" : isCodeLogin ? "验证码登录" : isForgotPassword ? "重置密码" : "登录"}</button>
             <a class="auth-register" href="#" data-auth-mode="${(isRegister || isForgotPassword) ? "login" : "register"}">${(isRegister || isForgotPassword) ? "返回登录" : "立即注册"}</a>
