@@ -10,6 +10,22 @@ test("buildAdminQuery omits empty values and encodes filters", () => {
   );
 });
 
+test("buildAdminQuery keeps admin filter params needed by the admin MVP", () => {
+  assert.equal(
+    buildAdminQuery({
+      keyword: "review",
+      joinMode: "invite",
+      type: "image",
+      from: "2026-07-08",
+      to: "2026-07-08",
+      target: "user",
+      user: "u2",
+      admin: "admin"
+    }),
+    "?keyword=review&joinMode=invite&type=image&from=2026-07-08&to=2026-07-08&target=user&user=u2&admin=admin"
+  );
+});
+
 test("admin API attaches bearer token", async () => {
   const calls = [];
   const storage = new Map([[ADMIN_TOKEN_KEY, "admin-token"]]);

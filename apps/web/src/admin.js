@@ -196,12 +196,23 @@ function applySectionRules() {
   return true;
 }
 
-function normalizeLoaderFilters(section, keyword) {
-  if (!keyword) return {};
-  if (section === "users") return { keyword };
-  if (section === "messages") return { q: keyword };
-  if (section === "files") return { q: keyword };
-  return { keyword };
+export function normalizeLoaderFilters(section, filters = {}) {
+  const next = { ...filters };
+  const keyword = String(next.keyword || "").trim();
+  delete next.keyword;
+
+  if (keyword) {
+    if (section === "messages" || section === "files") next.q = keyword;
+    else next.keyword = keyword;
+  }
+
+  Object.keys(next).forEach(key => {
+    if (next[key] === "" || next[key] === null || next[key] === undefined) {
+      delete next[key];
+    }
+  });
+
+  return next;
 }
 
 function haystackForRow(section, row) {
@@ -231,8 +242,9 @@ async function loadSection(section = state.section) {
       state.detail = await api.getDashboard();
       state.rows = [];
     } else if (loaders[section]) {
-      const keyword = state.filters[section]?.keyword || "";
-      const rawRows = await loaders[section](normalizeLoaderFilters(section, keyword));
+      const filters = state.filters[section] || {};
+      const keyword = filters.keyword || "";
+      const rawRows = await loaders[section](normalizeLoaderFilters(section, filters));
       state.rows = filterRows(section, Array.isArray(rawRows) ? rawRows : [], keyword);
       state.detail = null;
     }

@@ -37,6 +37,14 @@ const (
 	chatIDAlphabet           = chatIDLetters + chatIDDigits
 )
 
+var adminLoginDummyPasswordHash = func() string {
+	hash, err := bcrypt.GenerateFromPassword([]byte("invalid-admin-password"), bcrypt.DefaultCost)
+	if err != nil {
+		return ""
+	}
+	return string(hash)
+}()
+
 type User struct {
 	ID                string          `json:"id"`
 	Phone             string          `json:"phone"`
@@ -599,7 +607,7 @@ func (s *Store) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := s.issueToken(user.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": user})
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUserResponse(user)})
 }
 
 func (s *Store) sendAuthCode(w http.ResponseWriter, r *http.Request) {
@@ -649,7 +657,11 @@ func (s *Store) adminLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "admin login failed")
 		return
 	}
-	if !ok || !passwordMatches(admin.PasswordHash, req.Password) {
+	passwordHash := admin.PasswordHash
+	if !ok {
+		passwordHash = adminLoginDummyPasswordHash
+	}
+	if passwordHash == "" || !passwordMatches(passwordHash, req.Password) || !ok {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
@@ -720,7 +732,7 @@ func (s *Store) codeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := s.issueToken(user.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": user})
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUserResponse(user)})
 }
 
 func (s *Store) resetPassword(w http.ResponseWriter, r *http.Request) {
@@ -886,7 +898,7 @@ func (s *Store) adminGroupsRoute(w http.ResponseWriter, r *http.Request, _ Admin
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	items, err := s.adminGroups(r.Context())
+	items, err := s.adminGroups(r.Context(), strings.TrimSpace(r.URL.Query().Get("keyword")), strings.TrimSpace(r.URL.Query().Get("joinMode")))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "group list failed")
 		return
@@ -921,6 +933,47 @@ func (s *Store) adminGroupRoute(w http.ResponseWriter, r *http.Request, admin Ad
 			return
 		}
 		writeJSON(w, http.StatusOK, group)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "blacklist" {
+		userID := strings.TrimSpace(parts[2])
+		if userID == "" {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			var req struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid json")
+				return
+			}
+			entry, err := s.adminAddGroupBlacklistEntryWithAudit(r.Context(), admin, groupID, userID, "", strings.TrimSpace(req.Reason))
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					writeError(w, http.StatusNotFound, "group or user not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "blacklist add failed")
+				return
+			}
+			writeJSON(w, http.StatusCreated, entry)
+		case http.MethodDelete:
+			entry, err := s.removeGroupBlacklistEntryWithAdminAudit(r.Context(), admin, groupID, userID)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					writeError(w, http.StatusNotFound, "blacklist entry not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "blacklist remove failed")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"removed": entry.User.ID})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
 		return
 	}
 	if len(parts) != 2 {
@@ -969,7 +1022,15 @@ func (s *Store) adminMessagesRoute(w http.ResponseWriter, r *http.Request, _ Adm
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	items, err := s.adminMessages(r.Context(), strings.TrimSpace(r.URL.Query().Get("q")), strings.TrimSpace(r.URL.Query().Get("conversationId")), strings.TrimSpace(r.URL.Query().Get("senderId")))
+	items, err := s.adminMessages(
+		r.Context(),
+		strings.TrimSpace(r.URL.Query().Get("q")),
+		strings.TrimSpace(r.URL.Query().Get("conversationId")),
+		strings.TrimSpace(r.URL.Query().Get("senderId")),
+		strings.TrimSpace(r.URL.Query().Get("type")),
+		strings.TrimSpace(r.URL.Query().Get("from")),
+		strings.TrimSpace(r.URL.Query().Get("to")),
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "message list failed")
 		return
@@ -1016,7 +1077,11 @@ func (s *Store) adminReportsRoute(w http.ResponseWriter, r *http.Request, _ Admi
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	items, err := s.adminReports(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), strings.TrimSpace(r.URL.Query().Get("targetType")))
+	targetType := strings.TrimSpace(r.URL.Query().Get("targetType"))
+	if targetType == "" {
+		targetType = strings.TrimSpace(r.URL.Query().Get("target"))
+	}
+	items, err := s.adminReports(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), targetType)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "report list failed")
 		return
@@ -1086,7 +1151,11 @@ func (s *Store) adminFeedbackRoute(w http.ResponseWriter, r *http.Request, _ Adm
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	items, err := s.adminFeedback(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), strings.TrimSpace(r.URL.Query().Get("userId")))
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	if userID == "" {
+		userID = strings.TrimSpace(r.URL.Query().Get("user"))
+	}
+	items, err := s.adminFeedback(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), userID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "feedback list failed")
 		return
@@ -1191,7 +1260,18 @@ func (s *Store) adminAuditLogsRoute(w http.ResponseWriter, r *http.Request, _ Ad
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	items, err := s.adminAuditLogsFor(r.Context(), strings.TrimSpace(r.URL.Query().Get("action")), strings.TrimSpace(r.URL.Query().Get("targetType")))
+	targetType := strings.TrimSpace(r.URL.Query().Get("targetType"))
+	if targetType == "" {
+		targetType = strings.TrimSpace(r.URL.Query().Get("target"))
+	}
+	items, err := s.adminAuditLogsFor(
+		r.Context(),
+		strings.TrimSpace(r.URL.Query().Get("admin")),
+		strings.TrimSpace(r.URL.Query().Get("action")),
+		targetType,
+		strings.TrimSpace(r.URL.Query().Get("from")),
+		strings.TrimSpace(r.URL.Query().Get("to")),
+	)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "audit log list failed")
 		return
@@ -1451,6 +1531,13 @@ func normalizeUserPreferences(user User) User {
 	return user
 }
 
+func publicUserResponse(user User) User {
+	user = normalizeUserPreferences(user)
+	user.BannedAt = nil
+	user.BanReason = ""
+	return user
+}
+
 func defaultStickerStore() StickerStore {
 	return StickerStore{
 		Items:     []string{"😀", "🥳", "👍", "🔥", "❤️", "😄", "🎉", "🙌"},
@@ -1515,7 +1602,7 @@ func (s *Store) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := s.issueToken(user.ID)
-	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "user": user})
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "user": publicUserResponse(user)})
 }
 
 func (s *Store) me(w http.ResponseWriter, r *http.Request) {
@@ -1537,8 +1624,7 @@ func (s *Store) meForUser(w http.ResponseWriter, r *http.Request, current User) 
 	defer s.mu.Unlock()
 	switch r.Method {
 	case http.MethodGet:
-		current = normalizeUserPreferences(current)
-		writeJSON(w, http.StatusOK, current)
+		writeJSON(w, http.StatusOK, publicUserResponse(current))
 	case http.MethodPatch:
 		var patch struct {
 			Nickname          *string         `json:"nickname"`
@@ -1600,7 +1686,7 @@ func (s *Store) meForUser(w http.ResponseWriter, r *http.Request, current User) 
 		if s.users != nil {
 			s.users[current.ID] = current
 		}
-		writeJSON(w, http.StatusOK, current)
+		writeJSON(w, http.StatusOK, publicUserResponse(current))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}

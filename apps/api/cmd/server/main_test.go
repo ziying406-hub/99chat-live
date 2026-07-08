@@ -156,6 +156,58 @@ func TestAdminResolveReportUpdatesStatus(t *testing.T) {
 	}
 }
 
+func TestAdminResolveReportSupportsReviewingAndRejected(t *testing.T) {
+	store := seedStore()
+	store.reports = []Report{
+		{ID: "report-reviewing", TargetID: "u1", TargetType: "user", Reason: "spam", CreatedAt: time.Now().Add(-time.Minute)},
+		{ID: "report-rejected", TargetID: "group-21444", TargetType: "group", Reason: "noise", CreatedAt: time.Now()},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	reviewReq := httptest.NewRequest(http.MethodPost, "/api/admin/reports/report-reviewing/resolve", bytes.NewBufferString(`{"status":"reviewing","resolution":"triaging"}`))
+	reviewReq.Header.Set("Authorization", "Bearer "+token)
+	reviewRec := httptest.NewRecorder()
+	mux.ServeHTTP(reviewRec, reviewReq)
+	if reviewRec.Code != http.StatusOK {
+		t.Fatalf("expected reviewing update 200, got %d: %s", reviewRec.Code, reviewRec.Body.String())
+	}
+	var reviewing Report
+	if err := json.NewDecoder(reviewRec.Body).Decode(&reviewing); err != nil {
+		t.Fatalf("decode reviewing report: %v", err)
+	}
+	if reviewing.Status != "reviewing" || reviewing.Resolution != "triaging" {
+		t.Fatalf("expected reviewing response, got %+v", reviewing)
+	}
+	if reviewing.ResolvedByAdminID != "" || reviewing.ResolvedAt != nil {
+		t.Fatalf("expected reviewing report to stay unresolved, got %+v", reviewing)
+	}
+
+	rejectReq := httptest.NewRequest(http.MethodPost, "/api/admin/reports/report-rejected/resolve", bytes.NewBufferString(`{"status":"rejected","resolution":"not actionable"}`))
+	rejectReq.Header.Set("Authorization", "Bearer "+token)
+	rejectRec := httptest.NewRecorder()
+	mux.ServeHTTP(rejectRec, rejectReq)
+	if rejectRec.Code != http.StatusOK {
+		t.Fatalf("expected rejected update 200, got %d: %s", rejectRec.Code, rejectRec.Body.String())
+	}
+	var rejected Report
+	if err := json.NewDecoder(rejectRec.Body).Decode(&rejected); err != nil {
+		t.Fatalf("decode rejected report: %v", err)
+	}
+	if rejected.Status != "rejected" || rejected.Resolution != "not actionable" {
+		t.Fatalf("expected rejected response, got %+v", rejected)
+	}
+	if rejected.ResolvedByAdminID != "admin-1" || rejected.ResolvedAt == nil {
+		t.Fatalf("expected rejected report resolution metadata, got %+v", rejected)
+	}
+	if len(store.adminAuditLogs) < 2 {
+		t.Fatalf("expected audit logs for reviewing and rejected updates, got %+v", store.adminAuditLogs)
+	}
+	if store.adminAuditLogs[0].Action != "report_rejected" || store.adminAuditLogs[1].Action != "report_reviewing" {
+		t.Fatalf("unexpected report audit log actions: %+v", store.adminAuditLogs[:2])
+	}
+}
+
 func TestAdminFeedbackRoutesNormalizeStatusAndDashboardCounts(t *testing.T) {
 	store := seedStore()
 	store.feedback = []Feedback{
@@ -322,6 +374,345 @@ func TestAdminReportsTreatBlankStatusAsOpen(t *testing.T) {
 	if len(items) != 1 || items[0].ID != "report-blank" || items[0].Status != "open" {
 		t.Fatalf("expected blank status to normalize to open, got %+v", items)
 	}
+}
+
+func TestAdminGroupsRouteFiltersByKeywordAndJoinMode(t *testing.T) {
+	store := seedStore()
+	store.groups["g-filter-open"] = Group{
+		ID:        "g-filter-open",
+		Title:     "Review Circle",
+		ChatID:    "review-open",
+		JoinMode:  "open",
+		CreatedAt: time.Now().Add(-2 * time.Hour),
+	}
+	store.groups["g-filter-invite"] = Group{
+		ID:        "g-filter-invite",
+		Title:     "Review Invite",
+		ChatID:    "review-invite",
+		JoinMode:  "invite",
+		CreatedAt: time.Now().Add(-time.Hour),
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/groups?keyword=review&joinMode=invite", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected groups 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var groups []Group
+	if err := json.NewDecoder(rec.Body).Decode(&groups); err != nil {
+		t.Fatalf("decode groups: %v", err)
+	}
+	if len(groups) != 1 || groups[0].ID != "g-filter-invite" {
+		t.Fatalf("expected invite review group only, got %+v", groups)
+	}
+}
+
+func TestAdminGroupBlacklistEndpointsAddAndRemoveEntriesWithAuditLogs(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	addReq := httptest.NewRequest(http.MethodPost, "/api/admin/groups/21444/blacklist/388754", bytes.NewBufferString(`{"reason":"spam waves"}`))
+	addReq.Header.Set("Authorization", "Bearer "+token)
+	addRec := httptest.NewRecorder()
+	mux.ServeHTTP(addRec, addReq)
+	if addRec.Code != http.StatusCreated {
+		t.Fatalf("expected admin blacklist add 201, got %d: %s", addRec.Code, addRec.Body.String())
+	}
+	var added GroupBlacklistEntry
+	if err := json.NewDecoder(addRec.Body).Decode(&added); err != nil {
+		t.Fatalf("decode admin blacklist add: %v", err)
+	}
+	if added.User.ID != "388754" || added.Reason != "spam waves" {
+		t.Fatalf("unexpected blacklist entry: %+v", added)
+	}
+	if groupHasMember(store.groups["21444"], "388754") {
+		t.Fatal("expected admin blacklist add to remove member from group")
+	}
+	if len(store.adminAuditLogs) == 0 || store.adminAuditLogs[0].Action != "group_blacklist_added" {
+		t.Fatalf("expected admin blacklist add audit log, got %+v", store.adminAuditLogs)
+	}
+
+	removeReq := httptest.NewRequest(http.MethodDelete, "/api/admin/groups/21444/blacklist/388754", nil)
+	removeReq.Header.Set("Authorization", "Bearer "+token)
+	removeRec := httptest.NewRecorder()
+	mux.ServeHTTP(removeRec, removeReq)
+	if removeRec.Code != http.StatusOK {
+		t.Fatalf("expected admin blacklist remove 200, got %d: %s", removeRec.Code, removeRec.Body.String())
+	}
+	if store.isGroupBlacklisted("21444", "388754", "") {
+		t.Fatal("expected admin blacklist remove to delete blacklist entry")
+	}
+	if len(store.adminAuditLogs) < 2 || store.adminAuditLogs[0].Action != "group_blacklist_removed" {
+		t.Fatalf("expected admin blacklist remove audit log, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminGroupBlacklistAddRollsBackWhenAuditFails(t *testing.T) {
+	store := seedStore()
+	store.adminAuditLogHook = func(AdminAuditLog) error {
+		return errors.New("audit failed")
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/groups/21444/blacklist/388754", bytes.NewBufferString(`{"reason":"spam waves"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected audit failure 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !groupHasMember(store.groups["21444"], "388754") {
+		t.Fatal("member was removed even though admin audit failed")
+	}
+	if store.isGroupBlacklisted("21444", "388754", "") {
+		t.Fatal("blacklist entry was created even though admin audit failed")
+	}
+	if len(store.adminAuditLogs) != 0 {
+		t.Fatalf("expected no admin audit logs recorded on failure, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminGroupBlacklistRemoveRollsBackWhenAuditFails(t *testing.T) {
+	store := seedStore()
+	entry, err := store.adminAddGroupBlacklistEntry(context.Background(), "21444", "388754", "", "spam waves")
+	if err != nil {
+		t.Fatalf("seed admin blacklist entry: %v", err)
+	}
+	store.adminAuditLogHook = func(AdminAuditLog) error {
+		return errors.New("audit failed")
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/groups/21444/blacklist/"+entry.User.ID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected audit failure 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !store.isGroupBlacklisted("21444", entry.User.ID, "") {
+		t.Fatal("blacklist entry was removed even though admin audit failed")
+	}
+	if len(store.adminAuditLogs) != 0 {
+		t.Fatalf("expected no admin audit logs recorded on failure, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminMessagesRouteFiltersByTypeAndDate(t *testing.T) {
+	store := seedStore()
+	conversationID := "admin-filter-conv"
+	store.conversations = append(store.conversations, Conversation{
+		ID:       conversationID,
+		Kind:     "group",
+		Title:    "Admin Filter Conversation",
+		LastAt:   time.Now(),
+		LastText: "latest",
+	})
+	store.messages[conversationID] = []Message{
+		{
+			ID:             "msg-filter-text",
+			ConversationID: conversationID,
+			SenderID:       "u1",
+			SenderName:     "Alice",
+			Type:           "text",
+			Body:           "earlier text",
+			CreatedAt:      time.Date(2026, 7, 7, 8, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:             "msg-filter-image",
+			ConversationID: conversationID,
+			SenderID:       "u1",
+			SenderName:     "Alice",
+			Type:           "image",
+			Body:           "later image",
+			CreatedAt:      time.Date(2026, 7, 8, 8, 0, 0, 0, time.UTC),
+		},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/messages?conversationId="+conversationID+"&type=image&from=2026-07-08&to=2026-07-08", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected messages 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []adminMessageRecord
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "msg-filter-image" {
+		t.Fatalf("expected filtered image message only, got %+v", items)
+	}
+}
+
+func TestAdminReportsRouteFiltersByStatusAndTarget(t *testing.T) {
+	store := seedStore()
+	store.reports = []Report{
+		{ID: "report-user-open", TargetID: "u1", TargetType: "user", Reason: "spam", Status: "open", CreatedAt: time.Now()},
+		{ID: "report-group-open", TargetID: "group-21444", TargetType: "group", Reason: "noise", Status: "open", CreatedAt: time.Now().Add(-time.Minute)},
+		{ID: "report-user-resolved", TargetID: "u2", TargetType: "user", Reason: "done", Status: "resolved", CreatedAt: time.Now().Add(-2 * time.Minute)},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/reports?status=open&target=user", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected reports 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []Report
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode reports: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "report-user-open" {
+		t.Fatalf("expected open user report only, got %+v", items)
+	}
+}
+
+func TestAdminFeedbackRouteFiltersByUserAndStatus(t *testing.T) {
+	store := seedStore()
+	store.feedback = []Feedback{
+		{ID: "feedback-u1-submitted", UserID: "u1", Type: "Bug", Text: "one", Status: "已提交", CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "feedback-u2-reviewing", UserID: "u2", Type: "Idea", Text: "two", Status: "reviewing", CreatedAt: time.Now()},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/feedback?user=u2&status=reviewing", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected feedback 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []Feedback
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode feedback: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "feedback-u2-reviewing" {
+		t.Fatalf("expected reviewing feedback for u2 only, got %+v", items)
+	}
+}
+
+func TestAdminAuditLogsRouteFiltersByAdminActionTargetAndDate(t *testing.T) {
+	store := seedStore()
+	store.adminAuditLogs = []AdminAuditLog{
+		{
+			ID:            "audit-match",
+			AdminUserID:   "admin-1",
+			AdminUsername: "admin",
+			Action:        "user_banned",
+			TargetType:    "user",
+			TargetID:      "u1",
+			Detail:        "spam",
+			CreatedAt:     time.Date(2026, 7, 8, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			ID:            "audit-miss",
+			AdminUserID:   "ops-2",
+			AdminUsername: "ops",
+			Action:        "message_deleted",
+			TargetType:    "message",
+			TargetID:      "msg-1",
+			Detail:        "cleanup",
+			CreatedAt:     time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC),
+		},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/audit-logs?admin=admin&action=user_banned&target=user&from=2026-07-08&to=2026-07-08", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected audit logs 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var items []AdminAuditLog
+	if err := json.NewDecoder(rec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode audit logs: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "audit-match" {
+		t.Fatalf("expected filtered audit log only, got %+v", items)
+	}
+}
+
+func TestPublicUserResponsesOmitModerationFields(t *testing.T) {
+	store := seedStore()
+	store.user.BanReason = "internal only"
+	mux := store.routes("")
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"country":"+60","phone":"174319676","password":"demo123456"}`))
+	loginRec := httptest.NewRecorder()
+	mux.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("expected password login 200, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	var loginResponse map[string]any
+	if err := json.NewDecoder(loginRec.Body).Decode(&loginResponse); err != nil {
+		t.Fatalf("decode login response: %v", err)
+	}
+	loginUser, ok := loginResponse["user"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected user object in login response, got %+v", loginResponse)
+	}
+	if _, exists := loginUser["bannedAt"]; exists {
+		t.Fatalf("login response leaked bannedAt: %+v", loginUser)
+	}
+	if _, exists := loginUser["banReason"]; exists {
+		t.Fatalf("login response leaked banReason: %+v", loginUser)
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/api/me", nil)
+	meReq.Header.Set("Authorization", "Bearer demo-token")
+	meRec := httptest.NewRecorder()
+	mux.ServeHTTP(meRec, meReq)
+	if meRec.Code != http.StatusOK {
+		t.Fatalf("expected /api/me 200, got %d: %s", meRec.Code, meRec.Body.String())
+	}
+	var meResponse map[string]any
+	if err := json.NewDecoder(meRec.Body).Decode(&meResponse); err != nil {
+		t.Fatalf("decode /api/me response: %v", err)
+	}
+	if _, exists := meResponse["bannedAt"]; exists {
+		t.Fatalf("/api/me leaked bannedAt: %+v", meResponse)
+	}
+	if _, exists := meResponse["banReason"]; exists {
+		t.Fatalf("/api/me leaked banReason: %+v", meResponse)
+	}
+}
+
+func TestPostgresResetDataTablesIncludeAdminSessionsAndAuditLogs(t *testing.T) {
+	tables := postgresResetDataTables()
+	if !containsString(tables, "admin_sessions") {
+		t.Fatalf("expected admin_sessions in reset tables, got %+v", tables)
+	}
+	if !containsString(tables, "admin_audit_logs") {
+		t.Fatalf("expected admin_audit_logs in reset tables, got %+v", tables)
+	}
+	if containsString(tables, "admin_users") {
+		t.Fatalf("expected admin_users to be preserved during reset, got %+v", tables)
+	}
+}
+
+func containsString(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAdminMuteAllRollsBackWhenAuditFails(t *testing.T) {
