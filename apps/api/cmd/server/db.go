@@ -4083,7 +4083,7 @@ func normalizeAdminFeedbackStatus(status string) string {
 	case "resolved", "已解决":
 		return "resolved"
 	default:
-		return strings.TrimSpace(status)
+		return ""
 	}
 }
 

@@ -108,3 +108,16 @@ Exact test results
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	0.905s`)
 - `./scripts/go-test.sh ./cmd/server -count=1`
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	9.532s`)
+
+## Review Fixes After `f4f20a9`
+
+What changed
+- Hardened admin feedback status validation so `/api/admin/feedback/{id}/status` only accepts `submitted`, `reviewing`, or `resolved` after normalizing legacy Chinese inputs.
+- Unknown values such as `closed` or `foo` now return a 400-style error and do not mutate feedback state or write audit logs.
+- Added regression coverage for rejecting an invalid status and for accepting the legacy Chinese `已解决` input while still normalizing the admin response to `resolved`.
+
+Exact test results
+- `./scripts/go-test.sh ./cmd/server -run 'TestAdminFeedbackStatusRejectsUnknownAndAcceptsLegacyChinese|TestAdminFeedbackRoutesNormalizeStatusAndDashboardCounts|TestUserFeedbackHistoryKeepsChineseStatusAfterAdminUpdate' -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	1.309s`)
+- `./scripts/go-test.sh ./cmd/server -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	10.122s`)

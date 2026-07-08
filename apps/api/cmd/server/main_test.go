@@ -219,6 +219,47 @@ func TestAdminFeedbackRoutesNormalizeStatusAndDashboardCounts(t *testing.T) {
 	}
 }
 
+func TestAdminFeedbackStatusRejectsUnknownAndAcceptsLegacyChinese(t *testing.T) {
+	store := seedStore()
+	store.feedback = []Feedback{
+		{ID: "feedback-old", UserID: "u1", Type: "Bug 反馈", Text: "旧反馈", Status: "已提交", CreatedAt: time.Now().Add(-time.Hour)},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	badReq := httptest.NewRequest(http.MethodPost, "/api/admin/feedback/feedback-old/status", bytes.NewBufferString(`{"status":"closed","adminNote":"bad"}`))
+	badReq.Header.Set("Authorization", "Bearer "+token)
+	badRec := httptest.NewRecorder()
+	mux.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid feedback status 400, got %d: %s", badRec.Code, badRec.Body.String())
+	}
+	if store.feedback[0].Status != "已提交" {
+		t.Fatalf("expected feedback to remain unchanged after invalid update, got %+v", store.feedback[0])
+	}
+	if len(store.adminAuditLogs) != 0 {
+		t.Fatalf("expected no audit log on invalid update, got %+v", store.adminAuditLogs)
+	}
+
+	goodReq := httptest.NewRequest(http.MethodPost, "/api/admin/feedback/feedback-old/status", bytes.NewBufferString(`{"status":"已解决","adminNote":"done"}`))
+	goodReq.Header.Set("Authorization", "Bearer "+token)
+	goodRec := httptest.NewRecorder()
+	mux.ServeHTTP(goodRec, goodReq)
+	if goodRec.Code != http.StatusOK {
+		t.Fatalf("expected legacy Chinese feedback status 200, got %d: %s", goodRec.Code, goodRec.Body.String())
+	}
+	var updated Feedback
+	if err := json.NewDecoder(goodRec.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode feedback update: %v", err)
+	}
+	if updated.Status != "resolved" {
+		t.Fatalf("expected admin response to normalize legacy status, got %+v", updated)
+	}
+	if store.feedback[0].Status != "已解决" {
+		t.Fatalf("expected legacy status to persist as Chinese user-facing value, got %+v", store.feedback[0])
+	}
+}
+
 func TestUserFeedbackHistoryKeepsChineseStatusAfterAdminUpdate(t *testing.T) {
 	store := seedStore()
 	store.feedback = []Feedback{
