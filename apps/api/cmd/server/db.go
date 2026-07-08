@@ -680,7 +680,19 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	reports, err := pg.loadReports(ctx)
+	if err != nil {
+		return nil, err
+	}
+	feedback, err := pg.loadAllFeedback(ctx)
+	if err != nil {
+		return nil, err
+	}
 	auditLogs, err := pg.loadAuditLogs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	adminAuditLogs, err := pg.loadAdminAuditLogs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -716,10 +728,12 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		blacklists:        blacklists,
 		groupBots:         groupBots,
 		collections:       collections,
+		reports:           reports,
+		feedback:          feedback,
 		auditLogs:         auditLogs,
 		adminUsers:        map[string]AdminUserRecord{},
 		adminSessions:     map[string]AdminSession{},
-		adminAuditLogs:    []AdminAuditLog{},
+		adminAuditLogs:    adminAuditLogs,
 		hub:               hub,
 	}, nil
 }
@@ -994,6 +1008,42 @@ func (pg *PostgresStore) loadCollections(ctx context.Context, userID string) ([]
 	return collections, rows.Err()
 }
 
+func (pg *PostgresStore) loadReports(ctx context.Context) ([]Report, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT id, target_id, target_type, reason, status, resolution, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM reports ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Report
+	for rows.Next() {
+		var item Report
+		if err := rows.Scan(&item.ID, &item.TargetID, &item.TargetType, &item.Reason, &item.Status, &item.Resolution, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, normalizeAdminReport(item))
+	}
+	return items, rows.Err()
+}
+
+func (pg *PostgresStore) loadAllFeedback(ctx context.Context) ([]Feedback, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT id, user_id, type, text, status, admin_note, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM feedback ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Feedback
+	for rows.Next() {
+		var item Feedback
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.AdminNote, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (pg *PostgresStore) loadAuditLogs(ctx context.Context) ([]AuditLog, error) {
 	rows, err := pg.pool.Query(ctx, `SELECT id, group_id, actor_user_id, actor_name, action, target_id, target_name, detail, created_at
 		FROM group_audit_logs ORDER BY created_at DESC`)
@@ -1256,10 +1306,16 @@ func (s *Store) adminDashboardCounts(ctx context.Context) (adminDashboardRespons
 	if s.pg == nil {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
+		openReports := 0
+		for _, report := range s.reports {
+			if normalizeAdminReport(report).Status == "open" {
+				openReports++
+			}
+		}
 		dashboard := adminDashboardResponse{
 			TotalUsers:    1 + len(s.users),
 			TotalGroups:   len(s.groups) + len(s.discoverGroups),
-			OpenReports:   len(s.reports),
+			OpenReports:   openReports,
 			TotalMessages: 0,
 		}
 		if userIsBanned(s.user) {
@@ -1271,7 +1327,7 @@ func (s *Store) adminDashboardCounts(ctx context.Context) (adminDashboardRespons
 			}
 		}
 		for _, item := range s.feedback {
-			if item.Status != "已解决" {
+			if normalizeAdminFeedbackStatus(item.Status) != "resolved" {
 				dashboard.OpenFeedback++
 			}
 		}
@@ -1388,6 +1444,24 @@ func (s *Store) adminSearchUsers(ctx context.Context, keyword, status, from, to 
 	return items, rows.Err()
 }
 
+func (pg *PostgresStore) loadAdminAuditLogs(ctx context.Context) ([]AdminAuditLog, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at
+		FROM admin_audit_logs ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminAuditLog
+	for rows.Next() {
+		var item AdminAuditLog
+		if err := rows.Scan(&item.ID, &item.AdminUserID, &item.AdminUsername, &item.Action, &item.TargetType, &item.TargetID, &item.Detail, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (s *Store) adminUserByID(ctx context.Context, userID string) (User, bool, error) {
 	userID = s.resolveAdminTargetUserID(userID)
 	if s.pg == nil {
@@ -1413,6 +1487,521 @@ func (s *Store) adminUserByID(ctx context.Context, userID string) (User, bool, e
 	user.Settings = decodeUserSettings(settingsJSON)
 	user.StickerStore = decodeStickerStore(stickerStoreJSON)
 	return normalizeUserPreferences(user), true, nil
+}
+
+func (s *Store) adminGroups(ctx context.Context) ([]Group, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		items := make([]Group, 0, len(s.groups)+len(s.discoverGroups))
+		for _, group := range s.groups {
+			items = append(items, group)
+		}
+		items = append(items, s.discoverGroups...)
+		s.mu.RUnlock()
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	groups, err := s.pg.loadGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Group, 0, len(groups))
+	for _, group := range groups {
+		items = append(items, group)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return items, nil
+}
+
+func (s *Store) adminGroupByID(ctx context.Context, groupID string) (Group, bool, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if group, ok := s.groups[groupID]; ok {
+			return group, true, nil
+		}
+		for _, group := range s.discoverGroups {
+			if group.ID == groupID {
+				return group, true, nil
+			}
+		}
+		return Group{}, false, nil
+	}
+	groups, err := s.pg.loadGroups(ctx)
+	if err != nil {
+		return Group{}, false, err
+	}
+	group, ok := groups[groupID]
+	return group, ok, nil
+}
+
+func (s *Store) setAdminGroupAllMuted(ctx context.Context, groupID string, allMuted bool) (Group, bool, error) {
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if group, ok := s.groups[groupID]; ok {
+			group.AllMuted = allMuted
+			s.groups[groupID] = group
+			return group, true, nil
+		}
+		for i := range s.discoverGroups {
+			if s.discoverGroups[i].ID == groupID {
+				s.discoverGroups[i].AllMuted = allMuted
+				return s.discoverGroups[i], true, nil
+			}
+		}
+		return Group{}, false, nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `UPDATE groups SET all_muted = $2 WHERE id = $1`, groupID, allMuted)
+	if err != nil {
+		return Group{}, false, err
+	}
+	return s.adminGroupByID(ctx, groupID)
+}
+
+func (s *Store) adminMessages(ctx context.Context, query, conversationID, senderID string) ([]adminMessageRecord, error) {
+	if s.pg == nil {
+		query = strings.ToLower(strings.TrimSpace(query))
+		senderID = strings.TrimSpace(senderID)
+		conversationID = strings.TrimSpace(conversationID)
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]adminMessageRecord, 0)
+		for _, conv := range s.conversations {
+			if conversationID != "" && conv.ID != conversationID {
+				continue
+			}
+			for _, message := range s.messages[conv.ID] {
+				if senderID != "" && message.SenderID != senderID {
+					continue
+				}
+				if query != "" && !messageMatchesSearch(message, query) && !strings.Contains(strings.ToLower(conv.Title), query) {
+					continue
+				}
+				items = append(items, adminMessageRecord{Message: message, ConversationTitle: conv.Title})
+			}
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 3)
+	if conversationID = strings.TrimSpace(conversationID); conversationID != "" {
+		args = append(args, conversationID)
+		conditions = append(conditions, fmt.Sprintf("m.conversation_id = $%d", len(args)))
+	}
+	if senderID = strings.TrimSpace(senderID); senderID != "" {
+		args = append(args, senderID)
+		conditions = append(conditions, fmt.Sprintf("m.sender_user_id = $%d", len(args)))
+	}
+	if query = strings.TrimSpace(query); query != "" {
+		pattern := "%" + strings.ToLower(query) + "%"
+		args = append(args, pattern)
+		conditions = append(conditions, fmt.Sprintf("(LOWER(m.body) LIKE $%d OR LOWER(COALESCE(u.nickname, '')) LIKE $%d OR LOWER(COALESCE(a.name, '')) LIKE $%d OR LOWER(COALESCE(c.title, '')) LIKE $%d)", len(args), len(args), len(args), len(args)))
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT
+			m.id, m.conversation_id, m.sender_user_id, COALESCE(u.nickname, m.sender_user_id), m.type, m.body, m.created_at,
+			c.title, COALESCE(a.id, ''), COALESCE(a.name, ''), COALESCE(a.object_key, ''), COALESCE(a.mime_type, ''), COALESCE(a.size_bytes, 0)
+		FROM messages m
+		LEFT JOIN users u ON u.id = m.sender_user_id
+		LEFT JOIN conversations c ON c.id = m.conversation_id
+		LEFT JOIN message_attachments a ON a.message_id = m.id
+		WHERE %s
+		ORDER BY m.created_at DESC, m.id DESC`, strings.Join(conditions, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []adminMessageRecord
+	for rows.Next() {
+		item, err := scanAdminMessageRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminMessageByID(ctx context.Context, messageID string) (adminMessageRecord, bool, error) {
+	items, err := s.adminMessages(ctx, "", "", "")
+	if err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == messageID {
+			return item, true, nil
+		}
+	}
+	return adminMessageRecord{}, false, nil
+}
+
+func (s *Store) adminDeleteMessage(ctx context.Context, messageID string) (adminMessageRecord, bool, error) {
+	message, ok, err := s.adminMessageByID(ctx, messageID)
+	if err != nil || !ok {
+		return adminMessageRecord{}, ok, err
+	}
+	if err := s.deleteMessagesAsAdmin(ctx, message.ConversationID, []string{messageID}); err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	return message, true, nil
+}
+
+func (s *Store) adminReports(ctx context.Context, status, targetType string) ([]Report, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]Report, 0, len(s.reports))
+		for _, report := range s.reports {
+			report = normalizeAdminReport(report)
+			if status != "" && report.Status != status {
+				continue
+			}
+			if targetType != "" && report.TargetType != targetType {
+				continue
+			}
+			items = append(items, report)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 2)
+	if status = strings.TrimSpace(status); status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
+	}
+	if targetType = strings.TrimSpace(targetType); targetType != "" {
+		args = append(args, targetType)
+		conditions = append(conditions, fmt.Sprintf("target_type = $%d", len(args)))
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT id, target_id, target_type, reason, status, resolution, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM reports WHERE %s ORDER BY created_at DESC, id DESC`, strings.Join(conditions, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Report
+	for rows.Next() {
+		var item Report
+		if err := rows.Scan(&item.ID, &item.TargetID, &item.TargetType, &item.Reason, &item.Status, &item.Resolution, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, normalizeAdminReport(item))
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminReportByID(ctx context.Context, reportID string) (Report, bool, error) {
+	items, err := s.adminReports(ctx, "", "")
+	if err != nil {
+		return Report{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == reportID {
+			return item, true, nil
+		}
+	}
+	return Report{}, false, nil
+}
+
+func (s *Store) adminResolveReport(ctx context.Context, admin AdminUser, reportID, status, resolution string) (Report, bool, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "resolved"
+	}
+	if status != "open" && status != "resolved" {
+		return Report{}, false, errInvalidStatus
+	}
+	resolution = strings.TrimSpace(resolution)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := range s.reports {
+			if s.reports[i].ID != reportID {
+				continue
+			}
+			report := normalizeAdminReport(s.reports[i])
+			report.Status = status
+			report.Resolution = resolution
+			if status == "resolved" {
+				now := time.Now()
+				report.ResolvedByAdminID = admin.ID
+				report.ResolvedAt = &now
+			} else {
+				report.ResolvedByAdminID = ""
+				report.ResolvedAt = nil
+			}
+			s.reports[i] = report
+			return report, true, nil
+		}
+		return Report{}, false, nil
+	}
+	var resolvedAt *time.Time
+	var resolvedBy any
+	if status == "resolved" {
+		now := time.Now()
+		resolvedAt = &now
+		resolvedBy = admin.ID
+	}
+	tag, err := s.pg.pool.Exec(ctx, `UPDATE reports
+		SET status = $2, resolution = $3, resolved_by_admin_id = $4, resolved_at = $5
+		WHERE id = $1`, reportID, status, resolution, resolvedBy, resolvedAt)
+	if err != nil {
+		return Report{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Report{}, false, nil
+	}
+	return s.adminReportByID(ctx, reportID)
+}
+
+func (s *Store) adminFeedback(ctx context.Context, status, userID string) ([]Feedback, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]Feedback, 0, len(s.feedback))
+		for _, item := range s.feedback {
+			if userID != "" && item.UserID != userID {
+				continue
+			}
+			if status != "" && normalizeAdminFeedbackStatus(item.Status) != status {
+				continue
+			}
+			items = append(items, item)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 2)
+	if userID = strings.TrimSpace(userID); userID != "" {
+		args = append(args, userID)
+		conditions = append(conditions, fmt.Sprintf("user_id = $%d", len(args)))
+	}
+	if status = normalizeAdminFeedbackStatus(status); status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("(CASE status WHEN '已提交' THEN 'submitted' WHEN '处理中' THEN 'reviewing' WHEN '已解决' THEN 'resolved' ELSE status END) = $%d", len(args)))
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT id, user_id, type, text, status, admin_note, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM feedback WHERE %s ORDER BY created_at DESC, id DESC`, strings.Join(conditions, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Feedback
+	for rows.Next() {
+		var item Feedback
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.AdminNote, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminFeedbackByID(ctx context.Context, feedbackID string) (Feedback, bool, error) {
+	items, err := s.adminFeedback(ctx, "", "")
+	if err != nil {
+		return Feedback{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == feedbackID {
+			return item, true, nil
+		}
+	}
+	return Feedback{}, false, nil
+}
+
+func (s *Store) adminUpdateFeedbackStatus(ctx context.Context, admin AdminUser, feedbackID, status, adminNote string) (Feedback, bool, error) {
+	status = normalizeAdminFeedbackStatus(status)
+	if status == "" {
+		return Feedback{}, false, errInvalidStatus
+	}
+	adminNote = strings.TrimSpace(adminNote)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := range s.feedback {
+			if s.feedback[i].ID != feedbackID {
+				continue
+			}
+			item := s.feedback[i]
+			item.Status = status
+			item.AdminNote = adminNote
+			if status == "resolved" {
+				now := time.Now()
+				item.ResolvedByAdminID = admin.ID
+				item.ResolvedAt = &now
+			} else {
+				item.ResolvedByAdminID = ""
+				item.ResolvedAt = nil
+			}
+			s.feedback[i] = item
+			return item, true, nil
+		}
+		return Feedback{}, false, nil
+	}
+	var resolvedAt *time.Time
+	var resolvedBy any
+	if status == "resolved" {
+		now := time.Now()
+		resolvedAt = &now
+		resolvedBy = admin.ID
+	}
+	tag, err := s.pg.pool.Exec(ctx, `UPDATE feedback
+		SET status = $2, admin_note = $3, resolved_by_admin_id = $4, resolved_at = $5
+		WHERE id = $1`, feedbackID, status, adminNote, resolvedBy, resolvedAt)
+	if err != nil {
+		return Feedback{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Feedback{}, false, nil
+	}
+	return s.adminFeedbackByID(ctx, feedbackID)
+}
+
+func (s *Store) adminFiles(ctx context.Context, query string) ([]adminFileRecord, error) {
+	if s.pg == nil {
+		query = strings.ToLower(strings.TrimSpace(query))
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]adminFileRecord, 0)
+		for _, messages := range s.messages {
+			for _, message := range messages {
+				if message.Attachment == nil {
+					continue
+				}
+				item := adminFileRecord{
+					ID:             message.Attachment.ID,
+					MessageID:      message.ID,
+					ConversationID: message.ConversationID,
+					SenderID:       message.SenderID,
+					Name:           message.Attachment.Name,
+					MimeType:       message.Attachment.MimeType,
+					Size:           message.Attachment.Size,
+					PublicURL:      message.Attachment.URL,
+					CreatedAt:      message.CreatedAt,
+				}
+				if query != "" && !strings.Contains(strings.ToLower(item.Name), query) && !strings.Contains(strings.ToLower(item.MessageID), query) && !strings.Contains(strings.ToLower(item.ConversationID), query) {
+					continue
+				}
+				items = append(items, item)
+			}
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	args := []any{}
+	where := "1=1"
+	if query = strings.TrimSpace(query); query != "" {
+		args = append(args, "%"+strings.ToLower(query)+"%")
+		where = "(LOWER(a.name) LIKE $1 OR LOWER(a.id) LIKE $1 OR LOWER(m.id) LIKE $1 OR LOWER(m.conversation_id) LIKE $1)"
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT a.id, m.id, m.conversation_id, m.sender_user_id, a.name, a.mime_type, a.size_bytes, COALESCE(a.object_key, ''), m.created_at
+		FROM message_attachments a
+		JOIN messages m ON m.id = a.message_id
+		WHERE %s
+		ORDER BY m.created_at DESC, a.id DESC`, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []adminFileRecord
+	for rows.Next() {
+		var item adminFileRecord
+		if err := rows.Scan(&item.ID, &item.MessageID, &item.ConversationID, &item.SenderID, &item.Name, &item.MimeType, &item.Size, &item.PublicURL, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminFileByID(ctx context.Context, fileID string) (adminFileRecord, bool, error) {
+	items, err := s.adminFiles(ctx, "")
+	if err != nil {
+		return adminFileRecord{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == fileID {
+			return item, true, nil
+		}
+	}
+	return adminFileRecord{}, false, nil
+}
+
+func (s *Store) adminAuditLogsFor(ctx context.Context, action, targetType string) ([]AdminAuditLog, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]AdminAuditLog, 0, len(s.adminAuditLogs))
+		for _, item := range s.adminAuditLogs {
+			if action != "" && item.Action != action {
+				continue
+			}
+			if targetType != "" && item.TargetType != targetType {
+				continue
+			}
+			items = append(items, item)
+		}
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 2)
+	if action = strings.TrimSpace(action); action != "" {
+		args = append(args, action)
+		conditions = append(conditions, fmt.Sprintf("action = $%d", len(args)))
+	}
+	if targetType = strings.TrimSpace(targetType); targetType != "" {
+		args = append(args, targetType)
+		conditions = append(conditions, fmt.Sprintf("target_type = $%d", len(args)))
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at
+		FROM admin_audit_logs WHERE %s ORDER BY created_at DESC, id DESC`, strings.Join(conditions, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminAuditLog
+	for rows.Next() {
+		var item AdminAuditLog
+		if err := rows.Scan(&item.ID, &item.AdminUserID, &item.AdminUsername, &item.Action, &item.TargetType, &item.TargetID, &item.Detail, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
 }
 
 func (s *Store) setUserBanState(ctx context.Context, userID string, bannedAt *time.Time, reason string) (User, bool, error) {
@@ -2075,6 +2664,14 @@ func (s *Store) persistGroupBotDelete(ctx context.Context, groupID, botID string
 }
 
 func (s *Store) deleteMessages(ctx context.Context, conversationID string, messageIDs []string, currentUserID string) error {
+	return s.deleteMessagesInternal(ctx, conversationID, messageIDs, currentUserID, false)
+}
+
+func (s *Store) deleteMessagesAsAdmin(ctx context.Context, conversationID string, messageIDs []string) error {
+	return s.deleteMessagesInternal(ctx, conversationID, messageIDs, "", true)
+}
+
+func (s *Store) deleteMessagesInternal(ctx context.Context, conversationID string, messageIDs []string, currentUserID string, force bool) error {
 	if len(messageIDs) == 0 {
 		return nil
 	}
@@ -2097,7 +2694,7 @@ func (s *Store) deleteMessages(ctx context.Context, conversationID string, messa
 			continue
 		}
 		found++
-		if message.SenderID != currentUserID && !canDeleteAny {
+		if !force && message.SenderID != currentUserID && !canDeleteAny {
 			s.mu.Unlock()
 			return errForbidden
 		}
@@ -2271,13 +2868,10 @@ func (s *Store) persistReportFor(ctx context.Context, reporterID string, report 
 	if s.pg == nil {
 		return nil
 	}
-	targetType := "group"
-	if strings.HasPrefix(report.TargetID, "session-") {
-		targetType = "user"
-	}
-	_, err := s.pg.pool.Exec(ctx, `INSERT INTO reports(id, reporter_user_id, target_type, target_id, reason, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		report.ID, reporterID, targetType, report.TargetID, report.Reason, report.CreatedAt)
+	report = normalizeAdminReport(report)
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO reports(id, reporter_user_id, target_type, target_id, reason, status, resolution, resolved_by_admin_id, resolved_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9, $10)`,
+		report.ID, reporterID, report.TargetType, report.TargetID, report.Reason, report.Status, report.Resolution, report.ResolvedByAdminID, report.ResolvedAt, report.CreatedAt)
 	return err
 }
 
@@ -2325,7 +2919,7 @@ func (s *Store) feedbackFor(ctx context.Context, userID string) ([]Feedback, err
 		sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 		return items, nil
 	}
-	rows, err := s.pg.pool.Query(ctx, `SELECT id, user_id, type, text, status, created_at
+	rows, err := s.pg.pool.Query(ctx, `SELECT id, user_id, type, text, status, admin_note, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
 		FROM feedback WHERE user_id = $1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -2334,7 +2928,7 @@ func (s *Store) feedbackFor(ctx context.Context, userID string) ([]Feedback, err
 	var items []Feedback
 	for rows.Next() {
 		var item Feedback
-		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.AdminNote, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
@@ -2349,9 +2943,9 @@ func (s *Store) saveFeedback(ctx context.Context, item Feedback) error {
 	if s.pg == nil {
 		return nil
 	}
-	_, err := s.pg.pool.Exec(ctx, `INSERT INTO feedback(id, user_id, type, text, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		item.ID, item.UserID, item.Type, item.Text, item.Status, item.CreatedAt)
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO feedback(id, user_id, type, text, status, admin_note, resolved_by_admin_id, resolved_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9)`,
+		item.ID, item.UserID, item.Type, item.Text, item.Status, item.AdminNote, item.ResolvedByAdminID, item.ResolvedAt, item.CreatedAt)
 	return err
 }
 
@@ -3133,6 +3727,78 @@ func insertMessage(ctx context.Context, tx pgx.Tx, msg Message) error {
 		}
 	}
 	return nil
+}
+
+func scanAdminMessageRecord(rows pgx.Rows) (adminMessageRecord, error) {
+	var item adminMessageRecord
+	var attachmentID, attachmentName, attachmentURL, attachmentMime string
+	var attachmentSize int64
+	if err := rows.Scan(
+		&item.ID,
+		&item.ConversationID,
+		&item.SenderID,
+		&item.SenderName,
+		&item.Type,
+		&item.Body,
+		&item.CreatedAt,
+		&item.ConversationTitle,
+		&attachmentID,
+		&attachmentName,
+		&attachmentURL,
+		&attachmentMime,
+		&attachmentSize,
+	); err != nil {
+		return adminMessageRecord{}, err
+	}
+	if attachmentID != "" {
+		item.Attachment = &Attachment{
+			ID:       attachmentID,
+			Name:     attachmentName,
+			URL:      attachmentURL,
+			MimeType: attachmentMime,
+			Size:     attachmentSize,
+		}
+	}
+	return item, nil
+}
+
+func normalizeAdminReport(report Report) Report {
+	if strings.TrimSpace(report.TargetType) == "" {
+		report.TargetType = inferReportTargetType(report.TargetID)
+	}
+	if strings.TrimSpace(report.Status) == "" {
+		report.Status = "open"
+	}
+	return report
+}
+
+func inferReportTargetType(targetID string) string {
+	targetID = strings.TrimSpace(targetID)
+	switch {
+	case strings.HasPrefix(targetID, "group-"):
+		return "message"
+	case strings.HasPrefix(targetID, "m"):
+		return "message"
+	case strings.HasPrefix(targetID, "session-"):
+		return "user"
+	case strings.HasPrefix(targetID, "u"), strings.HasPrefix(targetID, "388"), strings.HasPrefix(targetID, "127"):
+		return "user"
+	default:
+		return "group"
+	}
+}
+
+func normalizeAdminFeedbackStatus(status string) string {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "submitted", "已提交":
+		return "submitted"
+	case "reviewing", "处理中":
+		return "reviewing"
+	case "resolved", "已解决":
+		return "resolved"
+	default:
+		return strings.TrimSpace(status)
+	}
 }
 
 func upsertFriendRequest(ctx context.Context, tx pgx.Tx, toUserID string, request FriendRequest) error {

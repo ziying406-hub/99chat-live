@@ -115,6 +115,47 @@ func TestAdminDashboardReturnsCounts(t *testing.T) {
 	}
 }
 
+func TestAdminDeleteMessageWritesAuditLog(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	messageID := store.messages["group-21444"][0].ID
+	req := httptest.NewRequest(http.MethodDelete, "/api/admin/messages/"+messageID, nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected delete 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if messageExists(store.messages["group-21444"], messageID) {
+		t.Fatal("message still exists after admin delete")
+	}
+	if len(store.adminAuditLogs) == 0 || store.adminAuditLogs[0].Action != "message_deleted" {
+		t.Fatalf("expected message_deleted audit, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminResolveReportUpdatesStatus(t *testing.T) {
+	store := seedStore()
+	store.reports = append(store.reports, Report{ID: "report-admin-1", TargetID: "u-demo", TargetType: "user", Reason: "spam", CreatedAt: time.Now()})
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/reports/report-admin-1/resolve", bytes.NewBufferString(`{"status":"resolved","resolution":"warning sent"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected resolve 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.reports[0].Status != "resolved" || store.reports[0].Resolution != "warning sent" {
+		t.Fatalf("unexpected report state: %+v", store.reports[0])
+	}
+}
+
 func TestAdminBanUserBlocksLoginAndWritesAudit(t *testing.T) {
 	store := seedStore()
 	mux := store.routes("")

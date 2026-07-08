@@ -206,10 +206,15 @@ type Collection struct {
 }
 
 type Report struct {
-	ID        string    `json:"id"`
-	TargetID  string    `json:"targetId"`
-	Reason    string    `json:"reason"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID                string     `json:"id"`
+	TargetID          string     `json:"targetId"`
+	TargetType        string     `json:"targetType"`
+	Reason            string     `json:"reason"`
+	Status            string     `json:"status"`
+	Resolution        string     `json:"resolution"`
+	ResolvedByAdminID string     `json:"resolvedByAdminId"`
+	ResolvedAt        *time.Time `json:"resolvedAt,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
 }
 
 type AuditLog struct {
@@ -237,12 +242,32 @@ type MessageReadDetail struct {
 }
 
 type Feedback struct {
-	ID        string    `json:"id"`
-	UserID    string    `json:"userId"`
-	Type      string    `json:"type"`
-	Text      string    `json:"text"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID                string     `json:"id"`
+	UserID            string     `json:"userId"`
+	Type              string     `json:"type"`
+	Text              string     `json:"text"`
+	Status            string     `json:"status"`
+	AdminNote         string     `json:"adminNote"`
+	ResolvedByAdminID string     `json:"resolvedByAdminId"`
+	ResolvedAt        *time.Time `json:"resolvedAt,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+}
+
+type adminMessageRecord struct {
+	Message
+	ConversationTitle string `json:"conversationTitle,omitempty"`
+}
+
+type adminFileRecord struct {
+	ID             string    `json:"id"`
+	MessageID      string    `json:"messageId"`
+	ConversationID string    `json:"conversationId"`
+	SenderID       string    `json:"senderId"`
+	Name           string    `json:"name"`
+	MimeType       string    `json:"mimeType"`
+	Size           int64     `json:"size"`
+	PublicURL      string    `json:"publicUrl"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 type AdminUser struct {
@@ -457,6 +482,17 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/admin/dashboard", s.requireAdmin(s.adminDashboard))
 	mux.HandleFunc("/api/admin/users", s.requireAdmin(s.adminUsersRoute))
 	mux.HandleFunc("/api/admin/users/", s.requireAdmin(s.adminUserRoute))
+	mux.HandleFunc("/api/admin/groups", s.requireAdmin(s.adminGroupsRoute))
+	mux.HandleFunc("/api/admin/groups/", s.requireAdmin(s.adminGroupRoute))
+	mux.HandleFunc("/api/admin/messages", s.requireAdmin(s.adminMessagesRoute))
+	mux.HandleFunc("/api/admin/messages/", s.requireAdmin(s.adminMessageRoute))
+	mux.HandleFunc("/api/admin/reports", s.requireAdmin(s.adminReportsRoute))
+	mux.HandleFunc("/api/admin/reports/", s.requireAdmin(s.adminReportRoute))
+	mux.HandleFunc("/api/admin/feedback", s.requireAdmin(s.adminFeedbackRoute))
+	mux.HandleFunc("/api/admin/feedback/", s.requireAdmin(s.adminFeedbackItemRoute))
+	mux.HandleFunc("/api/admin/files", s.requireAdmin(s.adminFilesRoute))
+	mux.HandleFunc("/api/admin/files/", s.requireAdmin(s.adminFileRoute))
+	mux.HandleFunc("/api/admin/audit-logs", s.requireAdmin(s.adminAuditLogsRoute))
 	mux.HandleFunc("/api/auth/login", s.login)
 	mux.HandleFunc("/api/auth/send-code", s.sendAuthCode)
 	mux.HandleFunc("/api/auth/code-login", s.codeLogin)
@@ -827,6 +863,333 @@ func (s *Store) adminUserRoute(w http.ResponseWriter, r *http.Request, admin Adm
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
+}
+
+func (s *Store) adminGroupsRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminGroups(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "group list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminGroupRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/groups/"), "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	groupID := strings.TrimSpace(parts[0])
+	if groupID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		group, ok, err := s.adminGroupByID(r.Context(), groupID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "group detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, group)
+		return
+	}
+	if len(parts) != 2 {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch parts[1] {
+	case "members":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		group, ok, err := s.adminGroupByID(r.Context(), groupID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "group members failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, group.Members)
+	case "mute-all", "unmute-all":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		allMuted := parts[1] == "mute-all"
+		group, ok, err := s.setAdminGroupAllMuted(r.Context(), groupID, allMuted)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "group update failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		action := "group_unmuted_all"
+		if allMuted {
+			action = "group_muted_all"
+		}
+		_ = s.appendAdminAuditLog(r.Context(), admin, action, "group", groupID, group.Title)
+		writeJSON(w, http.StatusOK, group)
+	default:
+		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+func (s *Store) adminMessagesRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminMessages(r.Context(), strings.TrimSpace(r.URL.Query().Get("q")), strings.TrimSpace(r.URL.Query().Get("conversationId")), strings.TrimSpace(r.URL.Query().Get("senderId")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "message list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminMessageRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	messageID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/messages/"), "/")
+	if messageID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		message, ok, err := s.adminMessageByID(r.Context(), messageID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "message detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, message)
+	case http.MethodDelete:
+		message, ok, err := s.adminDeleteMessage(r.Context(), messageID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "message delete failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		detail := adminMessageAuditDetail(message)
+		_ = s.appendAdminAuditLog(r.Context(), admin, "message_deleted", "message", messageID, detail)
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": []string{messageID}})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Store) adminReportsRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminReports(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), strings.TrimSpace(r.URL.Query().Get("targetType")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "report list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminReportRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/reports/"), "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	reportID := strings.TrimSpace(parts[0])
+	if reportID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		report, ok, err := s.adminReportByID(r.Context(), reportID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "report detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "report not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+		return
+	}
+	if len(parts) != 2 || parts[1] != "resolve" || r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Status     string `json:"status"`
+		Resolution string `json:"resolution"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	report, ok, err := s.adminResolveReport(r.Context(), admin, reportID, req.Status, req.Resolution)
+	if errors.Is(err, errInvalidStatus) {
+		writeError(w, http.StatusBadRequest, "invalid report status")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "report resolve failed")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "report not found")
+		return
+	}
+	_ = s.appendAdminAuditLog(r.Context(), admin, "report_resolved", "report", reportID, report.Resolution)
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Store) adminFeedbackRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminFeedback(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), strings.TrimSpace(r.URL.Query().Get("userId")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "feedback list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminFeedbackItemRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/feedback/"), "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	feedbackID := strings.TrimSpace(parts[0])
+	if feedbackID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		item, ok, err := s.adminFeedbackByID(r.Context(), feedbackID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "feedback detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "feedback not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+		return
+	}
+	if len(parts) != 2 || parts[1] != "status" || r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Status    string `json:"status"`
+		AdminNote string `json:"adminNote"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	item, ok, err := s.adminUpdateFeedbackStatus(r.Context(), admin, feedbackID, req.Status, req.AdminNote)
+	if errors.Is(err, errInvalidStatus) {
+		writeError(w, http.StatusBadRequest, "invalid feedback status")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "feedback update failed")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "feedback not found")
+		return
+	}
+	_ = s.appendAdminAuditLog(r.Context(), admin, "feedback_status_updated", "feedback", feedbackID, item.Status)
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Store) adminFilesRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminFiles(r.Context(), strings.TrimSpace(r.URL.Query().Get("q")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "file list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminFileRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	fileID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/files/"), "/")
+	if fileID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	item, ok, err := s.adminFileByID(r.Context(), fileID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "file detail failed")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Store) adminAuditLogsRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminAuditLogsFor(r.Context(), strings.TrimSpace(r.URL.Query().Get("action")), strings.TrimSpace(r.URL.Query().Get("targetType")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "audit log list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
 }
 
 func (s *Store) issueToken(userID string) string {
@@ -1749,6 +2112,17 @@ func messageMatchesSearch(message Message, query string) bool {
 		return true
 	}
 	return false
+}
+
+func adminMessageAuditDetail(message adminMessageRecord) string {
+	summary := strings.TrimSpace(message.Body)
+	if summary == "" && message.Attachment != nil {
+		summary = message.Attachment.Name
+	}
+	if summary == "" {
+		summary = message.Type
+	}
+	return fmt.Sprintf("%s in %s by %s", summary, defaultString(message.ConversationTitle, message.ConversationID), defaultString(message.SenderName, message.SenderID))
 }
 
 func (s *Store) deleteMessageRoute(w http.ResponseWriter, r *http.Request, conversationID, messageID string) {
@@ -4100,6 +4474,7 @@ func (s *Store) reportsRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.TargetID = strings.TrimSpace(req.TargetID)
+	req.TargetType = strings.TrimSpace(req.TargetType)
 	req.Reason = strings.TrimSpace(req.Reason)
 	if req.TargetID == "" {
 		writeError(w, http.StatusBadRequest, "report target required")
@@ -4110,6 +4485,10 @@ func (s *Store) reportsRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ID = newID("report")
+	if req.TargetType == "" {
+		req.TargetType = inferReportTargetType(req.TargetID)
+	}
+	req.Status = "open"
 	req.CreatedAt = time.Now()
 	s.mu.Lock()
 	s.reports = append(s.reports, req)
