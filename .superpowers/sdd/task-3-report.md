@@ -121,3 +121,16 @@ Exact test results
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	1.309s`)
 - `./scripts/go-test.sh ./cmd/server -count=1`
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	10.122s`)
+
+## Review Fixes After `58417b2`
+
+What changed
+- Fixed `GET /api/admin/reports?targetType=group` on the Postgres path so legacy rows with blank `target_type` are filtered using the same normalized semantics as the in-memory path.
+- Kept the existing exact-match behavior for non-legacy rows while adding legacy fallback matching for blank `target_type` values based on the inferred report target type.
+- Added a focused unit test for the SQL filter builder to lock in the legacy blank `target_type` normalization rule without requiring an external Postgres database.
+
+Exact test results
+- `./scripts/go-test.sh ./cmd/server -run 'TestAdminReportTargetTypeConditionIncludesLegacyBlankGroupTargetType|TestAdminReportsTreatBlankStatusAsOpen|TestInferReportTargetTypeUsesGroupForGroupIDs' -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	1.063s`)
+- `./scripts/go-test.sh ./cmd/server -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	10.203s`)

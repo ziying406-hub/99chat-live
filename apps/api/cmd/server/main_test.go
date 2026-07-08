@@ -353,6 +353,19 @@ func TestInferReportTargetTypeUsesGroupForGroupIDs(t *testing.T) {
 	}
 }
 
+func TestAdminReportTargetTypeConditionIncludesLegacyBlankGroupTargetType(t *testing.T) {
+	clause := adminReportTargetTypeCondition(3)
+	if !strings.Contains(clause, "target_type = $3") {
+		t.Fatalf("expected raw target_type match in clause, got %q", clause)
+	}
+	if !strings.Contains(clause, "NULLIF(BTRIM(target_type), '') IS NULL") {
+		t.Fatalf("expected blank target_type normalization in clause, got %q", clause)
+	}
+	if !strings.Contains(clause, "target_id LIKE 'group-%' THEN 'group'") {
+		t.Fatalf("expected group legacy normalization in clause, got %q", clause)
+	}
+}
+
 func TestReportsRejectInvalidTargetTypeWithoutAppending(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()

@@ -1849,8 +1849,9 @@ func (s *Store) adminReports(ctx context.Context, status, targetType string) ([]
 		conditions = append(conditions, fmt.Sprintf("(CASE WHEN NULLIF(BTRIM(status), '') IS NULL THEN 'open' ELSE status END) = $%d", len(args)))
 	}
 	if targetType = strings.TrimSpace(targetType); targetType != "" {
+		placeholder := len(args) + 1
 		args = append(args, targetType)
-		conditions = append(conditions, fmt.Sprintf("target_type = $%d", len(args)))
+		conditions = append(conditions, adminReportTargetTypeCondition(placeholder))
 	}
 	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT id, target_id, target_type, reason, status, resolution, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
 		FROM reports WHERE %s ORDER BY created_at DESC, id DESC`, strings.Join(conditions, " AND ")), args...)
@@ -4047,6 +4048,20 @@ func normalizeAdminReport(report Report) Report {
 		report.Status = "open"
 	}
 	return report
+}
+
+func adminReportTargetTypeCondition(placeholder int) string {
+	return fmt.Sprintf(`(target_type = $%[1]d OR (NULLIF(BTRIM(target_type), '') IS NULL AND (%[2]s) = $%[1]d))`, placeholder, adminReportNormalizedTargetTypeExpr())
+}
+
+func adminReportNormalizedTargetTypeExpr() string {
+	return `CASE
+		WHEN target_id LIKE 'group-%' THEN 'group'
+		WHEN target_id LIKE 'm%' THEN 'message'
+		WHEN target_id LIKE 'session-%' THEN 'user'
+		WHEN target_id LIKE 'u%' OR target_id LIKE '388%' OR target_id LIKE '127%' THEN 'user'
+		ELSE 'group'
+	END`
 }
 
 func inferReportTargetType(targetID string) string {
