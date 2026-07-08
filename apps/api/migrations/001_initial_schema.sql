@@ -185,6 +185,43 @@ CREATE TABLE reports (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+CREATE TABLE admin_users (
+  id TEXT PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at TIMESTAMPTZ,
+  disabled_at TIMESTAMPTZ
+);
+
+CREATE TABLE admin_sessions (
+  id TEXT PRIMARY KEY,
+  admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+  token_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ
+);
+
+CREATE TABLE admin_audit_logs (
+  id TEXT PRIMARY KEY,
+  admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+  admin_username TEXT NOT NULL DEFAULT '',
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+ALTER TABLE users ADD COLUMN banned_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN ban_reason TEXT NOT NULL DEFAULT '';
+ALTER TABLE reports ADD COLUMN status TEXT NOT NULL DEFAULT 'open';
+ALTER TABLE reports ADD COLUMN resolution TEXT NOT NULL DEFAULT '';
+ALTER TABLE reports ADD COLUMN resolved_by_admin_id TEXT;
+ALTER TABLE reports ADD COLUMN resolved_at TIMESTAMPTZ;
+
 CREATE TABLE feedback (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id),
@@ -194,8 +231,16 @@ CREATE TABLE feedback (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+ALTER TABLE feedback ADD COLUMN admin_note TEXT NOT NULL DEFAULT '';
+ALTER TABLE feedback ADD COLUMN resolved_by_admin_id TEXT;
+ALTER TABLE feedback ADD COLUMN resolved_at TIMESTAMPTZ;
+
 CREATE INDEX idx_messages_conversation_created_at ON messages(conversation_id, created_at);
 CREATE INDEX idx_friend_requests_to_user ON friend_requests(to_user_id, status, created_at);
 CREATE INDEX idx_group_members_user ON group_members(user_id);
 CREATE INDEX idx_collections_user_kind ON collections(user_id, kind, created_at);
+CREATE INDEX idx_admin_sessions_token_hash ON admin_sessions(token_hash);
+CREATE INDEX idx_admin_audit_logs_created_at ON admin_audit_logs(created_at);
+CREATE INDEX idx_reports_status_created_at ON reports(status, created_at);
+CREATE INDEX idx_feedback_status_created_at ON feedback(status, created_at);
 CREATE INDEX idx_feedback_user_created_at ON feedback(user_id, created_at);

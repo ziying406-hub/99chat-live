@@ -243,6 +243,39 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			reason TEXT NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`CREATE TABLE IF NOT EXISTS admin_users (
+			id TEXT PRIMARY KEY,
+			username TEXT UNIQUE NOT NULL,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin')),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_login_at TIMESTAMPTZ,
+			disabled_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS admin_sessions (
+			id TEXT PRIMARY KEY,
+			admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+			token_hash TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			revoked_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS admin_audit_logs (
+			id TEXT PRIMARY KEY,
+			admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+			admin_username TEXT NOT NULL DEFAULT '',
+			action TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id TEXT NOT NULL DEFAULT '',
+			detail TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open'`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolution TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_by_admin_id TEXT`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`,
 		`CREATE TABLE IF NOT EXISTS feedback (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL REFERENCES users(id),
@@ -251,10 +284,17 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			status TEXT NOT NULL DEFAULT '已提交',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS admin_note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_by_admin_id TEXT`,
+		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at ON messages(conversation_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_friend_requests_to_user ON friend_requests(to_user_id, status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_collections_user_kind ON collections(user_id, kind, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_sessions_token_hash ON admin_sessions(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_status_created_at ON reports(status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_feedback_status_created_at ON feedback(status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_user_created_at ON feedback(user_id, created_at)`,
 		`CREATE TABLE IF NOT EXISTS app_metadata (
 			key TEXT PRIMARY KEY,
@@ -316,6 +356,9 @@ func (s *Store) clearRuntimeData() {
 	s.reports = []Report{}
 	s.feedback = []Feedback{}
 	s.auditLogs = []AuditLog{}
+	s.adminUsers = map[string]AdminUserRecord{}
+	s.adminSessions = map[string]AdminSession{}
+	s.adminAuditLogs = []AdminAuditLog{}
 	s.passwordHashes = map[string]string{}
 	s.sessions = map[string]string{}
 	s.sessionCreatedAt = map[string]time.Time{}
@@ -374,27 +417,33 @@ func (pg *PostgresStore) markResetApplied(ctx context.Context, marker string) er
 	return err
 }
 
+func postgresResetDataTables() []string {
+	return []string{
+		"feedback",
+		"reports",
+		"collections",
+		"conversation_hides",
+		"conversation_clears",
+		"message_reads",
+		"message_attachments",
+		"messages",
+		"conversations",
+		"group_bots",
+		"group_audit_logs",
+		"group_blacklist",
+		"group_join_requests",
+		"group_members",
+		"groups",
+		"friend_requests",
+		"contacts",
+		"admin_sessions",
+		"admin_audit_logs",
+		"users",
+	}
+}
+
 func (pg *PostgresStore) resetAllData(ctx context.Context) error {
-	_, err := pg.pool.Exec(ctx, `TRUNCATE TABLE
-		feedback,
-		reports,
-		collections,
-		conversation_hides,
-		conversation_clears,
-		message_reads,
-		message_attachments,
-		messages,
-		conversations,
-		group_bots,
-		group_audit_logs,
-		group_blacklist,
-		group_join_requests,
-		group_members,
-		groups,
-		friend_requests,
-		contacts,
-		users
-		RESTART IDENTITY CASCADE`)
+	_, err := pg.pool.Exec(ctx, fmt.Sprintf("TRUNCATE TABLE %s RESTART IDENTITY CASCADE", strings.Join(postgresResetDataTables(), ", ")))
 	return err
 }
 
@@ -509,6 +558,16 @@ func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 	if err := upsertUser(ctx, tx, s.user, demoPasswordHash); err != nil {
 		return err
 	}
+	adminHash, err := hashPassword("admin123")
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO admin_users(id, username, password_hash, role, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, password_hash = EXCLUDED.password_hash, role = EXCLUDED.role`,
+		"admin-1", "admin", adminHash, "super_admin", time.Now().Add(-48*time.Hour)); err != nil {
+		return err
+	}
 	for _, contact := range s.contacts {
 		user := normalizeUserPreferences(User{ID: contact.ID, Country: "+60", Phone: "000" + contact.ID, ChatID: contact.ChatID, Nickname: contact.Nickname, Signature: contact.Signature, Avatar: contact.Avatar})
 		if err := upsertUser(ctx, tx, user, "demo:contact"); err != nil {
@@ -581,8 +640,8 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
-	err := pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store
-		FROM users ORDER BY created_at LIMIT 1`).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	err := pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
+		FROM users ORDER BY created_at LIMIT 1`).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -627,7 +686,19 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	reports, err := pg.loadReports(ctx)
+	if err != nil {
+		return nil, err
+	}
+	feedback, err := pg.loadAllFeedback(ctx)
+	if err != nil {
+		return nil, err
+	}
 	auditLogs, err := pg.loadAuditLogs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	adminAuditLogs, err := pg.loadAdminAuditLogs(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -663,7 +734,12 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		blacklists:        blacklists,
 		groupBots:         groupBots,
 		collections:       collections,
+		reports:           reports,
+		feedback:          feedback,
 		auditLogs:         auditLogs,
+		adminUsers:        map[string]AdminUserRecord{},
+		adminSessions:     map[string]AdminSession{},
+		adminAuditLogs:    adminAuditLogs,
 		hub:               hub,
 	}, nil
 }
@@ -938,6 +1014,42 @@ func (pg *PostgresStore) loadCollections(ctx context.Context, userID string) ([]
 	return collections, rows.Err()
 }
 
+func (pg *PostgresStore) loadReports(ctx context.Context) ([]Report, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT id, target_id, target_type, reason, status, resolution, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM reports ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Report
+	for rows.Next() {
+		var item Report
+		if err := rows.Scan(&item.ID, &item.TargetID, &item.TargetType, &item.Reason, &item.Status, &item.Resolution, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, normalizeAdminReport(item))
+	}
+	return items, rows.Err()
+}
+
+func (pg *PostgresStore) loadAllFeedback(ctx context.Context) ([]Feedback, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT id, user_id, type, text, status, admin_note, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM feedback ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Feedback
+	for rows.Next() {
+		var item Feedback
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.AdminNote, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (pg *PostgresStore) loadAuditLogs(ctx context.Context) ([]AuditLog, error) {
 	rows, err := pg.pool.Query(ctx, `SELECT id, group_id, actor_user_id, actor_name, action, target_id, target_name, detail, created_at
 		FROM group_audit_logs ORDER BY created_at DESC`)
@@ -1058,9 +1170,9 @@ func (s *Store) authenticate(ctx context.Context, country, phone, password strin
 	var user User
 	var passwordHash string
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store, password_hash
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store, password_hash
 		FROM users WHERE country_code = $1 AND phone = $2`,
-		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON, &passwordHash)
+		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -1073,6 +1185,1323 @@ func (s *Store) authenticate(ctx context.Context, country, phone, password strin
 	user.Settings = decodeUserSettings(settingsJSON)
 	user.StickerStore = decodeStickerStore(stickerStoreJSON)
 	return normalizeUserPreferences(user), true, nil
+}
+
+func (s *Store) adminByUsername(ctx context.Context, username string) (AdminUserRecord, bool, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, admin := range s.adminUsers {
+			if admin.Username == username {
+				return admin, true, nil
+			}
+		}
+		return AdminUserRecord{}, false, nil
+	}
+	var admin AdminUserRecord
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, username, password_hash, role, created_at, last_login_at, disabled_at
+		FROM admin_users WHERE username = $1`, username).
+		Scan(&admin.ID, &admin.Username, &admin.PasswordHash, &admin.Role, &admin.CreatedAt, &admin.LastLoginAt, &admin.DisabledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminUserRecord{}, false, nil
+	}
+	if err != nil {
+		return AdminUserRecord{}, false, err
+	}
+	return admin, true, nil
+}
+
+func (s *Store) saveAdminSession(ctx context.Context, session AdminSession) error {
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.adminSessions == nil {
+			s.adminSessions = map[string]AdminSession{}
+		}
+		s.adminSessions[session.ID] = session
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO admin_sessions(id, admin_user_id, token_hash, expires_at, created_at, revoked_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		session.ID, session.AdminUserID, session.TokenHash, session.ExpiresAt, session.CreatedAt, session.RevokedAt)
+	return err
+}
+
+func (s *Store) adminBySessionToken(ctx context.Context, token string) (AdminUser, AdminSession, bool, error) {
+	if token == "" {
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	tokenHash := hashAdminToken(token)
+	now := time.Now()
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, session := range s.adminSessions {
+			if session.TokenHash != tokenHash || session.RevokedAt != nil || !session.ExpiresAt.After(now) {
+				continue
+			}
+			admin, ok := s.adminUsers[session.AdminUserID]
+			if !ok || admin.DisabledAt != nil {
+				return AdminUser{}, AdminSession{}, false, nil
+			}
+			return admin.AdminUser, session, true, nil
+		}
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	var admin AdminUser
+	var session AdminSession
+	err := s.pg.pool.QueryRow(ctx, `SELECT au.id, au.username, au.role, au.created_at, au.last_login_at, au.disabled_at,
+			s.id, s.admin_user_id, s.token_hash, s.expires_at, s.created_at, s.revoked_at
+		FROM admin_sessions s
+		JOIN admin_users au ON au.id = s.admin_user_id
+		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`, tokenHash).
+		Scan(&admin.ID, &admin.Username, &admin.Role, &admin.CreatedAt, &admin.LastLoginAt, &admin.DisabledAt,
+			&session.ID, &session.AdminUserID, &session.TokenHash, &session.ExpiresAt, &session.CreatedAt, &session.RevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	if err != nil {
+		return AdminUser{}, AdminSession{}, false, err
+	}
+	if admin.DisabledAt != nil {
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	return admin, session, true, nil
+}
+
+func (s *Store) revokeAdminSession(ctx context.Context, token string) error {
+	if token == "" {
+		return nil
+	}
+	tokenHash := hashAdminToken(token)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		now := time.Now()
+		for id, session := range s.adminSessions {
+			if session.TokenHash != tokenHash || session.RevokedAt != nil {
+				continue
+			}
+			session.RevokedAt = &now
+			s.adminSessions[id] = session
+		}
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `UPDATE admin_sessions SET revoked_at = now()
+		WHERE token_hash = $1 AND revoked_at IS NULL`, tokenHash)
+	return err
+}
+
+func (s *Store) markAdminLogin(ctx context.Context, adminUserID string, loginAt time.Time) error {
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		admin, ok := s.adminUsers[adminUserID]
+		if !ok {
+			return nil
+		}
+		admin.LastLoginAt = &loginAt
+		s.adminUsers[adminUserID] = admin
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `UPDATE admin_users SET last_login_at = $2 WHERE id = $1`, adminUserID, loginAt)
+	return err
+}
+
+func (s *Store) adminDashboardCounts(ctx context.Context) (adminDashboardResponse, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		openReports := 0
+		for _, report := range s.reports {
+			if normalizeAdminReport(report).Status == "open" {
+				openReports++
+			}
+		}
+		dashboard := adminDashboardResponse{
+			TotalUsers:    1 + len(s.users),
+			TotalGroups:   len(s.groups) + len(s.discoverGroups),
+			OpenReports:   openReports,
+			TotalMessages: 0,
+		}
+		if userIsBanned(s.user) {
+			dashboard.BannedUsers++
+		}
+		for _, user := range s.users {
+			if userIsBanned(user) {
+				dashboard.BannedUsers++
+			}
+		}
+		for _, item := range s.feedback {
+			if normalizeAdminFeedbackStatus(item.Status) != "resolved" {
+				dashboard.OpenFeedback++
+			}
+		}
+		for _, items := range s.messages {
+			dashboard.TotalMessages += len(items)
+			for _, message := range items {
+				if message.Attachment != nil {
+					dashboard.AttachmentCount++
+					dashboard.AttachmentBytes += int(message.Attachment.Size)
+				}
+			}
+		}
+		return dashboard, nil
+	}
+	var dashboard adminDashboardResponse
+	err := s.pg.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM users),
+			(SELECT COUNT(*) FROM users WHERE banned_at IS NOT NULL),
+			(SELECT COUNT(*) FROM groups),
+			(SELECT COUNT(*) FROM messages),
+			(SELECT COUNT(*) FROM reports WHERE CASE WHEN NULLIF(BTRIM(status), '') IS NULL THEN 'open' ELSE status END = 'open'),
+			(SELECT COUNT(*) FROM feedback WHERE CASE status WHEN '已提交' THEN 'submitted' WHEN '处理中' THEN 'reviewing' WHEN '已解决' THEN 'resolved' ELSE status END <> 'resolved'),
+			(SELECT COUNT(*) FROM message_attachments),
+			COALESCE((SELECT SUM(size_bytes) FROM message_attachments), 0)
+	`).Scan(
+		&dashboard.TotalUsers,
+		&dashboard.BannedUsers,
+		&dashboard.TotalGroups,
+		&dashboard.TotalMessages,
+		&dashboard.OpenReports,
+		&dashboard.OpenFeedback,
+		&dashboard.AttachmentCount,
+		&dashboard.AttachmentBytes,
+	)
+	return dashboard, err
+}
+
+func (s *Store) adminSearchUsers(ctx context.Context, keyword, status, from, to string) ([]adminUserSummary, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		users := make([]User, 0, 1+len(s.users))
+		users = append(users, s.user)
+		for _, user := range s.users {
+			users = append(users, user)
+		}
+		s.mu.RUnlock()
+		items := make([]adminUserSummary, 0, len(users))
+		for _, user := range users {
+			if !matchesAdminUserFilters(user, keyword, status, from, to) {
+				continue
+			}
+			items = append(items, adminSummaryFromUser(user))
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 4)
+	if keyword = strings.TrimSpace(keyword); keyword != "" {
+		pattern := "%" + strings.ToLower(keyword) + "%"
+		args = append(args, pattern)
+		conditions = append(conditions, fmt.Sprintf("(LOWER(id) LIKE $%d OR LOWER(phone) LIKE $%d OR LOWER(chat_id) LIKE $%d OR LOWER(nickname) LIKE $%d)", len(args), len(args), len(args), len(args)))
+	}
+	switch strings.TrimSpace(status) {
+	case "", "all":
+	case "active":
+		conditions = append(conditions, "banned_at IS NULL")
+	case "banned":
+		conditions = append(conditions, "banned_at IS NOT NULL")
+	default:
+		conditions = append(conditions, "1=0")
+	}
+	if fromTime, ok := parseAdminDateFilter(from); ok {
+		args = append(args, fromTime)
+		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", len(args)))
+	}
+	if toTime, ok := parseAdminDateFilter(to); ok {
+		if len(strings.TrimSpace(to)) == len("2006-01-02") {
+			toTime = toTime.Add(24 * time.Hour)
+			args = append(args, toTime)
+			conditions = append(conditions, fmt.Sprintf("created_at < $%d", len(args)))
+		} else {
+			args = append(args, toTime)
+			conditions = append(conditions, fmt.Sprintf("created_at <= $%d", len(args)))
+		}
+	}
+	query := fmt.Sprintf(`SELECT id, phone, country_code, chat_id, nickname, avatar_url, created_at, banned_at, ban_reason
+		FROM users
+		WHERE %s
+		ORDER BY created_at DESC, id ASC`, strings.Join(conditions, " AND "))
+	rows, err := s.pg.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]adminUserSummary, 0)
+	for rows.Next() {
+		var item adminUserSummary
+		if err := rows.Scan(&item.ID, &item.Phone, &item.Country, &item.ChatID, &item.Nickname, &item.Avatar, &item.CreatedAt, &item.BannedAt, &item.BanReason); err != nil {
+			return nil, err
+		}
+		item.Status = "active"
+		if item.BannedAt != nil {
+			item.Status = "banned"
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (pg *PostgresStore) loadAdminAuditLogs(ctx context.Context) ([]AdminAuditLog, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at
+		FROM admin_audit_logs ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminAuditLog
+	for rows.Next() {
+		var item AdminAuditLog
+		if err := rows.Scan(&item.ID, &item.AdminUserID, &item.AdminUsername, &item.Action, &item.TargetType, &item.TargetID, &item.Detail, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminUserByID(ctx context.Context, userID string) (User, bool, error) {
+	userID = s.resolveAdminTargetUserID(userID)
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if s.user.ID == userID {
+			return s.user, true, nil
+		}
+		user, ok := s.users[userID]
+		return user, ok, nil
+	}
+	var user User
+	var settingsJSON, stickerStoreJSON []byte
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
+		FROM users WHERE id = $1`, userID).
+		Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	user.Settings = decodeUserSettings(settingsJSON)
+	user.StickerStore = decodeStickerStore(stickerStoreJSON)
+	return normalizeUserPreferences(user), true, nil
+}
+
+func (s *Store) adminGroups(ctx context.Context, keyword, joinMode string) ([]Group, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		items := make([]Group, 0, len(s.groups)+len(s.discoverGroups))
+		for _, group := range s.groups {
+			items = append(items, group)
+		}
+		items = append(items, s.discoverGroups...)
+		s.mu.RUnlock()
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return filterSlice(items, func(group Group) bool {
+			return matchesAdminGroupFilters(group, keyword, joinMode)
+		}), nil
+	}
+	groups, err := s.pg.loadGroups(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Group, 0, len(groups))
+	for _, group := range groups {
+		items = append(items, group)
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+			return items[i].ID < items[j].ID
+		}
+		return items[i].CreatedAt.After(items[j].CreatedAt)
+	})
+	return filterSlice(items, func(group Group) bool {
+		return matchesAdminGroupFilters(group, keyword, joinMode)
+	}), nil
+}
+
+func (s *Store) adminGroupByID(ctx context.Context, groupID string) (Group, bool, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if group, ok := s.groups[groupID]; ok {
+			return group, true, nil
+		}
+		for _, group := range s.discoverGroups {
+			if group.ID == groupID {
+				return group, true, nil
+			}
+		}
+		return Group{}, false, nil
+	}
+	groups, err := s.pg.loadGroups(ctx)
+	if err != nil {
+		return Group{}, false, err
+	}
+	group, ok := groups[groupID]
+	return group, ok, nil
+}
+
+func (s *Store) setAdminGroupAllMuted(ctx context.Context, admin AdminUser, groupID string, allMuted bool) (Group, bool, error) {
+	action := "group_unmuted_all"
+	if allMuted {
+		action = "group_muted_all"
+	}
+	if s.pg == nil {
+		group, ok, err := s.adminGroupByID(ctx, groupID)
+		if err != nil || !ok {
+			return Group{}, ok, err
+		}
+		log := s.newAdminAuditLog(admin, action, "group", groupID, group.Title)
+		if err := s.runAdminAuditLogHook(log); err != nil {
+			return Group{}, false, err
+		}
+		group.AllMuted = allMuted
+		if !s.applyGroupAllMutedUpdate(group) {
+			return Group{}, false, nil
+		}
+		s.mu.Lock()
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return group, true, nil
+	}
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return Group{}, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var group Group
+	var rateLimitEnabled bool
+	var rateLimitWindowSeconds, rateLimitMaxMessages int
+	err = tx.QueryRow(ctx, `UPDATE groups
+		SET all_muted = $2
+		WHERE id = $1
+		RETURNING id, title, avatar_url, chat_id, qr_code, qr_code_expires_at, announcement, join_mode,
+			disable_member_add_friend, all_muted, rate_limit_enabled, rate_limit_window_seconds, rate_limit_max_messages,
+			auto_mute_new_members, created_at`,
+		groupID, allMuted).
+		Scan(&group.ID, &group.Title, &group.Avatar, &group.ChatID, &group.QRCode, &group.QRCodeExpiresAt, &group.Announcement, &group.JoinMode,
+			&group.DisableMemberAddFriend, &group.AllMuted, &rateLimitEnabled, &rateLimitWindowSeconds, &rateLimitMaxMessages,
+			&group.AutoMuteNewMembers, &group.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Group{}, false, nil
+	}
+	if err != nil {
+		return Group{}, false, err
+	}
+	group.RateLimit = &GroupRateLimit{
+		Enabled:       rateLimitEnabled,
+		WindowSeconds: rateLimitWindowSeconds,
+		MaxMessages:   rateLimitMaxMessages,
+	}
+	log := s.newAdminAuditLog(admin, action, "group", groupID, group.Title)
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return Group{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Group{}, false, err
+	}
+	s.applyGroupAllMutedUpdate(group)
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	return group, true, nil
+}
+
+func (s *Store) applyGroupAllMutedUpdate(group Group) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updated := false
+	if existing, ok := s.groups[group.ID]; ok {
+		existing.AllMuted = group.AllMuted
+		s.groups[group.ID] = existing
+		updated = true
+	}
+	for i := range s.discoverGroups {
+		if s.discoverGroups[i].ID != group.ID {
+			continue
+		}
+		s.discoverGroups[i].AllMuted = group.AllMuted
+		updated = true
+	}
+	return updated
+}
+
+func (s *Store) adminMessages(ctx context.Context, query, conversationID, senderID, messageType, from, to string) ([]adminMessageRecord, error) {
+	if s.pg == nil {
+		query = strings.ToLower(strings.TrimSpace(query))
+		senderID = strings.TrimSpace(senderID)
+		conversationID = strings.TrimSpace(conversationID)
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]adminMessageRecord, 0)
+		for _, conv := range s.conversations {
+			if conversationID != "" && conv.ID != conversationID {
+				continue
+			}
+			for _, message := range s.messages[conv.ID] {
+				if senderID != "" && message.SenderID != senderID {
+					continue
+				}
+				if query != "" && !messageMatchesSearch(message, query) && !strings.Contains(strings.ToLower(conv.Title), query) {
+					continue
+				}
+				items = append(items, adminMessageRecord{Message: message, ConversationTitle: conv.Title})
+			}
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return filterSlice(items, func(item adminMessageRecord) bool {
+			return matchesAdminMessageFilters(item, messageType, from, to)
+		}), nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 3)
+	if conversationID = strings.TrimSpace(conversationID); conversationID != "" {
+		args = append(args, conversationID)
+		conditions = append(conditions, fmt.Sprintf("m.conversation_id = $%d", len(args)))
+	}
+	if senderID = strings.TrimSpace(senderID); senderID != "" {
+		args = append(args, senderID)
+		conditions = append(conditions, fmt.Sprintf("m.sender_user_id = $%d", len(args)))
+	}
+	if query = strings.TrimSpace(query); query != "" {
+		pattern := "%" + strings.ToLower(query) + "%"
+		args = append(args, pattern)
+		conditions = append(conditions, fmt.Sprintf("(LOWER(m.body) LIKE $%d OR LOWER(COALESCE(u.nickname, '')) LIKE $%d OR LOWER(COALESCE(a.name, '')) LIKE $%d OR LOWER(COALESCE(c.title, '')) LIKE $%d)", len(args), len(args), len(args), len(args)))
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT
+			m.id, m.conversation_id, m.sender_user_id, COALESCE(u.nickname, m.sender_user_id), m.type, m.body, m.created_at,
+			c.title, COALESCE(a.id, ''), COALESCE(a.name, ''), COALESCE(a.object_key, ''), COALESCE(a.mime_type, ''), COALESCE(a.size_bytes, 0)
+		FROM messages m
+		LEFT JOIN users u ON u.id = m.sender_user_id
+		LEFT JOIN conversations c ON c.id = m.conversation_id
+		LEFT JOIN message_attachments a ON a.message_id = m.id
+		WHERE %s
+		ORDER BY m.created_at DESC, m.id DESC`, strings.Join(conditions, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []adminMessageRecord
+	for rows.Next() {
+		item, err := scanAdminMessageRecord(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return filterSlice(items, func(item adminMessageRecord) bool {
+		return matchesAdminMessageFilters(item, messageType, from, to)
+	}), nil
+}
+
+func (s *Store) adminMessageByID(ctx context.Context, messageID string) (adminMessageRecord, bool, error) {
+	items, err := s.adminMessages(ctx, "", "", "", "", "", "")
+	if err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == messageID {
+			return item, true, nil
+		}
+	}
+	return adminMessageRecord{}, false, nil
+}
+
+func (s *Store) adminMessageByIDTx(ctx context.Context, tx pgx.Tx, messageID string) (adminMessageRecord, bool, error) {
+	rows, err := tx.Query(ctx, `SELECT
+			m.id, m.conversation_id, m.sender_user_id, COALESCE(u.nickname, m.sender_user_id), m.type, m.body, m.created_at,
+			COALESCE(c.title, ''), COALESCE(a.id, ''), COALESCE(a.name, ''), COALESCE(a.object_key, ''), COALESCE(a.mime_type, ''), COALESCE(a.size_bytes, 0)
+		FROM messages m
+		LEFT JOIN users u ON u.id = m.sender_user_id
+		LEFT JOIN conversations c ON c.id = m.conversation_id
+		LEFT JOIN message_attachments a ON a.message_id = m.id
+		WHERE m.id = $1
+		LIMIT 1`, messageID)
+	if err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return adminMessageRecord{}, false, rows.Err()
+	}
+	item, err := scanAdminMessageRecord(rows)
+	if err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	return item, true, rows.Err()
+}
+
+func (s *Store) adminDeleteMessage(ctx context.Context, admin AdminUser, messageID string) (adminMessageRecord, bool, error) {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return adminMessageRecord{}, false, nil
+	}
+	if s.pg == nil {
+		record, ok, err := s.adminMessageByID(ctx, messageID)
+		if err != nil || !ok {
+			return adminMessageRecord{}, ok, err
+		}
+		log := s.newAdminAuditLog(admin, "message_deleted", "message", messageID, adminMessageAuditDetail(record))
+		if err := s.runAdminAuditLogHook(log); err != nil {
+			return adminMessageRecord{}, false, err
+		}
+		if !s.applyAdminMessageDelete(record) {
+			return adminMessageRecord{}, false, nil
+		}
+		s.mu.Lock()
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return record, true, nil
+	}
+
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	record, ok, err := s.adminMessageByIDTx(ctx, tx, messageID)
+	if err != nil || !ok {
+		return adminMessageRecord{}, ok, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM messages WHERE id = $1 AND conversation_id = $2`, messageID, record.ConversationID); err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	lastText, lastAt, err := adminConversationPreviewTx(ctx, tx, record.ConversationID)
+	if err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_text = $2, last_at = $3, unread = 0 WHERE id = $1`,
+		record.ConversationID, lastText, lastAt); err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	log := s.newAdminAuditLog(admin, "message_deleted", "message", messageID, adminMessageAuditDetail(record))
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return adminMessageRecord{}, false, err
+	}
+	s.applyAdminMessageDelete(record)
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	return record, true, nil
+}
+
+func (s *Store) applyAdminMessageDelete(record adminMessageRecord) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages, ok := s.messages[record.ConversationID]
+	if !ok {
+		return false
+	}
+	filtered := messages[:0]
+	removed := false
+	for _, message := range messages {
+		if message.ID == record.ID {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	if !removed {
+		return false
+	}
+	s.messages[record.ConversationID] = filtered
+	s.refreshConversationPreviewLocked(record.ConversationID)
+	return true
+}
+
+func (s *Store) adminReports(ctx context.Context, status, targetType string) ([]Report, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]Report, 0, len(s.reports))
+		for _, report := range s.reports {
+			report = normalizeAdminReport(report)
+			if status != "" && report.Status != status {
+				continue
+			}
+			if targetType != "" && report.TargetType != targetType {
+				continue
+			}
+			items = append(items, report)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 2)
+	if status = strings.TrimSpace(status); status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("(CASE WHEN NULLIF(BTRIM(status), '') IS NULL THEN 'open' ELSE status END) = $%d", len(args)))
+	}
+	if targetType = strings.TrimSpace(targetType); targetType != "" {
+		placeholder := len(args) + 1
+		args = append(args, targetType)
+		conditions = append(conditions, adminReportTargetTypeCondition(placeholder))
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT id, target_id, target_type, reason, status, resolution, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM reports WHERE %s ORDER BY created_at DESC, id DESC`, strings.Join(conditions, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Report
+	for rows.Next() {
+		var item Report
+		if err := rows.Scan(&item.ID, &item.TargetID, &item.TargetType, &item.Reason, &item.Status, &item.Resolution, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, normalizeAdminReport(item))
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminReportByID(ctx context.Context, reportID string) (Report, bool, error) {
+	items, err := s.adminReports(ctx, "", "")
+	if err != nil {
+		return Report{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == reportID {
+			return item, true, nil
+		}
+	}
+	return Report{}, false, nil
+}
+
+func (s *Store) adminResolveReport(ctx context.Context, admin AdminUser, reportID, status, resolution string) (Report, bool, error) {
+	status = strings.TrimSpace(status)
+	if status == "" {
+		status = "resolved"
+	}
+	if status != "open" && status != "reviewing" && status != "resolved" && status != "rejected" {
+		return Report{}, false, errInvalidStatus
+	}
+	resolution = strings.TrimSpace(resolution)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := range s.reports {
+			if s.reports[i].ID != reportID {
+				continue
+			}
+			report := normalizeAdminReport(s.reports[i])
+			action := adminReportAuditAction(status)
+			detail := resolution
+			if detail == "" {
+				detail = status
+			}
+			log := s.newAdminAuditLog(admin, action, "report", reportID, detail)
+			if err := s.runAdminAuditLogHook(log); err != nil {
+				return Report{}, false, err
+			}
+			report.Status = status
+			report.Resolution = resolution
+			if adminReportStatusFinal(status) {
+				now := time.Now()
+				report.ResolvedByAdminID = admin.ID
+				report.ResolvedAt = &now
+			} else {
+				report.ResolvedByAdminID = ""
+				report.ResolvedAt = nil
+			}
+			s.reports[i] = report
+			s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+			return report, true, nil
+		}
+		return Report{}, false, nil
+	}
+	var resolvedAt *time.Time
+	var resolvedBy any
+	if adminReportStatusFinal(status) {
+		now := time.Now()
+		resolvedAt = &now
+		resolvedBy = admin.ID
+	}
+	action := adminReportAuditAction(status)
+	detail := resolution
+	if detail == "" {
+		detail = status
+	}
+	log := s.newAdminAuditLog(admin, action, "report", reportID, detail)
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return Report{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE reports
+		SET status = $2, resolution = $3, resolved_by_admin_id = $4, resolved_at = $5
+		WHERE id = $1`, reportID, status, resolution, resolvedBy, resolvedAt)
+	if err != nil {
+		return Report{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Report{}, false, nil
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return Report{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Report{}, false, err
+	}
+	report, ok, err := s.adminReportByID(ctx, reportID)
+	if err != nil || !ok {
+		return Report{}, ok, err
+	}
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	return report, true, nil
+}
+
+func (s *Store) adminFeedback(ctx context.Context, status, userID string) ([]Feedback, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]Feedback, 0, len(s.feedback))
+		for _, item := range s.feedback {
+			if userID != "" && item.UserID != userID {
+				continue
+			}
+			item = normalizeAdminFeedback(item)
+			if status != "" && item.Status != status {
+				continue
+			}
+			items = append(items, item)
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 2)
+	if userID = strings.TrimSpace(userID); userID != "" {
+		args = append(args, userID)
+		conditions = append(conditions, fmt.Sprintf("user_id = $%d", len(args)))
+	}
+	if status = normalizeAdminFeedbackStatus(status); status != "" {
+		args = append(args, status)
+		conditions = append(conditions, fmt.Sprintf("(CASE status WHEN '已提交' THEN 'submitted' WHEN '处理中' THEN 'reviewing' WHEN '已解决' THEN 'resolved' ELSE status END) = $%d", len(args)))
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT id, user_id, type, text, status, admin_note, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
+		FROM feedback WHERE %s ORDER BY created_at DESC, id DESC`, strings.Join(conditions, " AND ")), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []Feedback
+	for rows.Next() {
+		var item Feedback
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.AdminNote, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, normalizeAdminFeedback(item))
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminFeedbackByID(ctx context.Context, feedbackID string) (Feedback, bool, error) {
+	items, err := s.adminFeedback(ctx, "", "")
+	if err != nil {
+		return Feedback{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == feedbackID {
+			return item, true, nil
+		}
+	}
+	return Feedback{}, false, nil
+}
+
+func (s *Store) adminUpdateFeedbackStatus(ctx context.Context, admin AdminUser, feedbackID, status, adminNote string) (Feedback, bool, error) {
+	status = normalizeAdminFeedbackStatus(status)
+	if status == "" {
+		return Feedback{}, false, errInvalidStatus
+	}
+	adminNote = strings.TrimSpace(adminNote)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for i := range s.feedback {
+			if s.feedback[i].ID != feedbackID {
+				continue
+			}
+			item := s.feedback[i]
+			log := s.newAdminAuditLog(admin, "feedback_status_updated", "feedback", feedbackID, status)
+			if err := s.runAdminAuditLogHook(log); err != nil {
+				return Feedback{}, false, err
+			}
+			item.Status = userFacingFeedbackStatus(status)
+			item.AdminNote = adminNote
+			if status == "resolved" {
+				now := time.Now()
+				item.ResolvedByAdminID = admin.ID
+				item.ResolvedAt = &now
+			} else {
+				item.ResolvedByAdminID = ""
+				item.ResolvedAt = nil
+			}
+			s.feedback[i] = item
+			s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+			return normalizeAdminFeedback(item), true, nil
+		}
+		return Feedback{}, false, nil
+	}
+	var resolvedAt *time.Time
+	var resolvedBy any
+	if status == "resolved" {
+		now := time.Now()
+		resolvedAt = &now
+		resolvedBy = admin.ID
+	}
+	log := s.newAdminAuditLog(admin, "feedback_status_updated", "feedback", feedbackID, status)
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return Feedback{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE feedback
+		SET status = $2, admin_note = $3, resolved_by_admin_id = $4, resolved_at = $5
+		WHERE id = $1`, feedbackID, userFacingFeedbackStatus(status), adminNote, resolvedBy, resolvedAt)
+	if err != nil {
+		return Feedback{}, false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return Feedback{}, false, nil
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return Feedback{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Feedback{}, false, err
+	}
+	item, ok, err := s.adminFeedbackByID(ctx, feedbackID)
+	if err != nil || !ok {
+		return Feedback{}, ok, err
+	}
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	return item, true, nil
+}
+
+func (s *Store) adminFiles(ctx context.Context, query string) ([]adminFileRecord, error) {
+	if s.pg == nil {
+		query = strings.ToLower(strings.TrimSpace(query))
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]adminFileRecord, 0)
+		for _, messages := range s.messages {
+			for _, message := range messages {
+				if message.Attachment == nil {
+					continue
+				}
+				item := adminFileRecord{
+					ID:             message.Attachment.ID,
+					MessageID:      message.ID,
+					ConversationID: message.ConversationID,
+					SenderID:       message.SenderID,
+					Name:           message.Attachment.Name,
+					MimeType:       message.Attachment.MimeType,
+					Size:           message.Attachment.Size,
+					PublicURL:      message.Attachment.URL,
+					CreatedAt:      message.CreatedAt,
+				}
+				if query != "" && !strings.Contains(strings.ToLower(item.Name), query) && !strings.Contains(strings.ToLower(item.MessageID), query) && !strings.Contains(strings.ToLower(item.ConversationID), query) {
+					continue
+				}
+				items = append(items, item)
+			}
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	args := []any{}
+	where := "1=1"
+	if query = strings.TrimSpace(query); query != "" {
+		args = append(args, "%"+strings.ToLower(query)+"%")
+		where = "(LOWER(a.name) LIKE $1 OR LOWER(a.id) LIKE $1 OR LOWER(m.id) LIKE $1 OR LOWER(m.conversation_id) LIKE $1)"
+	}
+	rows, err := s.pg.pool.Query(ctx, fmt.Sprintf(`SELECT a.id, m.id, m.conversation_id, m.sender_user_id, a.name, a.mime_type, a.size_bytes, COALESCE(a.object_key, ''), m.created_at
+		FROM message_attachments a
+		JOIN messages m ON m.id = a.message_id
+		WHERE %s
+		ORDER BY m.created_at DESC, a.id DESC`, where), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []adminFileRecord
+	for rows.Next() {
+		var item adminFileRecord
+		if err := rows.Scan(&item.ID, &item.MessageID, &item.ConversationID, &item.SenderID, &item.Name, &item.MimeType, &item.Size, &item.PublicURL, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminFileByID(ctx context.Context, fileID string) (adminFileRecord, bool, error) {
+	items, err := s.adminFiles(ctx, "")
+	if err != nil {
+		return adminFileRecord{}, false, err
+	}
+	for _, item := range items {
+		if item.ID == fileID {
+			return item, true, nil
+		}
+	}
+	return adminFileRecord{}, false, nil
+}
+
+func (s *Store) adminAuditLogsFor(ctx context.Context, adminFilter, action, targetType, from, to string) ([]AdminAuditLog, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]AdminAuditLog, 0, len(s.adminAuditLogs))
+		for _, item := range s.adminAuditLogs {
+			if !matchesAdminAuditLogFilters(item, adminFilter, action, targetType, from, to) {
+				continue
+			}
+			items = append(items, item)
+		}
+		return items, nil
+	}
+	rows, err := s.pg.pool.Query(ctx, `SELECT id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at
+		FROM admin_audit_logs ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []AdminAuditLog
+	for rows.Next() {
+		var item AdminAuditLog
+		if err := rows.Scan(&item.ID, &item.AdminUserID, &item.AdminUsername, &item.Action, &item.TargetType, &item.TargetID, &item.Detail, &item.CreatedAt); err != nil {
+			return nil, err
+		}
+		if !matchesAdminAuditLogFilters(item, adminFilter, action, targetType, from, to) {
+			continue
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) setUserBanState(ctx context.Context, userID string, bannedAt *time.Time, reason string) (User, bool, error) {
+	userID = s.resolveAdminTargetUserID(userID)
+	reason = strings.TrimSpace(reason)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.user.ID == userID {
+			s.user.BannedAt = bannedAt
+			s.user.BanReason = reason
+			return s.user, true, nil
+		}
+		user, ok := s.users[userID]
+		if !ok {
+			return User{}, false, nil
+		}
+		user.BannedAt = bannedAt
+		user.BanReason = reason
+		s.users[userID] = user
+		return user, true, nil
+	}
+	var user User
+	var settingsJSON, stickerStoreJSON []byte
+	err := s.pg.pool.QueryRow(ctx, `UPDATE users
+		SET banned_at = $2, ban_reason = $3
+		WHERE id = $1
+		RETURNING id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store`,
+		userID, bannedAt, reason).
+		Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	user.Settings = decodeUserSettings(settingsJSON)
+	user.StickerStore = decodeStickerStore(stickerStoreJSON)
+	return normalizeUserPreferences(user), true, nil
+}
+
+func (s *Store) setUserBanStateWithAudit(ctx context.Context, admin AdminUser, userID string, bannedAt *time.Time, reason string, action string, detail string) (User, bool, error) {
+	userID = s.resolveAdminTargetUserID(userID)
+	reason = strings.TrimSpace(reason)
+	detail = strings.TrimSpace(detail)
+	log := AdminAuditLog{
+		ID:            newID("admin-audit"),
+		AdminUserID:   admin.ID,
+		AdminUsername: admin.Username,
+		Action:        action,
+		TargetType:    "user",
+		TargetID:      userID,
+		Detail:        detail,
+		CreatedAt:     time.Now(),
+	}
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		var user User
+		switch {
+		case s.user.ID == userID:
+			user = s.user
+		default:
+			var ok bool
+			user, ok = s.users[userID]
+			if !ok {
+				return User{}, false, nil
+			}
+		}
+		log.TargetID = user.ID
+		if s.adminAuditLogHook != nil {
+			if err := s.adminAuditLogHook(log); err != nil {
+				return User{}, false, err
+			}
+		}
+		user.BannedAt = bannedAt
+		user.BanReason = reason
+		if s.user.ID == userID {
+			s.user = user
+		} else {
+			s.users[userID] = user
+		}
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		return user, true, nil
+	}
+
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return User{}, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var user User
+	var settingsJSON, stickerStoreJSON []byte
+	err = tx.QueryRow(ctx, `UPDATE users
+		SET banned_at = $2, ban_reason = $3
+		WHERE id = $1
+		RETURNING id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store`,
+		userID, bannedAt, reason).
+		Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	user.Settings = decodeUserSettings(settingsJSON)
+	user.StickerStore = decodeStickerStore(stickerStoreJSON)
+	user = normalizeUserPreferences(user)
+	log.TargetID = user.ID
+
+	if _, err := tx.Exec(ctx, `INSERT INTO admin_audit_logs(id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		log.ID, log.AdminUserID, log.AdminUsername, log.Action, log.TargetType, log.TargetID, log.Detail, log.CreatedAt); err != nil {
+		return User{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, false, err
+	}
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	return user, true, nil
+}
+
+func (s *Store) appendAdminAuditLog(ctx context.Context, admin AdminUser, action string, targetType string, targetID string, detail string) error {
+	log := s.newAdminAuditLog(admin, action, targetType, targetID, detail)
+	if err := s.runAdminAuditLogHook(log); err != nil {
+		return err
+	}
+	return s.appendPreparedAdminAuditLog(ctx, log)
+}
+
+func (s *Store) appendPreparedAdminAuditLog(ctx context.Context, log AdminAuditLog) error {
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	if s.pg == nil {
+		return nil
+	}
+	return s.insertAdminAuditLog(ctx, log)
+}
+
+func (s *Store) newAdminAuditLog(admin AdminUser, action string, targetType string, targetID string, detail string) AdminAuditLog {
+	return AdminAuditLog{
+		ID:            newID("admin-audit"),
+		AdminUserID:   admin.ID,
+		AdminUsername: admin.Username,
+		Action:        action,
+		TargetType:    targetType,
+		TargetID:      targetID,
+		Detail:        detail,
+		CreatedAt:     time.Now(),
+	}
+}
+
+func (s *Store) runAdminAuditLogHook(log AdminAuditLog) error {
+	if s.adminAuditLogHook != nil {
+		return s.adminAuditLogHook(log)
+	}
+	return nil
+}
+
+func (s *Store) insertAdminAuditLog(ctx context.Context, log AdminAuditLog) error {
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO admin_audit_logs(id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		log.ID, log.AdminUserID, log.AdminUsername, log.Action, log.TargetType, log.TargetID, log.Detail, log.CreatedAt)
+	return err
+}
+
+func (s *Store) insertAdminAuditLogTx(ctx context.Context, tx pgx.Tx, log AdminAuditLog) error {
+	if err := s.runAdminAuditLogHook(log); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO admin_audit_logs(id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		log.ID, log.AdminUserID, log.AdminUsername, log.Action, log.TargetType, log.TargetID, log.Detail, log.CreatedAt)
+	return err
+}
+
+func (s *Store) resolveAdminTargetUserID(userID string) string {
+	userID = strings.TrimSpace(userID)
+	if userID == "u-demo" {
+		return "u1"
+	}
+	return userID
+}
+
+func matchesAdminUserFilters(user User, keyword, status, from, to string) bool {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if keyword != "" {
+		search := strings.ToLower(strings.Join([]string{user.ID, user.Phone, user.ChatID, user.Nickname}, " "))
+		if !strings.Contains(search, keyword) {
+			return false
+		}
+	}
+	switch strings.TrimSpace(status) {
+	case "", "all":
+	case "active":
+		if userIsBanned(user) {
+			return false
+		}
+	case "banned":
+		if !userIsBanned(user) {
+			return false
+		}
+	default:
+		return false
+	}
+	if fromTime, ok := parseAdminDateFilter(from); ok && user.CreatedAt.Before(fromTime) {
+		return false
+	}
+	if toTime, ok := parseAdminDateFilter(to); ok {
+		if len(strings.TrimSpace(to)) == len("2006-01-02") {
+			if !user.CreatedAt.Before(toTime.Add(24 * time.Hour)) {
+				return false
+			}
+		} else if user.CreatedAt.After(toTime) {
+			return false
+		}
+	}
+	return true
+}
+
+func matchesAdminGroupFilters(group Group, keyword, joinMode string) bool {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if keyword != "" {
+		search := strings.ToLower(strings.Join([]string{group.ID, group.Title, group.ChatID, group.Announcement}, " "))
+		if !strings.Contains(search, keyword) {
+			return false
+		}
+	}
+	switch strings.TrimSpace(joinMode) {
+	case "", "all":
+		return true
+	default:
+		return group.JoinMode == strings.TrimSpace(joinMode)
+	}
+}
+
+func matchesAdminMessageFilters(item adminMessageRecord, messageType, from, to string) bool {
+	if messageType = strings.TrimSpace(messageType); messageType != "" && item.Type != messageType {
+		return false
+	}
+	return matchesAdminCreatedAtFilter(item.CreatedAt, from, to)
+}
+
+func matchesAdminAuditLogFilters(item AdminAuditLog, adminFilter, action, targetType, from, to string) bool {
+	adminFilter = strings.ToLower(strings.TrimSpace(adminFilter))
+	if adminFilter != "" && !strings.Contains(strings.ToLower(item.AdminUserID), adminFilter) && !strings.Contains(strings.ToLower(item.AdminUsername), adminFilter) {
+		return false
+	}
+	if action = strings.TrimSpace(action); action != "" && item.Action != action {
+		return false
+	}
+	if targetType = strings.TrimSpace(targetType); targetType != "" && item.TargetType != targetType {
+		return false
+	}
+	return matchesAdminCreatedAtFilter(item.CreatedAt, from, to)
+}
+
+func matchesAdminCreatedAtFilter(createdAt time.Time, from, to string) bool {
+	if fromTime, ok := parseAdminDateFilter(from); ok && createdAt.Before(fromTime) {
+		return false
+	}
+	if toTime, ok := parseAdminDateFilter(to); ok {
+		if len(strings.TrimSpace(to)) == len("2006-01-02") {
+			if !createdAt.Before(toTime.Add(24 * time.Hour)) {
+				return false
+			}
+		} else if createdAt.After(toTime) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) userByPhone(ctx context.Context, country, phone string) (User, bool, error) {
@@ -1091,9 +2520,9 @@ func (s *Store) userByPhone(ctx context.Context, country, phone string) (User, b
 	}
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
 		FROM users WHERE country_code = $1 AND phone = $2`,
-		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -1114,6 +2543,7 @@ func (s *Store) createUser(ctx context.Context, country, phone, password, nickna
 		Nickname:          nickname,
 		Signature:         "",
 		Avatar:            avatar(firstRune(nickname)),
+		CreatedAt:         time.Now(),
 		Settings:          defaultUserSettings(),
 		Language:          "简体中文",
 		DisplayMode:       "桌面版",
@@ -1156,9 +2586,9 @@ func (s *Store) createUser(ctx context.Context, country, phone, password, nickna
 	if err != nil {
 		return User{}, err
 	}
-	_, err = s.pg.pool.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store)
-		VALUES ($1, $2, $3, $4, $5, $6, '', $7, $8, $9, $10, $11, $12)`,
-		user.ID, user.Country, user.Phone, string(hash), user.ChatID, user.Nickname, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON)
+	_, err = s.pg.pool.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store, created_at, banned_at, ban_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, '', $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		user.ID, user.Country, user.Phone, string(hash), user.ChatID, user.Nickname, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON, user.CreatedAt, user.BannedAt, user.BanReason)
 	if isUniqueViolation(err) {
 		return User{}, errAlreadyExists
 	}
@@ -1254,8 +2684,8 @@ func (s *Store) userByID(ctx context.Context, userID string) (User, bool, error)
 	}
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store
-		FROM users WHERE id = $1`, userID).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
+		FROM users WHERE id = $1`, userID).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -1335,8 +2765,8 @@ func (s *Store) persistUser(ctx context.Context, user User) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pg.pool.Exec(ctx, `UPDATE users SET nickname = $2, signature = $3, avatar_url = $4, settings = $5, language = $6, display_mode = $7, blocked_contact_ids = $8, sticker_store = $9 WHERE id = $1`,
-		user.ID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON)
+	_, err = s.pg.pool.Exec(ctx, `UPDATE users SET nickname = $2, signature = $3, avatar_url = $4, settings = $5, language = $6, display_mode = $7, blocked_contact_ids = $8, sticker_store = $9, banned_at = $10, ban_reason = $11 WHERE id = $1`,
+		user.ID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON, user.BannedAt, user.BanReason)
 	return err
 }
 
@@ -1543,6 +2973,14 @@ func (s *Store) persistGroupBotDelete(ctx context.Context, groupID, botID string
 }
 
 func (s *Store) deleteMessages(ctx context.Context, conversationID string, messageIDs []string, currentUserID string) error {
+	return s.deleteMessagesInternal(ctx, conversationID, messageIDs, currentUserID, false)
+}
+
+func (s *Store) deleteMessagesAsAdmin(ctx context.Context, conversationID string, messageIDs []string) error {
+	return s.deleteMessagesInternal(ctx, conversationID, messageIDs, "", true)
+}
+
+func (s *Store) deleteMessagesInternal(ctx context.Context, conversationID string, messageIDs []string, currentUserID string, force bool) error {
 	if len(messageIDs) == 0 {
 		return nil
 	}
@@ -1565,7 +3003,7 @@ func (s *Store) deleteMessages(ctx context.Context, conversationID string, messa
 			continue
 		}
 		found++
-		if message.SenderID != currentUserID && !canDeleteAny {
+		if !force && message.SenderID != currentUserID && !canDeleteAny {
 			s.mu.Unlock()
 			return errForbidden
 		}
@@ -1644,6 +3082,31 @@ func (s *Store) refreshConversationPreviewLocked(conversationID string) {
 			return
 		}
 	}
+}
+
+func (s *Store) conversationTitleLocked(conversationID string) string {
+	for _, conv := range s.conversations {
+		if conv.ID == conversationID {
+			return conv.Title
+		}
+	}
+	return ""
+}
+
+func adminConversationPreviewTx(ctx context.Context, tx pgx.Tx, conversationID string) (string, time.Time, error) {
+	var message Message
+	err := tx.QueryRow(ctx, `SELECT body, type, created_at
+		FROM messages
+		WHERE conversation_id = $1
+		ORDER BY created_at DESC, id DESC
+		LIMIT 1`, conversationID).Scan(&message.Body, &message.Type, &message.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", time.Now(), nil
+	}
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	return displayMessage(message), message.CreatedAt, nil
 }
 
 func (s *Store) persistFriendRequestFor(ctx context.Context, toUserID string, request FriendRequest) error {
@@ -1739,13 +3202,10 @@ func (s *Store) persistReportFor(ctx context.Context, reporterID string, report 
 	if s.pg == nil {
 		return nil
 	}
-	targetType := "group"
-	if strings.HasPrefix(report.TargetID, "session-") {
-		targetType = "user"
-	}
-	_, err := s.pg.pool.Exec(ctx, `INSERT INTO reports(id, reporter_user_id, target_type, target_id, reason, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		report.ID, reporterID, targetType, report.TargetID, report.Reason, report.CreatedAt)
+	report = normalizeAdminReport(report)
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO reports(id, reporter_user_id, target_type, target_id, reason, status, resolution, resolved_by_admin_id, resolved_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, NULLIF($8, ''), $9, $10)`,
+		report.ID, reporterID, report.TargetType, report.TargetID, report.Reason, report.Status, report.Resolution, report.ResolvedByAdminID, report.ResolvedAt, report.CreatedAt)
 	return err
 }
 
@@ -1787,13 +3247,14 @@ func (s *Store) feedbackFor(ctx context.Context, userID string) ([]Feedback, err
 		var items []Feedback
 		for _, item := range s.feedback {
 			if item.UserID == userID {
+				item.Status = userFacingFeedbackStatus(item.Status)
 				items = append(items, item)
 			}
 		}
 		sort.Slice(items, func(i, j int) bool { return items[i].CreatedAt.After(items[j].CreatedAt) })
 		return items, nil
 	}
-	rows, err := s.pg.pool.Query(ctx, `SELECT id, user_id, type, text, status, created_at
+	rows, err := s.pg.pool.Query(ctx, `SELECT id, user_id, type, text, status, admin_note, COALESCE(resolved_by_admin_id, ''), resolved_at, created_at
 		FROM feedback WHERE user_id = $1 ORDER BY created_at DESC`, userID)
 	if err != nil {
 		return nil, err
@@ -1802,9 +3263,10 @@ func (s *Store) feedbackFor(ctx context.Context, userID string) ([]Feedback, err
 	var items []Feedback
 	for rows.Next() {
 		var item Feedback
-		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.AdminNote, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
+		item.Status = userFacingFeedbackStatus(item.Status)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -1817,9 +3279,9 @@ func (s *Store) saveFeedback(ctx context.Context, item Feedback) error {
 	if s.pg == nil {
 		return nil
 	}
-	_, err := s.pg.pool.Exec(ctx, `INSERT INTO feedback(id, user_id, type, text, status, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)`,
-		item.ID, item.UserID, item.Type, item.Text, item.Status, item.CreatedAt)
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO feedback(id, user_id, type, text, status, admin_note, resolved_by_admin_id, resolved_at, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9)`,
+		item.ID, item.UserID, item.Type, item.Text, item.Status, item.AdminNote, item.ResolvedByAdminID, item.ResolvedAt, item.CreatedAt)
 	return err
 }
 
@@ -2153,7 +3615,128 @@ func (s *Store) addGroupBlacklistEntry(ctx context.Context, groupID, actorID, us
 	if !found {
 		return GroupBlacklistEntry{}, errNotFound
 	}
+	return s.upsertGroupBlacklistEntry(ctx, groupID, actorID, user, strings.TrimSpace(reason), false)
+}
 
+func (s *Store) adminAddGroupBlacklistEntry(ctx context.Context, groupID, userID, chatID, reason string) (GroupBlacklistEntry, error) {
+	user, found, err := s.resolveGroupBlacklistUser(ctx, userID, chatID)
+	if err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if !found {
+		return GroupBlacklistEntry{}, errNotFound
+	}
+	return s.upsertGroupBlacklistEntry(ctx, groupID, "", user, strings.TrimSpace(reason), true)
+}
+
+func (s *Store) adminAddGroupBlacklistEntryWithAudit(ctx context.Context, admin AdminUser, groupID, userID, chatID, reason string) (GroupBlacklistEntry, error) {
+	user, found, err := s.resolveGroupBlacklistUser(ctx, userID, chatID)
+	if err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if !found {
+		return GroupBlacklistEntry{}, errNotFound
+	}
+	log := s.newAdminAuditLog(admin, "group_blacklist_added", "group_member", user.ID, groupID)
+	if s.pg != nil {
+		entry, err := s.insertAdminGroupBlacklistEntryTx(ctx, groupID, user, strings.TrimSpace(reason), log)
+		if err != nil {
+			return GroupBlacklistEntry{}, err
+		}
+		s.syncAdminGroupBlacklistEntryMemory(entry)
+		s.mu.Lock()
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return entry, nil
+	}
+	if err := s.runAdminAuditLogHook(log); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	entry, err := s.upsertGroupBlacklistEntry(ctx, groupID, "", user, strings.TrimSpace(reason), true)
+	if err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if err := s.appendPreparedAdminAuditLog(ctx, log); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *Store) insertAdminGroupBlacklistEntryTx(ctx context.Context, groupID string, user User, reason string, log AdminAuditLog) (GroupBlacklistEntry, error) {
+	entry := GroupBlacklistEntry{
+		GroupID:   groupID,
+		User:      user.AsContact(),
+		Reason:    strings.TrimSpace(reason),
+		CreatedAt: time.Now(),
+	}
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	defer tx.Rollback(ctx)
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM groups WHERE id = $1)`, groupID).Scan(&exists); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if !exists {
+		return GroupBlacklistEntry{}, errNotFound
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO group_blacklist(group_id, user_id, reason, created_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (group_id, user_id) DO UPDATE SET reason = EXCLUDED.reason, created_at = EXCLUDED.created_at`,
+		entry.GroupID, entry.User.ID, entry.Reason, entry.CreatedAt); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE group_join_requests SET status = 'rejected' WHERE group_id = $1 AND user_id = $2 AND status = 'pending'`, groupID, entry.User.ID); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM group_members WHERE group_id = $1 AND user_id = $2`, groupID, entry.User.ID); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *Store) syncAdminGroupBlacklistEntryMemory(entry GroupBlacklistEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	group, ok := s.groups[entry.GroupID]
+	if ok {
+		for i := range group.Members {
+			if group.Members[i].UserID == entry.User.ID {
+				if entry.User.Nickname == "" {
+					entry.User.Nickname = group.Members[i].Nickname
+				}
+				group.Members = append(group.Members[:i], group.Members[i+1:]...)
+				break
+			}
+		}
+		s.groups[entry.GroupID] = group
+	}
+	replaced := false
+	for i := range s.blacklists {
+		if s.blacklists[i].GroupID == entry.GroupID && s.blacklists[i].User.ID == entry.User.ID {
+			s.blacklists[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.blacklists = append([]GroupBlacklistEntry{entry}, s.blacklists...)
+	}
+	for i, request := range s.joinRequests {
+		if request.GroupID == entry.GroupID && request.User.ID == entry.User.ID && request.Status == "pending" {
+			s.joinRequests[i].Status = "rejected"
+		}
+	}
+}
+
+func (s *Store) upsertGroupBlacklistEntry(ctx context.Context, groupID, actorID string, user User, reason string, skipRoleChecks bool) (GroupBlacklistEntry, error) {
 	entry := GroupBlacklistEntry{
 		GroupID:   groupID,
 		User:      user.AsContact(),
@@ -2168,19 +3751,21 @@ func (s *Store) addGroupBlacklistEntry(ctx context.Context, groupID, actorID, us
 		s.mu.Unlock()
 		return GroupBlacklistEntry{}, errNotFound
 	}
-	actorRole := groupRoleFor(group, actorID)
-	targetRole := groupRoleFor(group, user.ID)
-	if !canManageGroupRole(actorRole) {
-		s.mu.Unlock()
-		return GroupBlacklistEntry{}, errForbidden
-	}
-	if targetRole == "owner" {
-		s.mu.Unlock()
-		return GroupBlacklistEntry{}, errInvalidTarget
-	}
-	if actorRole == "admin" && targetRole != "" && targetRole != "member" {
-		s.mu.Unlock()
-		return GroupBlacklistEntry{}, errForbidden
+	if !skipRoleChecks {
+		actorRole := groupRoleFor(group, actorID)
+		targetRole := groupRoleFor(group, user.ID)
+		if !canManageGroupRole(actorRole) {
+			s.mu.Unlock()
+			return GroupBlacklistEntry{}, errForbidden
+		}
+		if targetRole == "owner" {
+			s.mu.Unlock()
+			return GroupBlacklistEntry{}, errInvalidTarget
+		}
+		if actorRole == "admin" && targetRole != "" && targetRole != "member" {
+			s.mu.Unlock()
+			return GroupBlacklistEntry{}, errForbidden
+		}
 	}
 	for i := range group.Members {
 		if group.Members[i].UserID == user.ID {
@@ -2248,6 +3833,76 @@ func (s *Store) removeGroupBlacklistEntry(ctx context.Context, groupID, userID s
 		return GroupBlacklistEntry{}, err
 	}
 	return removed, nil
+}
+
+func (s *Store) removeGroupBlacklistEntryWithAdminAudit(ctx context.Context, admin AdminUser, groupID, userID string) (GroupBlacklistEntry, error) {
+	removed, found := s.groupBlacklistEntry(groupID, userID)
+	if !found {
+		return GroupBlacklistEntry{}, errNotFound
+	}
+	log := s.newAdminAuditLog(admin, "group_blacklist_removed", "group_member", removed.User.ID, groupID)
+	if s.pg != nil {
+		if err := s.deleteAdminGroupBlacklistEntryTx(ctx, groupID, userID, log); err != nil {
+			return GroupBlacklistEntry{}, err
+		}
+		s.syncGroupBlacklistRemovalMemory(groupID, userID)
+		s.mu.Lock()
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return removed, nil
+	}
+	if err := s.runAdminAuditLogHook(log); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	removed, err := s.removeGroupBlacklistEntry(ctx, groupID, userID)
+	if err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if err := s.appendPreparedAdminAuditLog(ctx, log); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	return removed, nil
+}
+
+func (s *Store) deleteAdminGroupBlacklistEntryTx(ctx context.Context, groupID, userID string, log AdminAuditLog) error {
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `DELETE FROM group_blacklist WHERE group_id = $1 AND user_id = $2`, groupID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errNotFound
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) syncGroupBlacklistRemovalMemory(groupID, userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, entry := range s.blacklists {
+		if entry.GroupID == groupID && entry.User.ID == userID {
+			s.blacklists = append(s.blacklists[:i], s.blacklists[i+1:]...)
+			return
+		}
+	}
+}
+
+func (s *Store) groupBlacklistEntry(groupID, userID string) (GroupBlacklistEntry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.blacklists {
+		if entry.GroupID == groupID && entry.User.ID == userID {
+			return entry, true
+		}
+	}
+	return GroupBlacklistEntry{}, false
 }
 
 func (s *Store) resolveGroupBlacklistUser(ctx context.Context, userID, chatID string) (User, bool, error) {
@@ -2494,13 +4149,13 @@ func upsertUser(ctx context.Context, tx pgx.Tx, user User, passwordHash string) 
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	_, err = tx.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store, created_at, banned_at, ban_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO UPDATE SET country_code = EXCLUDED.country_code, phone = EXCLUDED.phone,
 			chat_id = EXCLUDED.chat_id, nickname = EXCLUDED.nickname, signature = EXCLUDED.signature, avatar_url = EXCLUDED.avatar_url,
 			settings = EXCLUDED.settings, language = EXCLUDED.language, display_mode = EXCLUDED.display_mode, blocked_contact_ids = EXCLUDED.blocked_contact_ids,
-			sticker_store = EXCLUDED.sticker_store`,
-		user.ID, user.Country, user.Phone, passwordHash, user.ChatID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON)
+			sticker_store = EXCLUDED.sticker_store, banned_at = EXCLUDED.banned_at, ban_reason = EXCLUDED.ban_reason`,
+		user.ID, user.Country, user.Phone, passwordHash, user.ChatID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON, user.CreatedAt, user.BannedAt, user.BanReason)
 	return err
 }
 
@@ -2601,6 +4256,136 @@ func insertMessage(ctx context.Context, tx pgx.Tx, msg Message) error {
 		}
 	}
 	return nil
+}
+
+func scanAdminMessageRecord(rows pgx.Rows) (adminMessageRecord, error) {
+	var item adminMessageRecord
+	var attachmentID, attachmentName, attachmentURL, attachmentMime string
+	var attachmentSize int64
+	if err := rows.Scan(
+		&item.ID,
+		&item.ConversationID,
+		&item.SenderID,
+		&item.SenderName,
+		&item.Type,
+		&item.Body,
+		&item.CreatedAt,
+		&item.ConversationTitle,
+		&attachmentID,
+		&attachmentName,
+		&attachmentURL,
+		&attachmentMime,
+		&attachmentSize,
+	); err != nil {
+		return adminMessageRecord{}, err
+	}
+	if attachmentID != "" {
+		item.Attachment = &Attachment{
+			ID:       attachmentID,
+			Name:     attachmentName,
+			URL:      attachmentURL,
+			MimeType: attachmentMime,
+			Size:     attachmentSize,
+		}
+	}
+	return item, nil
+}
+
+func normalizeAdminReport(report Report) Report {
+	if strings.TrimSpace(report.TargetType) == "" {
+		report.TargetType = inferReportTargetType(report.TargetID)
+	}
+	if strings.TrimSpace(report.Status) == "" {
+		report.Status = "open"
+	}
+	return report
+}
+
+func adminReportStatusFinal(status string) bool {
+	return status == "resolved" || status == "rejected"
+}
+
+func adminReportAuditAction(status string) string {
+	switch status {
+	case "open":
+		return "report_reopened"
+	case "reviewing":
+		return "report_reviewing"
+	case "rejected":
+		return "report_rejected"
+	default:
+		return "report_resolved"
+	}
+}
+
+func adminReportTargetTypeCondition(placeholder int) string {
+	return fmt.Sprintf(`(target_type = $%[1]d OR (NULLIF(BTRIM(target_type), '') IS NULL AND (%[2]s) = $%[1]d))`, placeholder, adminReportNormalizedTargetTypeExpr())
+}
+
+func adminReportNormalizedTargetTypeExpr() string {
+	return `CASE
+		WHEN target_id LIKE 'group-%' THEN 'group'
+		WHEN target_id LIKE 'm%' THEN 'message'
+		WHEN target_id LIKE 'session-%' THEN 'user'
+		WHEN target_id LIKE 'u%' OR target_id LIKE '388%' OR target_id LIKE '127%' THEN 'user'
+		ELSE 'group'
+	END`
+}
+
+func inferReportTargetType(targetID string) string {
+	targetID = strings.TrimSpace(targetID)
+	switch {
+	case strings.HasPrefix(targetID, "group-"):
+		return "group"
+	case strings.HasPrefix(targetID, "m"):
+		return "message"
+	case strings.HasPrefix(targetID, "session-"):
+		return "user"
+	case strings.HasPrefix(targetID, "u"), strings.HasPrefix(targetID, "388"), strings.HasPrefix(targetID, "127"):
+		return "user"
+	default:
+		return "group"
+	}
+}
+
+func isValidReportTargetType(targetType string) bool {
+	switch strings.TrimSpace(targetType) {
+	case "user", "group", "message":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeAdminFeedbackStatus(status string) string {
+	switch strings.TrimSpace(strings.ToLower(status)) {
+	case "submitted", "已提交":
+		return "submitted"
+	case "reviewing", "处理中":
+		return "reviewing"
+	case "resolved", "已解决":
+		return "resolved"
+	default:
+		return ""
+	}
+}
+
+func normalizeAdminFeedback(item Feedback) Feedback {
+	item.Status = normalizeAdminFeedbackStatus(item.Status)
+	return item
+}
+
+func userFacingFeedbackStatus(status string) string {
+	switch normalizeAdminFeedbackStatus(status) {
+	case "submitted":
+		return "已提交"
+	case "reviewing":
+		return "处理中"
+	case "resolved":
+		return "已解决"
+	default:
+		return strings.TrimSpace(status)
+	}
 }
 
 func upsertFriendRequest(ctx context.Context, tx pgx.Tx, toUserID string, request FriendRequest) error {

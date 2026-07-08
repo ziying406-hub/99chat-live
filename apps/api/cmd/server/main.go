@@ -5,6 +5,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -24,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -34,6 +37,14 @@ const (
 	chatIDAlphabet           = chatIDLetters + chatIDDigits
 )
 
+var adminLoginDummyPasswordHash = func() string {
+	hash, err := bcrypt.GenerateFromPassword([]byte("invalid-admin-password"), bcrypt.DefaultCost)
+	if err != nil {
+		return ""
+	}
+	return string(hash)
+}()
+
 type User struct {
 	ID                string          `json:"id"`
 	Phone             string          `json:"phone"`
@@ -42,6 +53,9 @@ type User struct {
 	Nickname          string          `json:"nickname"`
 	Signature         string          `json:"signature"`
 	Avatar            string          `json:"avatar"`
+	CreatedAt         time.Time       `json:"createdAt,omitempty"`
+	BannedAt          *time.Time      `json:"bannedAt,omitempty"`
+	BanReason         string          `json:"banReason,omitempty"`
 	Settings          map[string]bool `json:"settings,omitempty"`
 	Language          string          `json:"language,omitempty"`
 	DisplayMode       string          `json:"displayMode,omitempty"`
@@ -200,10 +214,15 @@ type Collection struct {
 }
 
 type Report struct {
-	ID        string    `json:"id"`
-	TargetID  string    `json:"targetId"`
-	Reason    string    `json:"reason"`
-	CreatedAt time.Time `json:"createdAt"`
+	ID                string     `json:"id"`
+	TargetID          string     `json:"targetId"`
+	TargetType        string     `json:"targetType"`
+	Reason            string     `json:"reason"`
+	Status            string     `json:"status"`
+	Resolution        string     `json:"resolution"`
+	ResolvedByAdminID string     `json:"resolvedByAdminId"`
+	ResolvedAt        *time.Time `json:"resolvedAt,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
 }
 
 type AuditLog struct {
@@ -231,12 +250,113 @@ type MessageReadDetail struct {
 }
 
 type Feedback struct {
+	ID                string     `json:"id"`
+	UserID            string     `json:"userId"`
+	Type              string     `json:"type"`
+	Text              string     `json:"text"`
+	Status            string     `json:"status"`
+	AdminNote         string     `json:"adminNote"`
+	ResolvedByAdminID string     `json:"resolvedByAdminId"`
+	ResolvedAt        *time.Time `json:"resolvedAt,omitempty"`
+	CreatedAt         time.Time  `json:"createdAt"`
+}
+
+type userFeedback struct {
 	ID        string    `json:"id"`
 	UserID    string    `json:"userId"`
 	Type      string    `json:"type"`
 	Text      string    `json:"text"`
 	Status    string    `json:"status"`
 	CreatedAt time.Time `json:"createdAt"`
+}
+
+type adminMessageRecord struct {
+	Message
+	ConversationTitle string `json:"conversationTitle,omitempty"`
+}
+
+type adminFileRecord struct {
+	ID             string    `json:"id"`
+	MessageID      string    `json:"messageId"`
+	ConversationID string    `json:"conversationId"`
+	SenderID       string    `json:"senderId"`
+	Name           string    `json:"name"`
+	MimeType       string    `json:"mimeType"`
+	Size           int64     `json:"size"`
+	PublicURL      string    `json:"publicUrl"`
+	CreatedAt      time.Time `json:"createdAt"`
+}
+
+type AdminUser struct {
+	ID          string     `json:"id"`
+	Username    string     `json:"username"`
+	Role        string     `json:"role"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
+	DisabledAt  *time.Time `json:"disabledAt,omitempty"`
+}
+
+type AdminSession struct {
+	ID          string     `json:"id"`
+	AdminUserID string     `json:"adminUserId"`
+	TokenHash   string     `json:"-"`
+	ExpiresAt   time.Time  `json:"expiresAt"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	RevokedAt   *time.Time `json:"revokedAt,omitempty"`
+}
+
+type AdminAuditLog struct {
+	ID            string    `json:"id"`
+	AdminUserID   string    `json:"adminUserId"`
+	AdminUsername string    `json:"adminUsername"`
+	Action        string    `json:"action"`
+	TargetType    string    `json:"targetType"`
+	TargetID      string    `json:"targetId"`
+	Detail        string    `json:"detail"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+type AdminUserRecord struct {
+	AdminUser
+	PasswordHash string `json:"-"`
+}
+
+type adminLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type adminLoginResponse struct {
+	Token string    `json:"token"`
+	Admin AdminUser `json:"admin"`
+}
+
+type adminDashboardResponse struct {
+	TotalUsers      int `json:"totalUsers"`
+	BannedUsers     int `json:"bannedUsers"`
+	TotalGroups     int `json:"totalGroups"`
+	TotalMessages   int `json:"totalMessages"`
+	OpenReports     int `json:"openReports"`
+	OpenFeedback    int `json:"openFeedback"`
+	AttachmentCount int `json:"attachmentCount"`
+	AttachmentBytes int `json:"attachmentBytes"`
+}
+
+type adminUserSummary struct {
+	ID        string     `json:"id"`
+	Phone     string     `json:"phone"`
+	Country   string     `json:"country"`
+	ChatID    string     `json:"chatId"`
+	Nickname  string     `json:"nickname"`
+	Avatar    string     `json:"avatar"`
+	CreatedAt time.Time  `json:"createdAt,omitempty"`
+	Status    string     `json:"status"`
+	BannedAt  *time.Time `json:"bannedAt,omitempty"`
+	BanReason string     `json:"banReason,omitempty"`
+}
+
+type adminUserBanRequest struct {
+	Reason string `json:"reason"`
 }
 
 type LoginDevice struct {
@@ -266,6 +386,10 @@ type Store struct {
 	reports           []Report
 	feedback          []Feedback
 	auditLogs         []AuditLog
+	adminUsers        map[string]AdminUserRecord
+	adminSessions     map[string]AdminSession
+	adminAuditLogs    []AdminAuditLog
+	adminAuditLogHook func(AdminAuditLog) error
 	passwordHashes    map[string]string
 	hub               *Hub
 	pg                *PostgresStore
@@ -326,6 +450,9 @@ func emptyDemoStore() *Store {
 	return &Store{
 		user:              demoUser(),
 		users:             map[string]User{},
+		adminUsers:        map[string]AdminUserRecord{},
+		adminSessions:     map[string]AdminSession{},
+		adminAuditLogs:    []AdminAuditLog{},
 		passwordHashes:    map[string]string{"u1": "demo:demo123456"},
 		contacts:          []Contact{},
 		conversations:     []Conversation{},
@@ -358,6 +485,7 @@ func demoUser() User {
 		Nickname:  "chenshao",
 		Signature: "保持专注，保持联系。",
 		Avatar:    avatar("陈"),
+		CreatedAt: time.Now().Add(-72 * time.Hour),
 	})
 }
 
@@ -365,6 +493,23 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "time": time.Now()})
 	})
+	mux.HandleFunc("/api/admin/auth/login", s.adminLogin)
+	mux.HandleFunc("/api/admin/auth/logout", s.requireAdmin(s.adminLogout))
+	mux.HandleFunc("/api/admin/auth/me", s.requireAdmin(s.adminMe))
+	mux.HandleFunc("/api/admin/dashboard", s.requireAdmin(s.adminDashboard))
+	mux.HandleFunc("/api/admin/users", s.requireAdmin(s.adminUsersRoute))
+	mux.HandleFunc("/api/admin/users/", s.requireAdmin(s.adminUserRoute))
+	mux.HandleFunc("/api/admin/groups", s.requireAdmin(s.adminGroupsRoute))
+	mux.HandleFunc("/api/admin/groups/", s.requireAdmin(s.adminGroupRoute))
+	mux.HandleFunc("/api/admin/messages", s.requireAdmin(s.adminMessagesRoute))
+	mux.HandleFunc("/api/admin/messages/", s.requireAdmin(s.adminMessageRoute))
+	mux.HandleFunc("/api/admin/reports", s.requireAdmin(s.adminReportsRoute))
+	mux.HandleFunc("/api/admin/reports/", s.requireAdmin(s.adminReportRoute))
+	mux.HandleFunc("/api/admin/feedback", s.requireAdmin(s.adminFeedbackRoute))
+	mux.HandleFunc("/api/admin/feedback/", s.requireAdmin(s.adminFeedbackItemRoute))
+	mux.HandleFunc("/api/admin/files", s.requireAdmin(s.adminFilesRoute))
+	mux.HandleFunc("/api/admin/files/", s.requireAdmin(s.adminFileRoute))
+	mux.HandleFunc("/api/admin/audit-logs", s.requireAdmin(s.adminAuditLogsRoute))
 	mux.HandleFunc("/api/auth/login", s.login)
 	mux.HandleFunc("/api/auth/send-code", s.sendAuthCode)
 	mux.HandleFunc("/api/auth/code-login", s.codeLogin)
@@ -395,6 +540,12 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	}
 }
 
+func (s *Store) routes(_ string) *http.ServeMux {
+	mux := http.NewServeMux()
+	registerRoutes(mux, s)
+	return mux
+}
+
 func staticWebRoute(webDir string) http.HandlerFunc {
 	fileServer := http.FileServer(http.Dir(webDir))
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -409,11 +560,18 @@ func staticWebRoute(webDir string) http.HandlerFunc {
 			return
 		}
 		if _, err := os.Stat(filepath.Join(webDir, path)); err != nil {
-			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
+			http.ServeFile(w, r, filepath.Join(webDir, staticWebFallback(path)))
 			return
 		}
 		fileServer.ServeHTTP(w, r)
 	}
+}
+
+func staticWebFallback(path string) string {
+	if path == "admin" || strings.HasPrefix(path, "admin/") {
+		return "admin.html"
+	}
+	return "index.html"
 }
 
 func setStaticWebCacheHeaders(w http.ResponseWriter) {
@@ -444,8 +602,12 @@ func (s *Store) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+	if userIsBanned(user) {
+		writeError(w, http.StatusForbidden, "account banned")
+		return
+	}
 	token := s.issueToken(user.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": user})
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUserResponse(user)})
 }
 
 func (s *Store) sendAuthCode(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +639,58 @@ func (s *Store) sendAuthCode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "code": demoLoginCode, "purpose": req.Purpose})
+}
+
+func (s *Store) adminLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req adminLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	admin, ok, err := s.adminByUsername(r.Context(), req.Username)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin login failed")
+		return
+	}
+	passwordHash := admin.PasswordHash
+	if !ok {
+		passwordHash = adminLoginDummyPasswordHash
+	}
+	if passwordHash == "" || !passwordMatches(passwordHash, req.Password) || !ok {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if admin.DisabledAt != nil {
+		writeError(w, http.StatusForbidden, "admin account disabled")
+		return
+	}
+	now := time.Now()
+	admin.LastLoginAt = &now
+	if err := s.markAdminLogin(r.Context(), admin.ID, now); err != nil {
+		writeError(w, http.StatusInternalServerError, "admin login failed")
+		return
+	}
+	token := s.newAdminToken(admin.ID)
+	session := AdminSession{
+		ID:          newID("admin-session"),
+		AdminUserID: admin.ID,
+		TokenHash:   hashAdminToken(token),
+		ExpiresAt:   now.Add(24 * time.Hour),
+		CreatedAt:   now,
+	}
+	if err := s.saveAdminSession(r.Context(), session); err != nil {
+		writeError(w, http.StatusInternalServerError, "admin login failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, adminLoginResponse{
+		Token: token,
+		Admin: admin.AdminUser,
+	})
 }
 
 func (s *Store) codeLogin(w http.ResponseWriter, r *http.Request) {
@@ -513,8 +727,12 @@ func (s *Store) codeLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	if userIsBanned(user) {
+		writeError(w, http.StatusForbidden, "account banned")
+		return
+	}
 	token := s.issueToken(user.ID)
-	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": user})
+	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": publicUserResponse(user)})
 }
 
 func (s *Store) resetPassword(w http.ResponseWriter, r *http.Request) {
@@ -556,6 +774,511 @@ func (s *Store) resetPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Store) adminLogout(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if err := s.revokeAdminSession(r.Context(), s.currentToken(r)); err != nil {
+		writeError(w, http.StatusInternalServerError, "admin logout failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Store) adminMe(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, admin)
+}
+
+func (s *Store) adminDashboard(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	dashboard, err := s.adminDashboardCounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "dashboard load failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (s *Store) adminUsersRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminSearchUsers(r.Context(), strings.TrimSpace(r.URL.Query().Get("keyword")), strings.TrimSpace(r.URL.Query().Get("status")), strings.TrimSpace(r.URL.Query().Get("from")), strings.TrimSpace(r.URL.Query().Get("to")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "user list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminUserRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	userID := strings.TrimSpace(parts[0])
+	if userID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		user, ok, err := s.adminUserByID(r.Context(), userID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "user detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
+		return
+	}
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	switch parts[1] {
+	case "ban":
+		var req adminUserBanRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		req.Reason = strings.TrimSpace(req.Reason)
+		if req.Reason == "" {
+			writeError(w, http.StatusBadRequest, "ban reason required")
+			return
+		}
+		now := time.Now()
+		user, ok, err := s.setUserBanStateWithAudit(r.Context(), admin, userID, &now, req.Reason, "user_banned", req.Reason)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ban user failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
+	case "unban":
+		user, ok, err := s.setUserBanStateWithAudit(r.Context(), admin, userID, nil, "", "user_unbanned", "")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "unban user failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
+	default:
+		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+func (s *Store) adminGroupsRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminGroups(r.Context(), strings.TrimSpace(r.URL.Query().Get("keyword")), strings.TrimSpace(r.URL.Query().Get("joinMode")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "group list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminGroupRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/groups/"), "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	groupID := strings.TrimSpace(parts[0])
+	if groupID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		group, ok, err := s.adminGroupByID(r.Context(), groupID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "group detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, group)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "blacklist" {
+		userID := strings.TrimSpace(parts[2])
+		if userID == "" {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		switch r.Method {
+		case http.MethodPost:
+			var req struct {
+				Reason string `json:"reason"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid json")
+				return
+			}
+			entry, err := s.adminAddGroupBlacklistEntryWithAudit(r.Context(), admin, groupID, userID, "", strings.TrimSpace(req.Reason))
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					writeError(w, http.StatusNotFound, "group or user not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "blacklist add failed")
+				return
+			}
+			writeJSON(w, http.StatusCreated, entry)
+		case http.MethodDelete:
+			entry, err := s.removeGroupBlacklistEntryWithAdminAudit(r.Context(), admin, groupID, userID)
+			if err != nil {
+				if errors.Is(err, errNotFound) {
+					writeError(w, http.StatusNotFound, "blacklist entry not found")
+					return
+				}
+				writeError(w, http.StatusInternalServerError, "blacklist remove failed")
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"removed": entry.User.ID})
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		}
+		return
+	}
+	if len(parts) != 2 {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch parts[1] {
+	case "members":
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		group, ok, err := s.adminGroupByID(r.Context(), groupID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "group members failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, group.Members)
+	case "mute-all", "unmute-all":
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		allMuted := parts[1] == "mute-all"
+		group, ok, err := s.setAdminGroupAllMuted(r.Context(), admin, groupID, allMuted)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "group update failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "group not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, group)
+	default:
+		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
+func (s *Store) adminMessagesRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminMessages(
+		r.Context(),
+		strings.TrimSpace(r.URL.Query().Get("q")),
+		strings.TrimSpace(r.URL.Query().Get("conversationId")),
+		strings.TrimSpace(r.URL.Query().Get("senderId")),
+		strings.TrimSpace(r.URL.Query().Get("type")),
+		strings.TrimSpace(r.URL.Query().Get("from")),
+		strings.TrimSpace(r.URL.Query().Get("to")),
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "message list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminMessageRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	messageID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/messages/"), "/")
+	if messageID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		message, ok, err := s.adminMessageByID(r.Context(), messageID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "message detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, message)
+	case http.MethodDelete:
+		_, ok, err := s.adminDeleteMessage(r.Context(), admin, messageID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "message delete failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "message not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": []string{messageID}})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Store) adminReportsRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	targetType := strings.TrimSpace(r.URL.Query().Get("targetType"))
+	if targetType == "" {
+		targetType = strings.TrimSpace(r.URL.Query().Get("target"))
+	}
+	items, err := s.adminReports(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), targetType)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "report list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminReportRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/reports/"), "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	reportID := strings.TrimSpace(parts[0])
+	if reportID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		report, ok, err := s.adminReportByID(r.Context(), reportID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "report detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "report not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+		return
+	}
+	if len(parts) != 2 || parts[1] != "resolve" || r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Status     string `json:"status"`
+		Resolution string `json:"resolution"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	report, ok, err := s.adminResolveReport(r.Context(), admin, reportID, req.Status, req.Resolution)
+	if errors.Is(err, errInvalidStatus) {
+		writeError(w, http.StatusBadRequest, "invalid report status")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "report resolve failed")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "report not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, report)
+}
+
+func (s *Store) adminFeedbackRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	if userID == "" {
+		userID = strings.TrimSpace(r.URL.Query().Get("user"))
+	}
+	items, err := s.adminFeedback(r.Context(), strings.TrimSpace(r.URL.Query().Get("status")), userID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "feedback list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminFeedbackItemRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/feedback/"), "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	feedbackID := strings.TrimSpace(parts[0])
+	if feedbackID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		item, ok, err := s.adminFeedbackByID(r.Context(), feedbackID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "feedback detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "feedback not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+		return
+	}
+	if len(parts) != 2 || parts[1] != "status" || r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Status    string `json:"status"`
+		AdminNote string `json:"adminNote"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	item, ok, err := s.adminUpdateFeedbackStatus(r.Context(), admin, feedbackID, req.Status, req.AdminNote)
+	if errors.Is(err, errInvalidStatus) {
+		writeError(w, http.StatusBadRequest, "invalid feedback status")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "feedback update failed")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "feedback not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Store) adminFilesRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminFiles(r.Context(), strings.TrimSpace(r.URL.Query().Get("q")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "file list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminFileRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	fileID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/files/"), "/")
+	if fileID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	item, ok, err := s.adminFileByID(r.Context(), fileID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "file detail failed")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (s *Store) adminAuditLogsRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	targetType := strings.TrimSpace(r.URL.Query().Get("targetType"))
+	if targetType == "" {
+		targetType = strings.TrimSpace(r.URL.Query().Get("target"))
+	}
+	items, err := s.adminAuditLogsFor(
+		r.Context(),
+		strings.TrimSpace(r.URL.Query().Get("admin")),
+		strings.TrimSpace(r.URL.Query().Get("action")),
+		targetType,
+		strings.TrimSpace(r.URL.Query().Get("from")),
+		strings.TrimSpace(r.URL.Query().Get("to")),
+	)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "audit log list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
 func (s *Store) issueToken(userID string) string {
 	var bytes [24]byte
 	if _, err := cryptorand.Read(bytes[:]); err != nil {
@@ -575,6 +1298,14 @@ func (s *Store) issueToken(userID string) string {
 	return token
 }
 
+func (s *Store) newAdminToken(adminUserID string) string {
+	var bytes [24]byte
+	if _, err := cryptorand.Read(bytes[:]); err != nil {
+		return "admin-token-" + adminUserID + "-" + newID("session")
+	}
+	return hex.EncodeToString(bytes[:])
+}
+
 func (s *Store) currentToken(r *http.Request) string {
 	return strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 }
@@ -582,6 +1313,9 @@ func (s *Store) currentToken(r *http.Request) string {
 func (s *Store) userFromToken(ctx context.Context, token string) (User, bool) {
 	if token == "" {
 		return User{}, false
+	}
+	if s.pg == nil && token == "demo-token" {
+		return s.user, true
 	}
 	s.mu.RLock()
 	userID := s.sessions[token]
@@ -606,16 +1340,41 @@ func (s *Store) currentUser(r *http.Request) User {
 
 func (s *Store) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.pg == nil {
+		if s.pg == nil && strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+			if userIsBanned(s.user) {
+				writeError(w, http.StatusForbidden, "account banned")
+				return
+			}
 			next(w, r)
 			return
 		}
 		token := s.currentToken(r)
-		if _, ok := s.userFromToken(r.Context(), token); !ok {
+		user, ok := s.userFromToken(r.Context(), token)
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
+		if userIsBanned(user) {
+			writeError(w, http.StatusForbidden, "account banned")
+			return
+		}
 		next(w, r)
+	}
+}
+
+func (s *Store) requireAdmin(next func(http.ResponseWriter, *http.Request, AdminUser)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := s.currentToken(r)
+		admin, _, ok, err := s.adminBySessionToken(r.Context(), token)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "admin authentication failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		next(w, r, admin)
 	}
 }
 
@@ -708,6 +1467,46 @@ func defaultUserSettings() map[string]bool {
 	}
 }
 
+func userIsBanned(user User) bool {
+	return user.BannedAt != nil
+}
+
+func adminSummaryFromUser(user User) adminUserSummary {
+	return adminUserSummary{
+		ID:        user.ID,
+		Phone:     user.Phone,
+		Country:   user.Country,
+		ChatID:    user.ChatID,
+		Nickname:  user.Nickname,
+		Avatar:    user.Avatar,
+		CreatedAt: user.CreatedAt,
+		Status:    adminUserStatus(user),
+		BannedAt:  user.BannedAt,
+		BanReason: user.BanReason,
+	}
+}
+
+func adminUserStatus(user User) string {
+	if userIsBanned(user) {
+		return "banned"
+	}
+	return "active"
+}
+
+func parseAdminDateFilter(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if ts, err := time.Parse(time.RFC3339, value); err == nil {
+		return ts, true
+	}
+	if day, err := time.Parse("2006-01-02", value); err == nil {
+		return day, true
+	}
+	return time.Time{}, false
+}
+
 func mergeUserSettings(base map[string]bool, patch map[string]bool) map[string]bool {
 	merged := defaultUserSettings()
 	for key, value := range base {
@@ -729,6 +1528,13 @@ func normalizeUserPreferences(user User) User {
 	}
 	user.BlockedContactIDs = uniqueStrings(user.BlockedContactIDs)
 	user.StickerStore = normalizeStickerStore(user.StickerStore)
+	return user
+}
+
+func publicUserResponse(user User) User {
+	user = normalizeUserPreferences(user)
+	user.BannedAt = nil
+	user.BanReason = ""
 	return user
 }
 
@@ -796,7 +1602,7 @@ func (s *Store) register(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	token := s.issueToken(user.ID)
-	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "user": user})
+	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "user": publicUserResponse(user)})
 }
 
 func (s *Store) me(w http.ResponseWriter, r *http.Request) {
@@ -818,8 +1624,7 @@ func (s *Store) meForUser(w http.ResponseWriter, r *http.Request, current User) 
 	defer s.mu.Unlock()
 	switch r.Method {
 	case http.MethodGet:
-		current = normalizeUserPreferences(current)
-		writeJSON(w, http.StatusOK, current)
+		writeJSON(w, http.StatusOK, publicUserResponse(current))
 	case http.MethodPatch:
 		var patch struct {
 			Nickname          *string         `json:"nickname"`
@@ -881,7 +1686,7 @@ func (s *Store) meForUser(w http.ResponseWriter, r *http.Request, current User) 
 		if s.users != nil {
 			s.users[current.ID] = current
 		}
-		writeJSON(w, http.StatusOK, current)
+		writeJSON(w, http.StatusOK, publicUserResponse(current))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -1400,6 +2205,17 @@ func messageMatchesSearch(message Message, query string) bool {
 		return true
 	}
 	return false
+}
+
+func adminMessageAuditDetail(message adminMessageRecord) string {
+	summary := strings.TrimSpace(message.Body)
+	if summary == "" && message.Attachment != nil {
+		summary = message.Attachment.Name
+	}
+	if summary == "" {
+		summary = message.Type
+	}
+	return fmt.Sprintf("%s in %s by %s", summary, defaultString(message.ConversationTitle, message.ConversationID), defaultString(message.SenderName, message.SenderID))
 }
 
 func (s *Store) deleteMessageRoute(w http.ResponseWriter, r *http.Request, conversationID, messageID string) {
@@ -3706,7 +4522,7 @@ func (s *Store) feedbackRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "feedback load failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, items)
+		writeJSON(w, http.StatusOK, publicFeedbackItems(items))
 	case http.MethodPost:
 		var req struct {
 			Type string `json:"type"`
@@ -3734,10 +4550,29 @@ func (s *Store) feedbackRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "feedback save failed")
 			return
 		}
-		writeJSON(w, http.StatusCreated, item)
+		writeJSON(w, http.StatusCreated, publicFeedback(item))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func publicFeedback(item Feedback) userFeedback {
+	return userFeedback{
+		ID:        item.ID,
+		UserID:    item.UserID,
+		Type:      item.Type,
+		Text:      item.Text,
+		Status:    item.Status,
+		CreatedAt: item.CreatedAt,
+	}
+}
+
+func publicFeedbackItems(items []Feedback) []userFeedback {
+	public := make([]userFeedback, 0, len(items))
+	for _, item := range items {
+		public = append(public, publicFeedback(item))
+	}
+	return public
 }
 
 func (s *Store) reportsRoute(w http.ResponseWriter, r *http.Request) {
@@ -3751,6 +4586,7 @@ func (s *Store) reportsRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.TargetID = strings.TrimSpace(req.TargetID)
+	req.TargetType = strings.TrimSpace(req.TargetType)
 	req.Reason = strings.TrimSpace(req.Reason)
 	if req.TargetID == "" {
 		writeError(w, http.StatusBadRequest, "report target required")
@@ -3761,14 +4597,22 @@ func (s *Store) reportsRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.ID = newID("report")
+	if req.TargetType == "" {
+		req.TargetType = inferReportTargetType(req.TargetID)
+	}
+	if !isValidReportTargetType(req.TargetType) {
+		writeError(w, http.StatusBadRequest, "invalid report target type")
+		return
+	}
+	req.Status = "open"
 	req.CreatedAt = time.Now()
-	s.mu.Lock()
-	s.reports = append(s.reports, req)
-	s.mu.Unlock()
 	if err := s.persistReportFor(r.Context(), s.currentUser(r).ID, req); err != nil {
 		writeError(w, http.StatusInternalServerError, "report persistence failed")
 		return
 	}
+	s.mu.Lock()
+	s.reports = append(s.reports, req)
+	s.mu.Unlock()
 	writeJSON(w, http.StatusCreated, req)
 }
 
@@ -3799,6 +4643,16 @@ func (s *Store) websocket(w http.ResponseWriter, r *http.Request) {
 
 func seedStore() *Store {
 	now := time.Now()
+	adminHash, _ := hashPassword("admin123")
+	admin := AdminUserRecord{
+		AdminUser: AdminUser{
+			ID:        "admin-1",
+			Username:  "admin",
+			Role:      "super_admin",
+			CreatedAt: now.Add(-48 * time.Hour),
+		},
+		PasswordHash: adminHash,
+	}
 	contacts := []Contact{
 		{ID: "388770", Nickname: "陈刀仔（日进斗金）", Signature: "愿你每天都好运", ChatID: "cdz888", Avatar: avatar("陈"), Remark: "老朋友", Tags: []string{"优先", "线下"}},
 		{ID: "388769", Nickname: "苏雅", Signature: "在线接待", ChatID: "suya66", Avatar: avatar("苏"), Tags: []string{"客服"}},
@@ -3861,7 +4715,10 @@ func seedStore() *Store {
 	}
 	return &Store{
 		user:           mergeSeedUserPreferences(demoUser()),
-		users:          map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公")}},
+		users:          map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公"), CreatedAt: now.Add(-12 * time.Hour)}},
+		adminUsers:     map[string]AdminUserRecord{admin.ID: admin},
+		adminSessions:  map[string]AdminSession{},
+		adminAuditLogs: []AdminAuditLog{},
 		passwordHashes: map[string]string{"u1": "demo:demo123456"},
 		contacts:       contacts,
 		conversations:  conversations,
@@ -3887,6 +4744,23 @@ func seedStore() *Store {
 func mergeSeedUserPreferences(user User) User {
 	user.BlockedContactIDs = []string{"388770"}
 	return normalizeUserPreferences(user)
+}
+
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func checkPasswordHash(password, hash string) bool {
+	return passwordMatches(hash, password)
+}
+
+func hashAdminToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func (h *Hub) Add(c *WSConn) {
