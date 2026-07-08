@@ -5,6 +5,7 @@ import (
 	"context"
 	cryptorand "crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
@@ -24,6 +25,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 const (
@@ -239,6 +242,50 @@ type Feedback struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type AdminUser struct {
+	ID          string     `json:"id"`
+	Username    string     `json:"username"`
+	Role        string     `json:"role"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
+	DisabledAt  *time.Time `json:"disabledAt,omitempty"`
+}
+
+type AdminSession struct {
+	ID          string     `json:"id"`
+	AdminUserID string     `json:"adminUserId"`
+	TokenHash   string     `json:"-"`
+	ExpiresAt   time.Time  `json:"expiresAt"`
+	CreatedAt   time.Time  `json:"createdAt"`
+	RevokedAt   *time.Time `json:"revokedAt,omitempty"`
+}
+
+type AdminAuditLog struct {
+	ID            string    `json:"id"`
+	AdminUserID   string    `json:"adminUserId"`
+	AdminUsername string    `json:"adminUsername"`
+	Action        string    `json:"action"`
+	TargetType    string    `json:"targetType"`
+	TargetID      string    `json:"targetId"`
+	Detail        string    `json:"detail"`
+	CreatedAt     time.Time `json:"createdAt"`
+}
+
+type AdminUserRecord struct {
+	AdminUser
+	PasswordHash string `json:"-"`
+}
+
+type adminLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+type adminLoginResponse struct {
+	Token string    `json:"token"`
+	Admin AdminUser `json:"admin"`
+}
+
 type LoginDevice struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -266,6 +313,9 @@ type Store struct {
 	reports           []Report
 	feedback          []Feedback
 	auditLogs         []AuditLog
+	adminUsers        map[string]AdminUserRecord
+	adminSessions     map[string]AdminSession
+	adminAuditLogs    []AdminAuditLog
 	passwordHashes    map[string]string
 	hub               *Hub
 	pg                *PostgresStore
@@ -326,6 +376,9 @@ func emptyDemoStore() *Store {
 	return &Store{
 		user:              demoUser(),
 		users:             map[string]User{},
+		adminUsers:        map[string]AdminUserRecord{},
+		adminSessions:     map[string]AdminSession{},
+		adminAuditLogs:    []AdminAuditLog{},
 		passwordHashes:    map[string]string{"u1": "demo:demo123456"},
 		contacts:          []Contact{},
 		conversations:     []Conversation{},
@@ -365,6 +418,9 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "time": time.Now()})
 	})
+	mux.HandleFunc("/api/admin/auth/login", s.adminLogin)
+	mux.HandleFunc("/api/admin/auth/logout", s.requireAdmin(s.adminLogout))
+	mux.HandleFunc("/api/admin/auth/me", s.requireAdmin(s.adminMe))
 	mux.HandleFunc("/api/auth/login", s.login)
 	mux.HandleFunc("/api/auth/send-code", s.sendAuthCode)
 	mux.HandleFunc("/api/auth/code-login", s.codeLogin)
@@ -393,6 +449,12 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	if webDir := strings.TrimSpace(os.Getenv("WEB_DIR")); webDir != "" {
 		mux.HandleFunc("/", staticWebRoute(webDir))
 	}
+}
+
+func (s *Store) routes(_ string) *http.ServeMux {
+	mux := http.NewServeMux()
+	registerRoutes(mux, s)
+	return mux
 }
 
 func staticWebRoute(webDir string) http.HandlerFunc {
@@ -479,6 +541,54 @@ func (s *Store) sendAuthCode(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "code": demoLoginCode, "purpose": req.Purpose})
 }
 
+func (s *Store) adminLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req adminLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid json")
+		return
+	}
+	req.Username = strings.TrimSpace(req.Username)
+	admin, ok, err := s.adminByUsername(r.Context(), req.Username)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "admin login failed")
+		return
+	}
+	if !ok || !passwordMatches(admin.PasswordHash, req.Password) {
+		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if admin.DisabledAt != nil {
+		writeError(w, http.StatusForbidden, "admin account disabled")
+		return
+	}
+	now := time.Now()
+	admin.LastLoginAt = &now
+	if err := s.markAdminLogin(r.Context(), admin.ID, now); err != nil {
+		writeError(w, http.StatusInternalServerError, "admin login failed")
+		return
+	}
+	token := s.newAdminToken(admin.ID)
+	session := AdminSession{
+		ID:          newID("admin-session"),
+		AdminUserID: admin.ID,
+		TokenHash:   hashAdminToken(token),
+		ExpiresAt:   now.Add(24 * time.Hour),
+		CreatedAt:   now,
+	}
+	if err := s.saveAdminSession(r.Context(), session); err != nil {
+		writeError(w, http.StatusInternalServerError, "admin login failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, adminLoginResponse{
+		Token: token,
+		Admin: admin.AdminUser,
+	})
+}
+
 func (s *Store) codeLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -556,6 +666,26 @@ func (s *Store) resetPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+func (s *Store) adminLogout(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if err := s.revokeAdminSession(r.Context(), s.currentToken(r)); err != nil {
+		writeError(w, http.StatusInternalServerError, "admin logout failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Store) adminMe(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, admin)
+}
+
 func (s *Store) issueToken(userID string) string {
 	var bytes [24]byte
 	if _, err := cryptorand.Read(bytes[:]); err != nil {
@@ -573,6 +703,14 @@ func (s *Store) issueToken(userID string) string {
 	s.sessions[token] = userID
 	s.sessionCreatedAt[token] = time.Now()
 	return token
+}
+
+func (s *Store) newAdminToken(adminUserID string) string {
+	var bytes [24]byte
+	if _, err := cryptorand.Read(bytes[:]); err != nil {
+		return "admin-token-" + adminUserID + "-" + newID("session")
+	}
+	return hex.EncodeToString(bytes[:])
 }
 
 func (s *Store) currentToken(r *http.Request) string {
@@ -616,6 +754,22 @@ func (s *Store) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		next(w, r)
+	}
+}
+
+func (s *Store) requireAdmin(next func(http.ResponseWriter, *http.Request, AdminUser)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		token := s.currentToken(r)
+		admin, _, ok, err := s.adminBySessionToken(r.Context(), token)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "admin authentication failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		next(w, r, admin)
 	}
 }
 
@@ -3799,6 +3953,16 @@ func (s *Store) websocket(w http.ResponseWriter, r *http.Request) {
 
 func seedStore() *Store {
 	now := time.Now()
+	adminHash, _ := hashPassword("admin123")
+	admin := AdminUserRecord{
+		AdminUser: AdminUser{
+			ID:        "admin-1",
+			Username:  "admin",
+			Role:      "super_admin",
+			CreatedAt: now.Add(-48 * time.Hour),
+		},
+		PasswordHash: adminHash,
+	}
 	contacts := []Contact{
 		{ID: "388770", Nickname: "陈刀仔（日进斗金）", Signature: "愿你每天都好运", ChatID: "cdz888", Avatar: avatar("陈"), Remark: "老朋友", Tags: []string{"优先", "线下"}},
 		{ID: "388769", Nickname: "苏雅", Signature: "在线接待", ChatID: "suya66", Avatar: avatar("苏"), Tags: []string{"客服"}},
@@ -3862,6 +4026,9 @@ func seedStore() *Store {
 	return &Store{
 		user:           mergeSeedUserPreferences(demoUser()),
 		users:          map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公")}},
+		adminUsers:     map[string]AdminUserRecord{admin.ID: admin},
+		adminSessions:  map[string]AdminSession{},
+		adminAuditLogs: []AdminAuditLog{},
 		passwordHashes: map[string]string{"u1": "demo:demo123456"},
 		contacts:       contacts,
 		conversations:  conversations,
@@ -3887,6 +4054,23 @@ func seedStore() *Store {
 func mergeSeedUserPreferences(user User) User {
 	user.BlockedContactIDs = []string{"388770"}
 	return normalizeUserPreferences(user)
+}
+
+func hashPassword(password string) (string, error) {
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func checkPasswordHash(password, hash string) bool {
+	return passwordMatches(hash, password)
+}
+
+func hashAdminToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func (h *Hub) Add(c *WSConn) {

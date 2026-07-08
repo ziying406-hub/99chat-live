@@ -35,6 +35,46 @@ func TestSignFileRejectsInvalidSizes(t *testing.T) {
 	}
 }
 
+func TestAdminLoginReturnsTokenAndProfile(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/auth/login", bytes.NewBufferString(`{"username":"admin","password":"admin123"}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected admin login 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Token string    `json:"token"`
+		Admin AdminUser `json:"admin"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode admin login response: %v", err)
+	}
+	if response.Token == "" {
+		t.Fatal("expected admin token")
+	}
+	if response.Admin.Username != "admin" || response.Admin.Role != "super_admin" {
+		t.Fatalf("unexpected admin profile: %+v", response.Admin)
+	}
+}
+
+func TestAdminRoutesRequireAdminToken(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/auth/me", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without admin token, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestSignFileRejectsInvalidJSON(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()

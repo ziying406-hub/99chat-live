@@ -243,6 +243,38 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			reason TEXT NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`CREATE TABLE IF NOT EXISTS admin_users (
+			id TEXT PRIMARY KEY,
+			username TEXT UNIQUE NOT NULL,
+			password_hash TEXT NOT NULL,
+			role TEXT NOT NULL CHECK (role IN ('super_admin', 'admin')),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			last_login_at TIMESTAMPTZ,
+			disabled_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS admin_sessions (
+			id TEXT PRIMARY KEY,
+			admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+			token_hash TEXT NOT NULL,
+			expires_at TIMESTAMPTZ NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			revoked_at TIMESTAMPTZ
+		)`,
+		`CREATE TABLE IF NOT EXISTS admin_audit_logs (
+			id TEXT PRIMARY KEY,
+			admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+			action TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id TEXT NOT NULL DEFAULT '',
+			detail TEXT NOT NULL DEFAULT '',
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ`,
+		`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open'`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolution TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_by_admin_id TEXT`,
+		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`,
 		`CREATE TABLE IF NOT EXISTS feedback (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL REFERENCES users(id),
@@ -251,10 +283,17 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			status TEXT NOT NULL DEFAULT '已提交',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS admin_note TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_by_admin_id TEXT`,
+		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at ON messages(conversation_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_friend_requests_to_user ON friend_requests(to_user_id, status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_collections_user_kind ON collections(user_id, kind, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_sessions_token_hash ON admin_sessions(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_reports_status_created_at ON reports(status, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_feedback_status_created_at ON feedback(status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_user_created_at ON feedback(user_id, created_at)`,
 		`CREATE TABLE IF NOT EXISTS app_metadata (
 			key TEXT PRIMARY KEY,
@@ -316,6 +355,9 @@ func (s *Store) clearRuntimeData() {
 	s.reports = []Report{}
 	s.feedback = []Feedback{}
 	s.auditLogs = []AuditLog{}
+	s.adminUsers = map[string]AdminUserRecord{}
+	s.adminSessions = map[string]AdminSession{}
+	s.adminAuditLogs = []AdminAuditLog{}
 	s.passwordHashes = map[string]string{}
 	s.sessions = map[string]string{}
 	s.sessionCreatedAt = map[string]time.Time{}
@@ -509,6 +551,16 @@ func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 	if err := upsertUser(ctx, tx, s.user, demoPasswordHash); err != nil {
 		return err
 	}
+	adminHash, err := hashPassword("admin123")
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO admin_users(id, username, password_hash, role, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (id) DO UPDATE SET username = EXCLUDED.username, password_hash = EXCLUDED.password_hash, role = EXCLUDED.role`,
+		"admin-1", "admin", adminHash, "super_admin", time.Now().Add(-48*time.Hour)); err != nil {
+		return err
+	}
 	for _, contact := range s.contacts {
 		user := normalizeUserPreferences(User{ID: contact.ID, Country: "+60", Phone: "000" + contact.ID, ChatID: contact.ChatID, Nickname: contact.Nickname, Signature: contact.Signature, Avatar: contact.Avatar})
 		if err := upsertUser(ctx, tx, user, "demo:contact"); err != nil {
@@ -664,6 +716,9 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		groupBots:         groupBots,
 		collections:       collections,
 		auditLogs:         auditLogs,
+		adminUsers:        map[string]AdminUserRecord{},
+		adminSessions:     map[string]AdminSession{},
+		adminAuditLogs:    []AdminAuditLog{},
 		hub:               hub,
 	}, nil
 }
@@ -1073,6 +1128,127 @@ func (s *Store) authenticate(ctx context.Context, country, phone, password strin
 	user.Settings = decodeUserSettings(settingsJSON)
 	user.StickerStore = decodeStickerStore(stickerStoreJSON)
 	return normalizeUserPreferences(user), true, nil
+}
+
+func (s *Store) adminByUsername(ctx context.Context, username string) (AdminUserRecord, bool, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, admin := range s.adminUsers {
+			if admin.Username == username {
+				return admin, true, nil
+			}
+		}
+		return AdminUserRecord{}, false, nil
+	}
+	var admin AdminUserRecord
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, username, password_hash, role, created_at, last_login_at, disabled_at
+		FROM admin_users WHERE username = $1`, username).
+		Scan(&admin.ID, &admin.Username, &admin.PasswordHash, &admin.Role, &admin.CreatedAt, &admin.LastLoginAt, &admin.DisabledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminUserRecord{}, false, nil
+	}
+	if err != nil {
+		return AdminUserRecord{}, false, err
+	}
+	return admin, true, nil
+}
+
+func (s *Store) saveAdminSession(ctx context.Context, session AdminSession) error {
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.adminSessions == nil {
+			s.adminSessions = map[string]AdminSession{}
+		}
+		s.adminSessions[session.ID] = session
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO admin_sessions(id, admin_user_id, token_hash, expires_at, created_at, revoked_at)
+		VALUES ($1, $2, $3, $4, $5, $6)`,
+		session.ID, session.AdminUserID, session.TokenHash, session.ExpiresAt, session.CreatedAt, session.RevokedAt)
+	return err
+}
+
+func (s *Store) adminBySessionToken(ctx context.Context, token string) (AdminUser, AdminSession, bool, error) {
+	if token == "" {
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	tokenHash := hashAdminToken(token)
+	now := time.Now()
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, session := range s.adminSessions {
+			if session.TokenHash != tokenHash || session.RevokedAt != nil || !session.ExpiresAt.After(now) {
+				continue
+			}
+			admin, ok := s.adminUsers[session.AdminUserID]
+			if !ok || admin.DisabledAt != nil {
+				return AdminUser{}, AdminSession{}, false, nil
+			}
+			return admin.AdminUser, session, true, nil
+		}
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	var admin AdminUser
+	var session AdminSession
+	err := s.pg.pool.QueryRow(ctx, `SELECT au.id, au.username, au.role, au.created_at, au.last_login_at, au.disabled_at,
+			s.id, s.admin_user_id, s.token_hash, s.expires_at, s.created_at, s.revoked_at
+		FROM admin_sessions s
+		JOIN admin_users au ON au.id = s.admin_user_id
+		WHERE s.token_hash = $1 AND s.revoked_at IS NULL AND s.expires_at > now()`, tokenHash).
+		Scan(&admin.ID, &admin.Username, &admin.Role, &admin.CreatedAt, &admin.LastLoginAt, &admin.DisabledAt,
+			&session.ID, &session.AdminUserID, &session.TokenHash, &session.ExpiresAt, &session.CreatedAt, &session.RevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	if err != nil {
+		return AdminUser{}, AdminSession{}, false, err
+	}
+	if admin.DisabledAt != nil {
+		return AdminUser{}, AdminSession{}, false, nil
+	}
+	return admin, session, true, nil
+}
+
+func (s *Store) revokeAdminSession(ctx context.Context, token string) error {
+	if token == "" {
+		return nil
+	}
+	tokenHash := hashAdminToken(token)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		now := time.Now()
+		for id, session := range s.adminSessions {
+			if session.TokenHash != tokenHash || session.RevokedAt != nil {
+				continue
+			}
+			session.RevokedAt = &now
+			s.adminSessions[id] = session
+		}
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `UPDATE admin_sessions SET revoked_at = now()
+		WHERE token_hash = $1 AND revoked_at IS NULL`, tokenHash)
+	return err
+}
+
+func (s *Store) markAdminLogin(ctx context.Context, adminUserID string, loginAt time.Time) error {
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		admin, ok := s.adminUsers[adminUserID]
+		if !ok {
+			return nil
+		}
+		admin.LastLoginAt = &loginAt
+		s.adminUsers[adminUserID] = admin
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `UPDATE admin_users SET last_login_at = $2 WHERE id = $1`, adminUserID, loginAt)
+	return err
 }
 
 func (s *Store) userByPhone(ctx context.Context, country, phone string) (User, bool, error) {
