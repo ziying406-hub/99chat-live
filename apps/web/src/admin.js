@@ -109,6 +109,22 @@ export function adminNavButtonAttrs(route) {
   };
 }
 
+export function renderAdminNavMarkup(currentSection) {
+  return adminRoutes.map(route => `
+          <button
+            class="admin-nav-link${currentSection === route.key ? " active" : ""}"
+            type="${adminNavButtonAttrs(route).type}"
+            data-route="${adminNavButtonAttrs(route).route}"
+          >
+            <span>${escapeHtml(route.label)}</span>
+          </button>
+        `).join("");
+}
+
+export function shouldIgnoreAdminClick(button) {
+  return Boolean(button?.dataset?.route) && button?.type === "submit";
+}
+
 function routePath(section) {
   if (section === "login") return "/admin/login";
   return adminRoutes.find(route => route.key === section)?.path || "/admin";
@@ -283,15 +299,7 @@ function renderSidebar() {
         </div>
       </div>
       <nav class="admin-nav">
-        ${adminRoutes.map(route => `
-          <button
-            class="admin-nav-link${state.section === route.key ? " active" : ""}"
-            type="${adminNavButtonAttrs(route).type}"
-            data-route="${adminNavButtonAttrs(route).route}"
-          >
-            <span>${escapeHtml(route.label)}</span>
-          </button>
-        `).join("")}
+        ${renderAdminNavMarkup(state.section)}
       </nav>
     </aside>
   `;
@@ -729,7 +737,7 @@ async function handleAction(button) {
 root?.addEventListener("click", event => {
   const button = event.target.closest("button");
   if (!button) return;
-  if (button.dataset.route && button.type === "submit") return;
+  if (shouldIgnoreAdminClick(button)) return;
   handleAction(button);
 });
 
