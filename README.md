@@ -69,6 +69,14 @@ The web app's photo and file buttons now use this flow when the API is running, 
 - Phone: `174319676`
 - Password: `demo123456`
 
+## Admin Console
+
+- URL: `http://localhost:5173/admin.html`
+- Username: `admin`
+- Password: `admin123`
+
+The first admin console includes dashboard counts, users, groups, messages, reports, feedback, files, and audit logs. The API must be running on `http://localhost:8080` for live admin data.
+
 The frontend also supports a local demo mode when the API is not running.
 
 ## Real Features Added
