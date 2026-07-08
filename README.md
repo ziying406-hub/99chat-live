@@ -50,6 +50,8 @@ They avoid the two common setup issues on this machine:
 - Go's default build cache permission errors
 - `pnpm exec` missing `node` when the shell PATH is incomplete
 
+If the bundled Node path changes, run the web test helper with `CODEX_NODE_BIN=/path/to/node/bin ./scripts/web-test.sh`.
+
 ## File Uploads
 
 The API includes a local object-store compatible flow for first-version attachments:

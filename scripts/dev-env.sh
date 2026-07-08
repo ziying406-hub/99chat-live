@@ -1,9 +1,8 @@
 #!/usr/bin/env sh
 
 # Shared local test/runtime helpers for this repo.
-# Source this file before running Go or Node-based checks in this workspace.
 
-ROOT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+ROOT_DIR="${ROOT_DIR:-$(CDPATH= cd -- "$(pwd)" && pwd)}"
 
 export GOCACHE="${GOCACHE:-$ROOT_DIR/.gocache}"
 export GOMODCACHE="${GOMODCACHE:-$ROOT_DIR/.gomodcache}"
