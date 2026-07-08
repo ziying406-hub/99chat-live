@@ -36,6 +36,22 @@ DATABASE_URL='postgresql://appuser:change-me@127.0.0.1:5432/appdb' go run ./cmd/
 
 Use `PORT=18080` or another port if `8080` is already running.
 
+## Local Test Environment
+
+This repo includes small helper scripts that set up stable local caches and the bundled Node runtime used in this environment:
+
+```sh
+./scripts/go-test.sh ./...
+./scripts/web-test.sh
+```
+
+They avoid the two common setup issues on this machine:
+
+- Go's default build cache permission errors
+- `pnpm exec` missing `node` when the shell PATH is incomplete
+
+If the bundled Node path changes, run the web test helper with `CODEX_NODE_BIN=/path/to/node/bin ./scripts/web-test.sh`.
+
 ## File Uploads
 
 The API includes a local object-store compatible flow for first-version attachments:
