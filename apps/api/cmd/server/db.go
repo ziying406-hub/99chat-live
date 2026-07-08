@@ -3638,6 +3638,17 @@ func (s *Store) adminAddGroupBlacklistEntryWithAudit(ctx context.Context, admin 
 		return GroupBlacklistEntry{}, errNotFound
 	}
 	log := s.newAdminAuditLog(admin, "group_blacklist_added", "group_member", user.ID, groupID)
+	if s.pg != nil {
+		entry, err := s.insertAdminGroupBlacklistEntryTx(ctx, groupID, user, strings.TrimSpace(reason), log)
+		if err != nil {
+			return GroupBlacklistEntry{}, err
+		}
+		s.syncAdminGroupBlacklistEntryMemory(entry)
+		s.mu.Lock()
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return entry, nil
+	}
 	if err := s.runAdminAuditLogHook(log); err != nil {
 		return GroupBlacklistEntry{}, err
 	}
@@ -3649,6 +3660,80 @@ func (s *Store) adminAddGroupBlacklistEntryWithAudit(ctx context.Context, admin 
 		return GroupBlacklistEntry{}, err
 	}
 	return entry, nil
+}
+
+func (s *Store) insertAdminGroupBlacklistEntryTx(ctx context.Context, groupID string, user User, reason string, log AdminAuditLog) (GroupBlacklistEntry, error) {
+	entry := GroupBlacklistEntry{
+		GroupID:   groupID,
+		User:      user.AsContact(),
+		Reason:    strings.TrimSpace(reason),
+		CreatedAt: time.Now(),
+	}
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	defer tx.Rollback(ctx)
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM groups WHERE id = $1)`, groupID).Scan(&exists); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if !exists {
+		return GroupBlacklistEntry{}, errNotFound
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO group_blacklist(group_id, user_id, reason, created_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (group_id, user_id) DO UPDATE SET reason = EXCLUDED.reason, created_at = EXCLUDED.created_at`,
+		entry.GroupID, entry.User.ID, entry.Reason, entry.CreatedAt); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if _, err := tx.Exec(ctx, `UPDATE group_join_requests SET status = 'rejected' WHERE group_id = $1 AND user_id = $2 AND status = 'pending'`, groupID, entry.User.ID); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM group_members WHERE group_id = $1 AND user_id = $2`, groupID, entry.User.ID); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return GroupBlacklistEntry{}, err
+	}
+	return entry, nil
+}
+
+func (s *Store) syncAdminGroupBlacklistEntryMemory(entry GroupBlacklistEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	group, ok := s.groups[entry.GroupID]
+	if ok {
+		for i := range group.Members {
+			if group.Members[i].UserID == entry.User.ID {
+				if entry.User.Nickname == "" {
+					entry.User.Nickname = group.Members[i].Nickname
+				}
+				group.Members = append(group.Members[:i], group.Members[i+1:]...)
+				break
+			}
+		}
+		s.groups[entry.GroupID] = group
+	}
+	replaced := false
+	for i := range s.blacklists {
+		if s.blacklists[i].GroupID == entry.GroupID && s.blacklists[i].User.ID == entry.User.ID {
+			s.blacklists[i] = entry
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		s.blacklists = append([]GroupBlacklistEntry{entry}, s.blacklists...)
+	}
+	for i, request := range s.joinRequests {
+		if request.GroupID == entry.GroupID && request.User.ID == entry.User.ID && request.Status == "pending" {
+			s.joinRequests[i].Status = "rejected"
+		}
+	}
 }
 
 func (s *Store) upsertGroupBlacklistEntry(ctx context.Context, groupID, actorID string, user User, reason string, skipRoleChecks bool) (GroupBlacklistEntry, error) {
@@ -3756,6 +3841,16 @@ func (s *Store) removeGroupBlacklistEntryWithAdminAudit(ctx context.Context, adm
 		return GroupBlacklistEntry{}, errNotFound
 	}
 	log := s.newAdminAuditLog(admin, "group_blacklist_removed", "group_member", removed.User.ID, groupID)
+	if s.pg != nil {
+		if err := s.deleteAdminGroupBlacklistEntryTx(ctx, groupID, userID, log); err != nil {
+			return GroupBlacklistEntry{}, err
+		}
+		s.syncGroupBlacklistRemovalMemory(groupID, userID)
+		s.mu.Lock()
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return removed, nil
+	}
 	if err := s.runAdminAuditLogHook(log); err != nil {
 		return GroupBlacklistEntry{}, err
 	}
@@ -3767,6 +3862,36 @@ func (s *Store) removeGroupBlacklistEntryWithAdminAudit(ctx context.Context, adm
 		return GroupBlacklistEntry{}, err
 	}
 	return removed, nil
+}
+
+func (s *Store) deleteAdminGroupBlacklistEntryTx(ctx context.Context, groupID, userID string, log AdminAuditLog) error {
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `DELETE FROM group_blacklist WHERE group_id = $1 AND user_id = $2`, groupID, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errNotFound
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *Store) syncGroupBlacklistRemovalMemory(groupID, userID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i, entry := range s.blacklists {
+		if entry.GroupID == groupID && entry.User.ID == userID {
+			s.blacklists = append(s.blacklists[:i], s.blacklists[i+1:]...)
+			return
+		}
+	}
 }
 
 func (s *Store) groupBlacklistEntry(groupID, userID string) (GroupBlacklistEntry, bool) {

@@ -10,6 +10,8 @@
 - Public user responses for login, code login, register, and `/api/me` now scrub `bannedAt` and `banReason`.
 - Admin login now uses a dummy bcrypt comparison when the username is missing to reduce username timing differences.
 - Frontend admin filter normalization now preserves section-specific query params instead of collapsing everything to `keyword`.
+- Follow-up re-review fixes made Postgres admin blacklist add/remove transactional with admin audit insertion.
+- Follow-up re-review fixes rendered section-specific admin filter controls in the UI so the new filters are reachable end to end.
 
 ## Files Changed
 
@@ -23,7 +25,7 @@
 ## Verification
 
 - `./scripts/go-test.sh ./...` passed.
-- `./scripts/web-test.sh` passed with 208 tests, 208 passed, 0 failed.
+- `./scripts/web-test.sh` passed with 209 tests, 209 passed, 0 failed.
 
 ## Concerns
 

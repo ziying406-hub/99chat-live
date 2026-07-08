@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adminRoutes } from "./adminStatus.js";
-import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminNavMarkup, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
+import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminFilterFields, renderAdminNavMarkup, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
 
 test("deriveSection maps admin entry routes", () => {
   assert.equal(deriveSection("/admin/login"), "login");
@@ -71,4 +71,14 @@ test("normalizeLoaderFilters preserves section-specific admin filter params", ()
       to: "2026-07-08"
     }
   );
+});
+
+test("admin filter fields expose section-specific controls", () => {
+  assert.match(renderAdminFilterFields("groups", { joinMode: "approval" }), /name="joinMode"/);
+  assert.match(renderAdminFilterFields("messages", { type: "image" }), /name="type"/);
+  assert.match(renderAdminFilterFields("messages", { from: "2026-07-08" }), /name="from"/);
+  assert.match(renderAdminFilterFields("reports", { target: "user" }), /name="target"/);
+  assert.match(renderAdminFilterFields("feedback", { user: "u2" }), /name="user"/);
+  assert.match(renderAdminFilterFields("audit-logs", { admin: "admin" }), /name="admin"/);
+  assert.match(renderAdminFilterFields("audit-logs", { action: "user_banned" }), /name="action"/);
 });

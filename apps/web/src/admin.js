@@ -130,15 +130,12 @@ function routePath(section) {
   return adminRoutes.find(route => route.key === section)?.path || "/admin";
 }
 
-function setFilter(section, nextKeyword) {
-  state.filters[section] = {
-    ...(state.filters[section] || {}),
-    keyword: nextKeyword
-  };
+function setFilter(section, nextFilters) {
+  state.filters[section] = normalizeLoaderFilters(section, nextFilters);
 }
 
 function currentKeyword() {
-  return state.filters[state.section]?.keyword || "";
+	return state.filters[state.section]?.keyword || "";
 }
 
 function escapeHtml(value) {
@@ -213,6 +210,61 @@ export function normalizeLoaderFilters(section, filters = {}) {
   });
 
   return next;
+}
+
+function filterOption(value, label, current) {
+  return `<option value="${escapeHtml(value)}" ${current === value ? "selected" : ""}>${escapeHtml(label)}</option>`;
+}
+
+export function renderAdminFilterFields(section, filters = {}) {
+  const value = name => escapeHtml(filters[name] || "");
+  const select = (name, label, options) => `
+    <label class="admin-filter-field">
+      <span>${escapeHtml(label)}</span>
+      <select class="select admin-compact-input" name="${escapeHtml(name)}">
+        ${options.map(([optionValue, optionLabel]) => filterOption(optionValue, optionLabel, filters[name] || "")).join("")}
+      </select>
+    </label>
+  `;
+  const input = (name, label, type = "text", placeholder = "") => `
+    <label class="admin-filter-field">
+      <span>${escapeHtml(label)}</span>
+      <input class="input admin-compact-input" type="${escapeHtml(type)}" name="${escapeHtml(name)}" value="${value(name)}" placeholder="${escapeHtml(placeholder)}" />
+    </label>
+  `;
+
+  if (section === "groups") {
+    return select("joinMode", "入群方式", [["", "全部"], ["public_qr", "公开扫码"], ["approval", "需审批"], ["closed", "已关闭"], ["invite", "邀请"]]);
+  }
+  if (section === "messages") {
+    return [
+      select("type", "类型", [["", "全部"], ["text", "文本"], ["image", "图片"], ["video", "视频"], ["file", "文件"], ["voice", "语音"], ["collection", "收藏卡片"]]),
+      input("from", "开始", "date"),
+      input("to", "结束", "date")
+    ].join("");
+  }
+  if (section === "reports") {
+    return [
+      select("status", "状态", [["", "全部"], ["open", "待处理"], ["reviewing", "处理中"], ["resolved", "已处理"], ["rejected", "已驳回"]]),
+      select("target", "目标", [["", "全部"], ["user", "用户"], ["group", "群组"], ["message", "消息"]])
+    ].join("");
+  }
+  if (section === "feedback") {
+    return [
+      select("status", "状态", [["", "全部"], ["submitted", "已提交"], ["reviewing", "处理中"], ["resolved", "已解决"]]),
+      input("user", "用户", "text", "用户 ID")
+    ].join("");
+  }
+  if (section === "audit-logs") {
+    return [
+      input("admin", "管理员", "text", "管理员 ID / 用户名"),
+      input("action", "动作", "text", "例如 user_banned"),
+      select("target", "目标", [["", "全部"], ["user", "用户"], ["group", "群组"], ["group_member", "群成员"], ["message", "消息"], ["report", "举报"], ["feedback", "反馈"]]),
+      input("from", "开始", "date"),
+      input("to", "结束", "date")
+    ].join("");
+  }
+  return "";
 }
 
 function haystackForRow(section, row) {
@@ -390,20 +442,22 @@ function statusPill(kind, value) {
 }
 
 function renderTableScreen() {
-  const meta = tableMeta[state.section];
-  return `
-    ${renderError()}
-    <section class="admin-panel">
-      <form class="admin-toolbar" data-form="filter">
+	const meta = tableMeta[state.section];
+  const filters = state.filters[state.section] || {};
+	return `
+		${renderError()}
+		<section class="admin-panel">
+			<form class="admin-toolbar" data-form="filter">
         <input
           class="input admin-compact-input"
           type="search"
-          name="keyword"
-          value="${escapeHtml(currentKeyword())}"
-          placeholder="${escapeHtml(meta.filterPlaceholder)}"
-        />
-        <button class="ghost-btn inline" type="submit">搜索</button>
-      </form>
+					name="keyword"
+					value="${escapeHtml(currentKeyword())}"
+					placeholder="${escapeHtml(meta.filterPlaceholder)}"
+				/>
+        ${renderAdminFilterFields(state.section, filters)}
+				<button class="ghost-btn inline" type="submit">搜索</button>
+			</form>
       <div class="admin-table-wrap">
         ${state.loading ? `<div class="admin-empty">正在加载...</div>` : renderTableContent(meta)}
       </div>
@@ -760,13 +814,12 @@ root?.addEventListener("submit", event => {
   if (form.dataset.form === "login") {
     submitLogin(form);
     return;
-  }
-  if (form.dataset.form === "filter") {
-    const keyword = String(new FormData(form).get("keyword") || "").trim();
-    setFilter(state.section, keyword);
-    loadSection();
-    return;
-  }
+	}
+	if (form.dataset.form === "filter") {
+		setFilter(state.section, Object.fromEntries(new FormData(form).entries()));
+		loadSection();
+		return;
+	}
   if (form.dataset.form === "confirm") {
     handleConfirmedAction(form);
   }
