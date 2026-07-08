@@ -1308,6 +1308,41 @@ func TestStaticWebRouteServesIndexFallback(t *testing.T) {
 	}
 }
 
+func TestStaticWebRouteServesAdminFallback(t *testing.T) {
+	webDir := t.TempDir()
+	index := []byte("<!doctype html><title>99Chat</title>")
+	admin := []byte("<!doctype html><title>66chat Admin</title>")
+	if err := os.WriteFile(filepath.Join(webDir, "index.html"), index, 0o644); err != nil {
+		t.Fatalf("write index: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(webDir, "admin.html"), admin, 0o644); err != nil {
+		t.Fatalf("write admin: %v", err)
+	}
+
+	handler := staticWebRoute(webDir)
+	for _, path := range []string{
+		"/admin",
+		"/admin/login",
+		"/admin/users",
+		"/admin/groups",
+		"/admin/messages",
+		"/admin/reports",
+		"/admin/feedback",
+		"/admin/files",
+		"/admin/audit-logs",
+	} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s status = %d, want 200", path, rec.Code)
+		}
+		if body := rec.Body.String(); !strings.Contains(body, "66chat Admin") {
+			t.Fatalf("%s body = %q, want admin fallback", path, body)
+		}
+	}
+}
+
 func TestStaticWebRouteDisablesFrontendCaching(t *testing.T) {
 	webDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(webDir, "index.html"), []byte("<!doctype html>"), 0o644); err != nil {

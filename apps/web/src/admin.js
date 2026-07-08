@@ -1,8 +1,10 @@
 import { createAdminApi } from "./adminApi.js";
 import { adminRoutes, adminStatusLabel, requiresConfirmation } from "./adminStatus.js";
 
+const win = typeof window === "undefined" ? null : window;
+const doc = typeof document === "undefined" ? null : document;
 const api = createAdminApi();
-const root = document.querySelector("#admin-root");
+const root = doc?.querySelector("#admin-root") || null;
 const protectedSections = new Set(adminRoutes.map(route => route.key));
 const routeMap = new Map(adminRoutes.map(route => [route.path, route.key]));
 const loaders = {
@@ -17,7 +19,7 @@ const loaders = {
 
 const state = {
   admin: null,
-  section: deriveSection(window.location.pathname),
+  section: deriveSection(win?.location?.pathname || "/admin"),
   loading: false,
   filters: {},
   rows: [],
@@ -83,10 +85,21 @@ const tableMeta = {
   }
 };
 
-function deriveSection(pathname) {
+export function deriveSection(pathname) {
   if (pathname === "/admin/login") return "login";
   if (pathname === "/admin.html") return "login";
   return routeMap.get(pathname) || "dashboard";
+}
+
+export function resolveSectionAccess({ admin, section }) {
+  const isProtected = protectedSections.has(section) || section === "dashboard";
+  if (!admin && isProtected) {
+    return { allowed: false, redirectTo: "/admin/login", load: false };
+  }
+  if (admin && section === "login") {
+    return { allowed: false, redirectTo: "/admin", load: true };
+  }
+  return { allowed: true, redirectTo: "", load: false };
 }
 
 function routePath(section) {
@@ -142,8 +155,8 @@ function formatBytes(value) {
 function toast(message, tone = "success") {
   state.toast = { message, tone };
   render();
-  window.clearTimeout(toast.timer);
-  toast.timer = window.setTimeout(() => {
+  win?.clearTimeout(toast.timer);
+  toast.timer = win?.setTimeout(() => {
     if (state.toast?.message === message) {
       state.toast = null;
       render();
@@ -152,13 +165,9 @@ function toast(message, tone = "success") {
 }
 
 function applySectionRules() {
-  const isProtected = protectedSections.has(state.section) || state.section === "dashboard";
-  if (!state.admin && isProtected) {
-    navigate("/admin/login", { replace: true, load: false });
-    return false;
-  }
-  if (state.admin && state.section === "login") {
-    navigate("/admin", { replace: true, load: false });
+  const access = resolveSectionAccess({ admin: state.admin, section: state.section });
+  if (!access.allowed) {
+    navigate(access.redirectTo, { replace: true, load: access.load });
     return false;
   }
   return true;
@@ -218,9 +227,10 @@ async function loadSection(section = state.section) {
 }
 
 function navigate(path, { replace = false, load = true } = {}) {
+  if (!win) return;
   const method = replace ? "replaceState" : "pushState";
-  window.history[method]({}, "", path);
-  state.section = deriveSection(window.location.pathname);
+  win.history[method]({}, "", path);
+  state.section = deriveSection(win.location.pathname);
   state.error = "";
   state.confirm = null;
   if (load) {
@@ -244,7 +254,7 @@ async function bootstrap() {
   } catch (error) {
     api.clearToken();
     state.admin = null;
-    state.error = deriveSection(window.location.pathname) === "login" ? "" : (error.message || "登录已过期");
+    state.error = deriveSection(win?.location?.pathname || "/admin") === "login" ? "" : (error.message || "登录已过期");
   } finally {
     state.loading = false;
   }
@@ -687,13 +697,13 @@ async function handleAction(button) {
       toast("用户已解封");
     } else if (action === "resolve-report") {
       const status = button.dataset.status || "resolved";
-      const resolution = window.prompt(status === "resolved" ? "请输入处理结果" : "请输入驳回说明", "");
+      const resolution = win?.prompt(status === "resolved" ? "请输入处理结果" : "请输入驳回说明", "");
       if (resolution === null) return;
       await api.resolveReport(button.dataset.id || "", { status, resolution: resolution.trim() });
       toast(status === "resolved" ? "举报已解决" : "举报已驳回");
     } else if (action === "feedback-status") {
       const status = button.dataset.status || "reviewing";
-      const adminNote = window.prompt("请输入管理员备注（可留空）", "");
+      const adminNote = win?.prompt("请输入管理员备注（可留空）", "");
       if (adminNote === null) return;
       await api.updateFeedback(button.dataset.id || "", { status, adminNote: adminNote.trim() });
       toast("反馈状态已更新");
@@ -731,9 +741,11 @@ root?.addEventListener("submit", event => {
   }
 });
 
-window.addEventListener("popstate", () => {
-  state.section = deriveSection(window.location.pathname);
+win?.addEventListener("popstate", () => {
+  state.section = deriveSection(win.location.pathname);
   loadSection();
 });
 
-bootstrap();
+if (win && root) {
+  bootstrap();
+}

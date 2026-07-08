@@ -552,11 +552,18 @@ func staticWebRoute(webDir string) http.HandlerFunc {
 			return
 		}
 		if _, err := os.Stat(filepath.Join(webDir, path)); err != nil {
-			http.ServeFile(w, r, filepath.Join(webDir, "index.html"))
+			http.ServeFile(w, r, filepath.Join(webDir, staticWebFallback(path)))
 			return
 		}
 		fileServer.ServeHTTP(w, r)
 	}
+}
+
+func staticWebFallback(path string) string {
+	if path == "admin" || strings.HasPrefix(path, "admin/") {
+		return "admin.html"
+	}
+	return "index.html"
 }
 
 func setStaticWebCacheHeaders(w http.ResponseWriter) {
