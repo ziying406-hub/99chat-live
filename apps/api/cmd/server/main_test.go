@@ -156,6 +156,92 @@ func TestAdminResolveReportUpdatesStatus(t *testing.T) {
 	}
 }
 
+func TestAdminFeedbackRoutesNormalizeStatusAndDashboardCounts(t *testing.T) {
+	store := seedStore()
+	store.feedback = []Feedback{
+		{ID: "feedback-old", UserID: "u1", Type: "Bug 反馈", Text: "旧反馈", Status: "已提交", CreatedAt: time.Now().Add(-time.Hour)},
+		{ID: "feedback-new", UserID: "u1", Type: "Bug 反馈", Text: "新反馈", Status: "reviewing", CreatedAt: time.Now()},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/feedback", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected feedback list 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var items []Feedback
+	if err := json.NewDecoder(listRec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode feedback list: %v", err)
+	}
+	if len(items) != 2 || items[1].Status != "submitted" {
+		t.Fatalf("expected normalized feedback statuses, got %+v", items)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/admin/feedback/feedback-old", nil)
+	detailReq.Header.Set("Authorization", "Bearer "+token)
+	detailRec := httptest.NewRecorder()
+	mux.ServeHTTP(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("expected feedback detail 200, got %d: %s", detailRec.Code, detailRec.Body.String())
+	}
+	var detail Feedback
+	if err := json.NewDecoder(detailRec.Body).Decode(&detail); err != nil {
+		t.Fatalf("decode feedback detail: %v", err)
+	}
+	if detail.Status != "submitted" {
+		t.Fatalf("expected normalized feedback detail status, got %+v", detail)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/api/admin/feedback/feedback-old/status", bytes.NewBufferString(`{"status":"resolved","adminNote":"done"}`))
+	updateReq.Header.Set("Authorization", "Bearer "+token)
+	updateRec := httptest.NewRecorder()
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected feedback update 200, got %d: %s", updateRec.Code, updateRec.Body.String())
+	}
+
+	dashboardReq := httptest.NewRequest(http.MethodGet, "/api/admin/dashboard", nil)
+	dashboardReq.Header.Set("Authorization", "Bearer "+token)
+	dashboardRec := httptest.NewRecorder()
+	mux.ServeHTTP(dashboardRec, dashboardReq)
+	if dashboardRec.Code != http.StatusOK {
+		t.Fatalf("expected dashboard 200, got %d: %s", dashboardRec.Code, dashboardRec.Body.String())
+	}
+	var dashboard map[string]int
+	if err := json.NewDecoder(dashboardRec.Body).Decode(&dashboard); err != nil {
+		t.Fatalf("decode dashboard: %v", err)
+	}
+	if dashboard["openFeedback"] != 1 {
+		t.Fatalf("expected 1 open feedback after resolution, got %+v", dashboard)
+	}
+}
+
+func TestAdminMuteAllRollsBackWhenAuditFails(t *testing.T) {
+	store := seedStore()
+	store.adminAuditLogHook = func(AdminAuditLog) error {
+		return errors.New("audit failed")
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/groups/21444/mute-all", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected mute-all failure 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if store.groups["21444"].AllMuted {
+		t.Fatalf("expected group to remain unmuted after audit failure, got %+v", store.groups["21444"])
+	}
+	if len(store.adminAuditLogs) != 0 {
+		t.Fatalf("expected no admin audit logs recorded on failure, got %+v", store.adminAuditLogs)
+	}
+}
+
 func TestAdminBanUserBlocksLoginAndWritesAudit(t *testing.T) {
 	store := seedStore()
 	mux := store.routes("")

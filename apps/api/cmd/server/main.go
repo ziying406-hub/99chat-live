@@ -933,7 +933,7 @@ func (s *Store) adminGroupRoute(w http.ResponseWriter, r *http.Request, admin Ad
 			return
 		}
 		allMuted := parts[1] == "mute-all"
-		group, ok, err := s.setAdminGroupAllMuted(r.Context(), groupID, allMuted)
+		group, ok, err := s.setAdminGroupAllMuted(r.Context(), admin, groupID, allMuted)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "group update failed")
 			return
@@ -942,11 +942,6 @@ func (s *Store) adminGroupRoute(w http.ResponseWriter, r *http.Request, admin Ad
 			writeError(w, http.StatusNotFound, "group not found")
 			return
 		}
-		action := "group_unmuted_all"
-		if allMuted {
-			action = "group_muted_all"
-		}
-		_ = s.appendAdminAuditLog(r.Context(), admin, action, "group", groupID, group.Title)
 		writeJSON(w, http.StatusOK, group)
 	default:
 		writeError(w, http.StatusNotFound, "not found")
@@ -985,7 +980,7 @@ func (s *Store) adminMessageRoute(w http.ResponseWriter, r *http.Request, admin 
 		}
 		writeJSON(w, http.StatusOK, message)
 	case http.MethodDelete:
-		message, ok, err := s.adminDeleteMessage(r.Context(), messageID)
+		_, ok, err := s.adminDeleteMessage(r.Context(), admin, messageID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "message delete failed")
 			return
@@ -994,8 +989,6 @@ func (s *Store) adminMessageRoute(w http.ResponseWriter, r *http.Request, admin 
 			writeError(w, http.StatusNotFound, "message not found")
 			return
 		}
-		detail := adminMessageAuditDetail(message)
-		_ = s.appendAdminAuditLog(r.Context(), admin, "message_deleted", "message", messageID, detail)
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": []string{messageID}})
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1069,7 +1062,6 @@ func (s *Store) adminReportRoute(w http.ResponseWriter, r *http.Request, admin A
 		writeError(w, http.StatusNotFound, "report not found")
 		return
 	}
-	_ = s.appendAdminAuditLog(r.Context(), admin, "report_resolved", "report", reportID, report.Resolution)
 	writeJSON(w, http.StatusOK, report)
 }
 
@@ -1140,7 +1132,6 @@ func (s *Store) adminFeedbackItemRoute(w http.ResponseWriter, r *http.Request, a
 		writeError(w, http.StatusNotFound, "feedback not found")
 		return
 	}
-	_ = s.appendAdminAuditLog(r.Context(), admin, "feedback_status_updated", "feedback", feedbackID, item.Status)
 	writeJSON(w, http.StatusOK, item)
 }
 
