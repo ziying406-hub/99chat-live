@@ -8,7 +8,7 @@ import {
   browserNotificationPayload,
   browserNotificationPermissionView,
   shouldShowBrowserNotification
-} from "./browserNotifications.js?v=20260707-notify-sw-fallback";
+} from "./browserNotifications.js?v=20260708-mention-ui-notify-cache";
 import { DEMO_LOGIN_CODE, codeLoginFailureAction, sendCodeFailureMessage, validateDemoLoginCode } from "./authModes.js";
 import { createAddFriendDraft, updateAddFriendDraft } from "./addFriendDraft.js";
 import { generateRandomChatId, shouldReplaceChatId, userQrText } from "./chatIdentity.js";
@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-mention-notify-fix";
+const APP_VERSION = "20260708-mention-ui-notify-cache";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -987,7 +987,7 @@ function renderMessage(message) {
   const isGroup = conversation?.kind === "group";
   const roleLabel = mine ? "你" : isGroup ? "群成员" : "对方";
   const senderDisplayName = mine && isGroup ? groupNicknameForConversation(conversation) : mine ? "你" : message.senderName;
-  const mentionedMe = (message.mentions || []).includes(state.user.id);
+  const mentionedMe = !mine && messageMentionsCurrentUser(message);
   const multiSelectActive = state.multiSelect?.conversationId === state.selectedConversationId;
   const selected = Boolean(state.multiSelect?.selectedIds?.includes(message.id));
   const highlighted = state.highlightedMessageId === message.id;
