@@ -265,18 +265,19 @@ Observed result after ban:
 
 - The manual browser smoke used `http://127.0.0.1:5174/admin.html` because `5173` was occupied by a broken pre-existing listener, not because Task 6 required a different app build.
 - The frontend regression fix remained valid under a plain static host: loading `admin.html` and then navigating with the sidebar worked once the nav buttons rendered as `type="button"`.
-- Separately, the Go server verification already proved the production-facing fallback path for `/admin/*`: when the admin SPA is served by the Go app, backend routing can hand admin deep links back to the SPA entry instead of returning a raw 404.
+- Separately, Task 5 added focused Go tests for the production-facing `/admin/*` fallback path. Task 6 did not repeat an HTTP request to `/admin` or `/admin/users` against the live Go server; it relied on those committed tests plus the static-host smoke for the interactive frontend flow.
 - What remains true is that `python3 -m http.server` does not provide that history fallback. Deep-link requests like `/admin/users` still depend on the Go server fallback (or another SPA-aware static host), while `admin.html` works as a direct entry file under plain static hosting.
 
 ## Files Changed
 
 - `apps/web/src/admin.js`
 - `apps/web/src/adminApp.test.js`
-- `apps/web/src/adminApp.test.js`
+- `.superpowers/sdd/task-6-report.md`
 
 ## Commits Created
 
 - `cecc018` - `fix: restore admin console navigation`
+- `4481e73` - `fix: strengthen task 6 admin nav regression coverage`
 
 ## PIDs And Cleanup
 
