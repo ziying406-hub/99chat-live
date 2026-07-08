@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -135,6 +136,71 @@ func TestAdminBanUserBlocksLoginAndWritesAudit(t *testing.T) {
 	}
 	if len(store.adminAuditLogs) != 1 || store.adminAuditLogs[0].Action != "user_banned" {
 		t.Fatalf("expected user_banned audit log, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminBanUserBlocksCodeLogin(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/u-demo/ban", bytes.NewBufferString(`{"reason":"spam"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected ban 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/code-login", bytes.NewBufferString(`{"country":"+60","phone":"174319676","code":"123456"}`))
+	loginRec := httptest.NewRecorder()
+	mux.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusForbidden {
+		t.Fatalf("expected banned code login 403, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+}
+
+func TestAdminBanUserBlocksRequireAuthWithoutAuthorization(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/u-demo/ban", bytes.NewBufferString(`{"reason":"spam"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected ban 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	protectedReq := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	protectedRec := httptest.NewRecorder()
+	mux.ServeHTTP(protectedRec, protectedReq)
+	if protectedRec.Code != http.StatusForbidden {
+		t.Fatalf("expected banned requireAuth 403 without authorization, got %d: %s", protectedRec.Code, protectedRec.Body.String())
+	}
+}
+
+func TestAdminBanUserRollsBackWhenAuditFails(t *testing.T) {
+	store := seedStore()
+	store.adminAuditLogHook = func(AdminAuditLog) error {
+		return errors.New("audit failed")
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/u-demo/ban", bytes.NewBufferString(`{"reason":"spam"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected ban failure 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if userIsBanned(store.user) {
+		t.Fatalf("expected demo user to remain unbanned after audit failure, got %+v", store.user)
+	}
+	if len(store.adminAuditLogs) != 0 {
+		t.Fatalf("expected no audit logs recorded on failure, got %+v", store.adminAuditLogs)
 	}
 }
 
@@ -626,6 +692,22 @@ func TestCodeLoginRequiresDemoCodeAndReturnsToken(t *testing.T) {
 	}
 	if store.sessions[response.Token] != "u1" {
 		t.Fatalf("token was not registered in sessions: %+v", store.sessions)
+	}
+}
+
+func TestCodeLoginRejectsBannedUser(t *testing.T) {
+	store := seedStore()
+	now := time.Now()
+	store.user.BannedAt = &now
+	store.user.BanReason = "spam"
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/code-login", bytes.NewBufferString(`{"country":"+60","phone":"174319676","code":"123456"}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected banned code login 403, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

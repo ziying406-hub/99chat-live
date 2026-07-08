@@ -347,6 +347,7 @@ type Store struct {
 	adminUsers        map[string]AdminUserRecord
 	adminSessions     map[string]AdminSession
 	adminAuditLogs    []AdminAuditLog
+	adminAuditLogHook func(AdminAuditLog) error
 	passwordHashes    map[string]string
 	hub               *Hub
 	pg                *PostgresStore
@@ -802,7 +803,7 @@ func (s *Store) adminUserRoute(w http.ResponseWriter, r *http.Request, admin Adm
 			return
 		}
 		now := time.Now()
-		user, ok, err := s.setUserBanState(r.Context(), userID, &now, req.Reason)
+		user, ok, err := s.setUserBanStateWithAudit(r.Context(), admin, userID, &now, req.Reason, "user_banned", req.Reason)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "ban user failed")
 			return
@@ -811,23 +812,15 @@ func (s *Store) adminUserRoute(w http.ResponseWriter, r *http.Request, admin Adm
 			writeError(w, http.StatusNotFound, "user not found")
 			return
 		}
-		if err := s.appendAdminAuditLog(r.Context(), admin, "user_banned", "user", user.ID, req.Reason); err != nil {
-			writeError(w, http.StatusInternalServerError, "ban audit failed")
-			return
-		}
 		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
 	case "unban":
-		user, ok, err := s.setUserBanState(r.Context(), userID, nil, "")
+		user, ok, err := s.setUserBanStateWithAudit(r.Context(), admin, userID, nil, "", "user_unbanned", "")
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "unban user failed")
 			return
 		}
 		if !ok {
 			writeError(w, http.StatusNotFound, "user not found")
-			return
-		}
-		if err := s.appendAdminAuditLog(r.Context(), admin, "user_unbanned", "user", user.ID, ""); err != nil {
-			writeError(w, http.StatusInternalServerError, "unban audit failed")
 			return
 		}
 		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
@@ -898,6 +891,10 @@ func (s *Store) currentUser(r *http.Request) User {
 func (s *Store) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if s.pg == nil && strings.TrimSpace(r.Header.Get("Authorization")) == "" {
+			if userIsBanned(s.user) {
+				writeError(w, http.StatusForbidden, "account banned")
+				return
+			}
 			next(w, r)
 			return
 		}

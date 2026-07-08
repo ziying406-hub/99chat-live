@@ -1454,6 +1454,91 @@ func (s *Store) setUserBanState(ctx context.Context, userID string, bannedAt *ti
 	return normalizeUserPreferences(user), true, nil
 }
 
+func (s *Store) setUserBanStateWithAudit(ctx context.Context, admin AdminUser, userID string, bannedAt *time.Time, reason string, action string, detail string) (User, bool, error) {
+	userID = s.resolveAdminTargetUserID(userID)
+	reason = strings.TrimSpace(reason)
+	detail = strings.TrimSpace(detail)
+	log := AdminAuditLog{
+		ID:            newID("admin-audit"),
+		AdminUserID:   admin.ID,
+		AdminUsername: admin.Username,
+		Action:        action,
+		TargetType:    "user",
+		TargetID:      userID,
+		Detail:        detail,
+		CreatedAt:     time.Now(),
+	}
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+
+		var user User
+		switch {
+		case s.user.ID == userID:
+			user = s.user
+		default:
+			var ok bool
+			user, ok = s.users[userID]
+			if !ok {
+				return User{}, false, nil
+			}
+		}
+		log.TargetID = user.ID
+		if s.adminAuditLogHook != nil {
+			if err := s.adminAuditLogHook(log); err != nil {
+				return User{}, false, err
+			}
+		}
+		user.BannedAt = bannedAt
+		user.BanReason = reason
+		if s.user.ID == userID {
+			s.user = user
+		} else {
+			s.users[userID] = user
+		}
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		return user, true, nil
+	}
+
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return User{}, false, err
+	}
+	defer tx.Rollback(ctx)
+
+	var user User
+	var settingsJSON, stickerStoreJSON []byte
+	err = tx.QueryRow(ctx, `UPDATE users
+		SET banned_at = $2, ban_reason = $3
+		WHERE id = $1
+		RETURNING id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store`,
+		userID, bannedAt, reason).
+		Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	user.Settings = decodeUserSettings(settingsJSON)
+	user.StickerStore = decodeStickerStore(stickerStoreJSON)
+	user = normalizeUserPreferences(user)
+	log.TargetID = user.ID
+
+	if _, err := tx.Exec(ctx, `INSERT INTO admin_audit_logs(id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		log.ID, log.AdminUserID, log.AdminUsername, log.Action, log.TargetType, log.TargetID, log.Detail, log.CreatedAt); err != nil {
+		return User{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return User{}, false, err
+	}
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	return user, true, nil
+}
+
 func (s *Store) appendAdminAuditLog(ctx context.Context, admin AdminUser, action string, targetType string, targetID string, detail string) error {
 	log := AdminAuditLog{
 		ID:            newID("admin-audit"),
