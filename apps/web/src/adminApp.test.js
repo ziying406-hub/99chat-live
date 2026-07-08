@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { deriveSection, resolveSectionAccess } from "./admin.js";
+import { adminNavButtonAttrs, deriveSection, resolveSectionAccess } from "./admin.js";
 
 test("deriveSection maps admin entry routes", () => {
   assert.equal(deriveSection("/admin/login"), "login");
@@ -18,3 +18,9 @@ test("resolveSectionAccess redirects persisted admins from login and loads dashb
   });
 });
 
+test("admin nav buttons render as non-submit controls", () => {
+  assert.deepEqual(adminNavButtonAttrs({ path: "/admin/users" }), {
+    type: "button",
+    route: "/admin/users"
+  });
+});

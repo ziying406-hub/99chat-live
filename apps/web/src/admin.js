@@ -102,6 +102,13 @@ export function resolveSectionAccess({ admin, section }) {
   return { allowed: true, redirectTo: "", load: false };
 }
 
+export function adminNavButtonAttrs(route) {
+  return {
+    type: "button",
+    route: route.path
+  };
+}
+
 function routePath(section) {
   if (section === "login") return "/admin/login";
   return adminRoutes.find(route => route.key === section)?.path || "/admin";
@@ -277,7 +284,11 @@ function renderSidebar() {
       </div>
       <nav class="admin-nav">
         ${adminRoutes.map(route => `
-          <button class="admin-nav-link${state.section === route.key ? " active" : ""}" data-route="${route.path}">
+          <button
+            class="admin-nav-link${state.section === route.key ? " active" : ""}"
+            type="${adminNavButtonAttrs(route).type}"
+            data-route="${adminNavButtonAttrs(route).route}"
+          >
             <span>${escapeHtml(route.label)}</span>
           </button>
         `).join("")}
