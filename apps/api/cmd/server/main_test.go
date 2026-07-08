@@ -249,12 +249,21 @@ func TestUserFeedbackHistoryKeepsChineseStatusAfterAdminUpdate(t *testing.T) {
 	if listRec.Code != http.StatusOK {
 		t.Fatalf("expected feedback list 200, got %d: %s", listRec.Code, listRec.Body.String())
 	}
-	var items []Feedback
+	var items []map[string]any
 	if err := json.NewDecoder(listRec.Body).Decode(&items); err != nil {
 		t.Fatalf("decode user feedback list: %v", err)
 	}
-	if len(items) != 1 || items[0].Status != "处理中" {
+	if len(items) != 1 || items[0]["status"] != "处理中" {
 		t.Fatalf("expected user-facing Chinese status after admin update, got %+v", items)
+	}
+	if _, ok := items[0]["adminNote"]; ok {
+		t.Fatalf("user-facing feedback leaked adminNote: %+v", items[0])
+	}
+	if _, ok := items[0]["resolvedByAdminId"]; ok {
+		t.Fatalf("user-facing feedback leaked resolvedByAdminId: %+v", items[0])
+	}
+	if _, ok := items[0]["resolvedAt"]; ok {
+		t.Fatalf("user-facing feedback leaked resolvedAt: %+v", items[0])
 	}
 }
 

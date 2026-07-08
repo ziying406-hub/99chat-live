@@ -95,3 +95,16 @@ Exact test results
 
 Notes
 - I did not add a true Postgres integration test because this workspace does not provide an external test database in the current harness; the new focused tests instead cover the shared live-state helpers that the Postgres branches now call after commit.
+
+## Review Fixes After `3525e8f`
+
+What changed
+- Split the user-facing `/api/feedback` response shape from the internal `Feedback` model so public feedback create/list responses now omit admin-only fields.
+- Kept admin feedback endpoints unchanged so `/api/admin/feedback` and `/api/admin/feedback/{id}` still expose moderation metadata when needed.
+- Extended `TestUserFeedbackHistoryKeepsChineseStatusAfterAdminUpdate` to verify the user-facing history still shows the Chinese status and does not leak `adminNote`, `resolvedByAdminId`, or `resolvedAt`.
+
+Exact test results
+- `./scripts/go-test.sh ./cmd/server -run 'TestUserFeedbackHistoryKeepsChineseStatusAfterAdminUpdate|TestFeedbackCanBeSubmittedAndListed' -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	0.905s`)
+- `./scripts/go-test.sh ./cmd/server -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	9.532s`)

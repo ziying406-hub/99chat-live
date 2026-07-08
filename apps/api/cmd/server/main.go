@@ -253,6 +253,15 @@ type Feedback struct {
 	CreatedAt         time.Time  `json:"createdAt"`
 }
 
+type userFeedback struct {
+	ID        string    `json:"id"`
+	UserID    string    `json:"userId"`
+	Type      string    `json:"type"`
+	Text      string    `json:"text"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"createdAt"`
+}
+
 type adminMessageRecord struct {
 	Message
 	ConversationTitle string `json:"conversationTitle,omitempty"`
@@ -4420,7 +4429,7 @@ func (s *Store) feedbackRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "feedback load failed")
 			return
 		}
-		writeJSON(w, http.StatusOK, items)
+		writeJSON(w, http.StatusOK, publicFeedbackItems(items))
 	case http.MethodPost:
 		var req struct {
 			Type string `json:"type"`
@@ -4448,10 +4457,29 @@ func (s *Store) feedbackRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "feedback save failed")
 			return
 		}
-		writeJSON(w, http.StatusCreated, item)
+		writeJSON(w, http.StatusCreated, publicFeedback(item))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func publicFeedback(item Feedback) userFeedback {
+	return userFeedback{
+		ID:        item.ID,
+		UserID:    item.UserID,
+		Type:      item.Type,
+		Text:      item.Text,
+		Status:    item.Status,
+		CreatedAt: item.CreatedAt,
+	}
+}
+
+func publicFeedbackItems(items []Feedback) []userFeedback {
+	public := make([]userFeedback, 0, len(items))
+	for _, item := range items {
+		public = append(public, publicFeedback(item))
+	}
+	return public
 }
 
 func (s *Store) reportsRoute(w http.ResponseWriter, r *http.Request) {
