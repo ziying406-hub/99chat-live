@@ -4479,15 +4479,19 @@ func (s *Store) reportsRoute(w http.ResponseWriter, r *http.Request) {
 	if req.TargetType == "" {
 		req.TargetType = inferReportTargetType(req.TargetID)
 	}
+	if !isValidReportTargetType(req.TargetType) {
+		writeError(w, http.StatusBadRequest, "invalid report target type")
+		return
+	}
 	req.Status = "open"
 	req.CreatedAt = time.Now()
-	s.mu.Lock()
-	s.reports = append(s.reports, req)
-	s.mu.Unlock()
 	if err := s.persistReportFor(r.Context(), s.currentUser(r).ID, req); err != nil {
 		writeError(w, http.StatusInternalServerError, "report persistence failed")
 		return
 	}
+	s.mu.Lock()
+	s.reports = append(s.reports, req)
+	s.mu.Unlock()
 	writeJSON(w, http.StatusCreated, req)
 }
 

@@ -1551,30 +1551,22 @@ func (s *Store) setAdminGroupAllMuted(ctx context.Context, admin AdminUser, grou
 		action = "group_muted_all"
 	}
 	if s.pg == nil {
+		group, ok, err := s.adminGroupByID(ctx, groupID)
+		if err != nil || !ok {
+			return Group{}, ok, err
+		}
+		log := s.newAdminAuditLog(admin, action, "group", groupID, group.Title)
+		if err := s.runAdminAuditLogHook(log); err != nil {
+			return Group{}, false, err
+		}
+		group.AllMuted = allMuted
+		if !s.applyGroupAllMutedUpdate(group) {
+			return Group{}, false, nil
+		}
 		s.mu.Lock()
-		defer s.mu.Unlock()
-		if group, ok := s.groups[groupID]; ok {
-			log := s.newAdminAuditLog(admin, action, "group", groupID, group.Title)
-			if err := s.runAdminAuditLogHook(log); err != nil {
-				return Group{}, false, err
-			}
-			group.AllMuted = allMuted
-			s.groups[groupID] = group
-			s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
-			return group, true, nil
-		}
-		for i := range s.discoverGroups {
-			if s.discoverGroups[i].ID == groupID {
-				log := s.newAdminAuditLog(admin, action, "group", groupID, s.discoverGroups[i].Title)
-				if err := s.runAdminAuditLogHook(log); err != nil {
-					return Group{}, false, err
-				}
-				s.discoverGroups[i].AllMuted = allMuted
-				s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
-				return s.discoverGroups[i], true, nil
-			}
-		}
-		return Group{}, false, nil
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return group, true, nil
 	}
 	tx, err := s.pg.pool.Begin(ctx)
 	if err != nil {
@@ -1613,10 +1605,30 @@ func (s *Store) setAdminGroupAllMuted(ctx context.Context, admin AdminUser, grou
 	if err := tx.Commit(ctx); err != nil {
 		return Group{}, false, err
 	}
+	s.applyGroupAllMutedUpdate(group)
 	s.mu.Lock()
 	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
 	s.mu.Unlock()
 	return group, true, nil
+}
+
+func (s *Store) applyGroupAllMutedUpdate(group Group) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	updated := false
+	if existing, ok := s.groups[group.ID]; ok {
+		existing.AllMuted = group.AllMuted
+		s.groups[group.ID] = existing
+		updated = true
+	}
+	for i := range s.discoverGroups {
+		if s.discoverGroups[i].ID != group.ID {
+			continue
+		}
+		s.discoverGroups[i].AllMuted = group.AllMuted
+		updated = true
+	}
+	return updated
 }
 
 func (s *Store) adminMessages(ctx context.Context, query, conversationID, senderID string) ([]adminMessageRecord, error) {
@@ -1731,25 +1743,21 @@ func (s *Store) adminDeleteMessage(ctx context.Context, admin AdminUser, message
 		return adminMessageRecord{}, false, nil
 	}
 	if s.pg == nil {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		for conversationID, messages := range s.messages {
-			for idx, message := range messages {
-				if message.ID != messageID {
-					continue
-				}
-				record := adminMessageRecord{Message: message, ConversationTitle: s.conversationTitleLocked(conversationID)}
-				log := s.newAdminAuditLog(admin, "message_deleted", "message", messageID, adminMessageAuditDetail(record))
-				if err := s.runAdminAuditLogHook(log); err != nil {
-					return adminMessageRecord{}, false, err
-				}
-				s.messages[conversationID] = append(messages[:idx:idx], messages[idx+1:]...)
-				s.refreshConversationPreviewLocked(conversationID)
-				s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
-				return record, true, nil
-			}
+		record, ok, err := s.adminMessageByID(ctx, messageID)
+		if err != nil || !ok {
+			return adminMessageRecord{}, ok, err
 		}
-		return adminMessageRecord{}, false, nil
+		log := s.newAdminAuditLog(admin, "message_deleted", "message", messageID, adminMessageAuditDetail(record))
+		if err := s.runAdminAuditLogHook(log); err != nil {
+			return adminMessageRecord{}, false, err
+		}
+		if !s.applyAdminMessageDelete(record) {
+			return adminMessageRecord{}, false, nil
+		}
+		s.mu.Lock()
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		s.mu.Unlock()
+		return record, true, nil
 	}
 
 	tx, err := s.pg.pool.Begin(ctx)
@@ -1780,10 +1788,35 @@ func (s *Store) adminDeleteMessage(ctx context.Context, admin AdminUser, message
 	if err := tx.Commit(ctx); err != nil {
 		return adminMessageRecord{}, false, err
 	}
+	s.applyAdminMessageDelete(record)
 	s.mu.Lock()
 	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
 	s.mu.Unlock()
 	return record, true, nil
+}
+
+func (s *Store) applyAdminMessageDelete(record adminMessageRecord) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	messages, ok := s.messages[record.ConversationID]
+	if !ok {
+		return false
+	}
+	filtered := messages[:0]
+	removed := false
+	for _, message := range messages {
+		if message.ID == record.ID {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, message)
+	}
+	if !removed {
+		return false
+	}
+	s.messages[record.ConversationID] = filtered
+	s.refreshConversationPreviewLocked(record.ConversationID)
+	return true
 }
 
 func (s *Store) adminReports(ctx context.Context, status, targetType string) ([]Report, error) {
@@ -4020,7 +4053,7 @@ func inferReportTargetType(targetID string) string {
 	targetID = strings.TrimSpace(targetID)
 	switch {
 	case strings.HasPrefix(targetID, "group-"):
-		return "message"
+		return "group"
 	case strings.HasPrefix(targetID, "m"):
 		return "message"
 	case strings.HasPrefix(targetID, "session-"):
@@ -4029,6 +4062,15 @@ func inferReportTargetType(targetID string) string {
 		return "user"
 	default:
 		return "group"
+	}
+}
+
+func isValidReportTargetType(targetType string) bool {
+	switch strings.TrimSpace(targetType) {
+	case "user", "group", "message":
+		return true
+	default:
+		return false
 	}
 }
 

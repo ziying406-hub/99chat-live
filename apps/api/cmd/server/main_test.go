@@ -297,6 +297,74 @@ func TestAdminMuteAllRollsBackWhenAuditFails(t *testing.T) {
 	}
 }
 
+func TestInferReportTargetTypeUsesGroupForGroupIDs(t *testing.T) {
+	if got := inferReportTargetType("group-21444"); got != "group" {
+		t.Fatalf("expected group target type for group id, got %q", got)
+	}
+}
+
+func TestReportsRejectInvalidTargetTypeWithoutAppending(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+	before := len(store.reports)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/reports", bytes.NewBufferString(`{"targetId":"group-21444","targetType":"weird","reason":"垃圾广告"}`))
+	req.Header.Set("Authorization", "Bearer demo-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid target type 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.reports) != before {
+		t.Fatalf("expected report list unchanged on invalid target type, got %d -> %d", before, len(store.reports))
+	}
+}
+
+func TestApplyAdminGroupAllMutedUpdatesLiveState(t *testing.T) {
+	store := seedStore()
+	if store.groups["21444"].AllMuted {
+		t.Fatal("expected seed group to start unmuted")
+	}
+	group := store.groups["21444"]
+	group.AllMuted = true
+
+	if ok := store.applyGroupAllMutedUpdate(group); !ok {
+		t.Fatal("expected live group state update to succeed")
+	}
+	if !store.groups["21444"].AllMuted {
+		t.Fatalf("expected live group state to reflect mute-all, got %+v", store.groups["21444"])
+	}
+}
+
+func TestApplyAdminDeleteMessageUpdatesLiveStateAndPreview(t *testing.T) {
+	store := seedStore()
+	messages := store.messages["group-21444"]
+	if len(messages) < 2 {
+		t.Fatalf("expected seeded group conversation to contain messages, got %d", len(messages))
+	}
+	deleted := messages[len(messages)-1]
+	expectedPreview := displayMessage(messages[len(messages)-2])
+
+	if ok := store.applyAdminMessageDelete(adminMessageRecord{Message: deleted}); !ok {
+		t.Fatal("expected live admin delete update to succeed")
+	}
+	if messageExists(store.messages["group-21444"], deleted.ID) {
+		t.Fatal("expected deleted message to be removed from live cache")
+	}
+	for _, conv := range store.conversations {
+		if conv.ID != "group-21444" {
+			continue
+		}
+		if conv.LastText != expectedPreview {
+			t.Fatalf("expected conversation preview %q after delete, got %q", expectedPreview, conv.LastText)
+		}
+		return
+	}
+	t.Fatal("expected seeded conversation to exist")
+}
+
 func TestAdminBanUserBlocksLoginAndWritesAudit(t *testing.T) {
 	store := seedStore()
 	mux := store.routes("")

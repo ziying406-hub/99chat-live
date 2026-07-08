@@ -78,3 +78,20 @@ Exact test results
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	0.960s`)
 - `./scripts/go-test.sh ./cmd/server -count=1`
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	9.945s`)
+
+## Review Fixes After `fbbedfa`
+
+What changed
+- Fixed `inferReportTargetType` so `group-*` ids infer `group` instead of `message`, matching report storage and admin filtering expectations.
+- Tightened `POST /api/reports` validation to reject unsupported `targetType` values before persistence, and moved the in-memory append to after successful persistence so failed writes do not leave phantom reports behind.
+- Added shared live-state update helpers for admin `mute-all` and admin message delete, then used them from the Postgres-backed paths after commit so `s.groups`, `s.discoverGroups`, `s.messages`, and conversation previews stay in sync with SQL changes in-process.
+- Kept the live group update narrow to `AllMuted` only, so Postgres admin mute/unmute does not accidentally overwrite existing in-memory member lists or other cached group fields.
+
+Exact test results
+- `./scripts/go-test.sh ./cmd/server -run 'Test(AdminDeleteMessageWritesAuditLog|AdminResolveReportUpdatesStatus|InferReportTargetTypeUsesGroupForGroupIDs|ReportsRejectInvalidTargetTypeWithoutAppending|ApplyAdminGroupAllMutedUpdatesLiveState|ApplyAdminDeleteMessageUpdatesLiveStateAndPreview)' -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	1.026s`)
+- `./scripts/go-test.sh ./cmd/server -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	9.522s`)
+
+Notes
+- I did not add a true Postgres integration test because this workspace does not provide an external test database in the current harness; the new focused tests instead cover the shared live-state helpers that the Postgres branches now call after commit.
