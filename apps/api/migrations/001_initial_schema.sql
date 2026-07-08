@@ -207,6 +207,7 @@ CREATE TABLE admin_sessions (
 CREATE TABLE admin_audit_logs (
   id TEXT PRIMARY KEY,
   admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+  admin_username TEXT NOT NULL DEFAULT '',
   action TEXT NOT NULL,
   target_type TEXT NOT NULL,
   target_id TEXT NOT NULL DEFAULT '',

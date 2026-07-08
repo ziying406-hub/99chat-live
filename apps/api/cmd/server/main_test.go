@@ -75,6 +75,24 @@ func TestAdminRoutesRequireAdminToken(t *testing.T) {
 	}
 }
 
+func TestAdminAuditLogSchemaIncludesAdminUsername(t *testing.T) {
+	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "001_initial_schema.sql"))
+	if err != nil {
+		t.Fatalf("read migration: %v", err)
+	}
+	if !strings.Contains(string(migration), "admin_username TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("migration missing admin_username column")
+	}
+
+	dbGo, err := os.ReadFile("db.go")
+	if err != nil {
+		t.Fatalf("read db.go: %v", err)
+	}
+	if !strings.Contains(string(dbGo), "admin_username TEXT NOT NULL DEFAULT ''") {
+		t.Fatal("db.go missing admin_username column")
+	}
+}
+
 func TestSignFileRejectsInvalidJSON(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()

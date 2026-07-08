@@ -263,6 +263,7 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS admin_audit_logs (
 			id TEXT PRIMARY KEY,
 			admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
+			admin_username TEXT NOT NULL DEFAULT '',
 			action TEXT NOT NULL,
 			target_type TEXT NOT NULL,
 			target_id TEXT NOT NULL DEFAULT '',
