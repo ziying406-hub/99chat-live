@@ -1813,7 +1813,7 @@ func (s *Store) adminReports(ctx context.Context, status, targetType string) ([]
 	args := make([]any, 0, 2)
 	if status = strings.TrimSpace(status); status != "" {
 		args = append(args, status)
-		conditions = append(conditions, fmt.Sprintf("status = $%d", len(args)))
+		conditions = append(conditions, fmt.Sprintf("(CASE WHEN NULLIF(BTRIM(status), '') IS NULL THEN 'open' ELSE status END) = $%d", len(args)))
 	}
 	if targetType = strings.TrimSpace(targetType); targetType != "" {
 		args = append(args, targetType)
@@ -2016,12 +2016,12 @@ func (s *Store) adminUpdateFeedbackStatus(ctx context.Context, admin AdminUser, 
 			if s.feedback[i].ID != feedbackID {
 				continue
 			}
-			item := normalizeAdminFeedback(s.feedback[i])
+			item := s.feedback[i]
 			log := s.newAdminAuditLog(admin, "feedback_status_updated", "feedback", feedbackID, status)
 			if err := s.runAdminAuditLogHook(log); err != nil {
 				return Feedback{}, false, err
 			}
-			item.Status = status
+			item.Status = userFacingFeedbackStatus(status)
 			item.AdminNote = adminNote
 			if status == "resolved" {
 				now := time.Now()
@@ -2033,7 +2033,7 @@ func (s *Store) adminUpdateFeedbackStatus(ctx context.Context, admin AdminUser, 
 			}
 			s.feedback[i] = item
 			s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
-			return item, true, nil
+			return normalizeAdminFeedback(item), true, nil
 		}
 		return Feedback{}, false, nil
 	}
@@ -2052,7 +2052,7 @@ func (s *Store) adminUpdateFeedbackStatus(ctx context.Context, admin AdminUser, 
 	defer tx.Rollback(ctx)
 	tag, err := tx.Exec(ctx, `UPDATE feedback
 		SET status = $2, admin_note = $3, resolved_by_admin_id = $4, resolved_at = $5
-		WHERE id = $1`, feedbackID, status, adminNote, resolvedBy, resolvedAt)
+		WHERE id = $1`, feedbackID, userFacingFeedbackStatus(status), adminNote, resolvedBy, resolvedAt)
 	if err != nil {
 		return Feedback{}, false, err
 	}
@@ -3155,6 +3155,7 @@ func (s *Store) feedbackFor(ctx context.Context, userID string) ([]Feedback, err
 		var items []Feedback
 		for _, item := range s.feedback {
 			if item.UserID == userID {
+				item.Status = userFacingFeedbackStatus(item.Status)
 				items = append(items, item)
 			}
 		}
@@ -3173,6 +3174,7 @@ func (s *Store) feedbackFor(ctx context.Context, userID string) ([]Feedback, err
 		if err := rows.Scan(&item.ID, &item.UserID, &item.Type, &item.Text, &item.Status, &item.AdminNote, &item.ResolvedByAdminID, &item.ResolvedAt, &item.CreatedAt); err != nil {
 			return nil, err
 		}
+		item.Status = userFacingFeedbackStatus(item.Status)
 		items = append(items, item)
 	}
 	return items, rows.Err()
@@ -4046,6 +4048,19 @@ func normalizeAdminFeedbackStatus(status string) string {
 func normalizeAdminFeedback(item Feedback) Feedback {
 	item.Status = normalizeAdminFeedbackStatus(item.Status)
 	return item
+}
+
+func userFacingFeedbackStatus(status string) string {
+	switch normalizeAdminFeedbackStatus(status) {
+	case "submitted":
+		return "已提交"
+	case "reviewing":
+		return "处理中"
+	case "resolved":
+		return "已解决"
+	default:
+		return strings.TrimSpace(status)
+	}
 }
 
 func upsertFriendRequest(ctx context.Context, tx pgx.Tx, toUserID string, request FriendRequest) error {

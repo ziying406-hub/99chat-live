@@ -219,6 +219,61 @@ func TestAdminFeedbackRoutesNormalizeStatusAndDashboardCounts(t *testing.T) {
 	}
 }
 
+func TestUserFeedbackHistoryKeepsChineseStatusAfterAdminUpdate(t *testing.T) {
+	store := seedStore()
+	store.feedback = []Feedback{
+		{ID: "feedback-old", UserID: "u1", Type: "Bug 反馈", Text: "旧反馈", Status: "已提交", CreatedAt: time.Now().Add(-time.Hour)},
+	}
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/api/admin/feedback/feedback-old/status", bytes.NewBufferString(`{"status":"reviewing","adminNote":"checking"}`))
+	updateReq.Header.Set("Authorization", "Bearer "+token)
+	updateRec := httptest.NewRecorder()
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected feedback update 200, got %d: %s", updateRec.Code, updateRec.Body.String())
+	}
+	var adminItem Feedback
+	if err := json.NewDecoder(updateRec.Body).Decode(&adminItem); err != nil {
+		t.Fatalf("decode admin feedback update: %v", err)
+	}
+	if adminItem.Status != "reviewing" {
+		t.Fatalf("expected admin status to stay normalized, got %+v", adminItem)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/feedback", nil)
+	listReq.Header.Set("Authorization", "Bearer demo-token")
+	listRec := httptest.NewRecorder()
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected feedback list 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var items []Feedback
+	if err := json.NewDecoder(listRec.Body).Decode(&items); err != nil {
+		t.Fatalf("decode user feedback list: %v", err)
+	}
+	if len(items) != 1 || items[0].Status != "处理中" {
+		t.Fatalf("expected user-facing Chinese status after admin update, got %+v", items)
+	}
+}
+
+func TestAdminReportsTreatBlankStatusAsOpen(t *testing.T) {
+	store := seedStore()
+	store.reports = []Report{
+		{ID: "report-blank", TargetID: "u1", TargetType: "user", Reason: "spam", Status: "", CreatedAt: time.Now()},
+		{ID: "report-resolved", TargetID: "u2", TargetType: "user", Reason: "ads", Status: "resolved", CreatedAt: time.Now().Add(-time.Minute)},
+	}
+
+	items, err := store.adminReports(context.Background(), "open", "")
+	if err != nil {
+		t.Fatalf("adminReports failed: %v", err)
+	}
+	if len(items) != 1 || items[0].ID != "report-blank" || items[0].Status != "open" {
+		t.Fatalf("expected blank status to normalize to open, got %+v", items)
+	}
+}
+
 func TestAdminMuteAllRollsBackWhenAuditFails(t *testing.T) {
 	store := seedStore()
 	store.adminAuditLogHook = func(AdminAuditLog) error {

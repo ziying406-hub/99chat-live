@@ -64,3 +64,17 @@ Exact test results
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	1.170s`)
 - `./scripts/go-test.sh ./cmd/server -count=1`
   - Result: PASS (`ok  	chatclone/apps/api/cmd/server	9.294s`)
+
+## Review Fixes After `55528f1`
+
+What changed
+- Kept admin feedback APIs normalized by returning `submitted` / `reviewing` / `resolved` from admin list, detail, and status-update responses.
+- Restored user-facing feedback history semantics by persisting admin-updated feedback statuses in the existing Chinese values `已提交` / `处理中` / `已解决`, and by mapping any legacy normalized values back to Chinese in `/api/feedback`.
+- Normalized `GET /api/admin/reports?status=open` SQL filtering so blank legacy report statuses are treated as `open`, matching the in-memory path.
+- Added focused regression coverage proving admin updates do not leak English feedback statuses into the user-facing feedback history.
+
+Exact test results
+- `./scripts/go-test.sh ./cmd/server -run 'Test(AdminDeleteMessageWritesAuditLog|AdminResolveReportUpdatesStatus|AdminFeedbackRoutesNormalizeStatusAndDashboardCounts|UserFeedbackHistoryKeepsChineseStatusAfterAdminUpdate|AdminReportsTreatBlankStatusAsOpen|AdminMuteAllRollsBackWhenAuditFails)' -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	0.960s`)
+- `./scripts/go-test.sh ./cmd/server -count=1`
+  - Result: PASS (`ok  	chatclone/apps/api/cmd/server	9.945s`)
