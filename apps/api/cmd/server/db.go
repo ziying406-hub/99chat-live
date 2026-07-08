@@ -634,8 +634,8 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
-	err := pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store
-		FROM users ORDER BY created_at LIMIT 1`).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	err := pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
+		FROM users ORDER BY created_at LIMIT 1`).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
 	if err != nil {
 		return nil, err
 	}
@@ -1114,9 +1114,9 @@ func (s *Store) authenticate(ctx context.Context, country, phone, password strin
 	var user User
 	var passwordHash string
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store, password_hash
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store, password_hash
 		FROM users WHERE country_code = $1 AND phone = $2`,
-		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON, &passwordHash)
+		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -1252,6 +1252,275 @@ func (s *Store) markAdminLogin(ctx context.Context, adminUserID string, loginAt 
 	return err
 }
 
+func (s *Store) adminDashboardCounts(ctx context.Context) (adminDashboardResponse, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		dashboard := adminDashboardResponse{
+			TotalUsers:    1 + len(s.users),
+			TotalGroups:   len(s.groups) + len(s.discoverGroups),
+			OpenReports:   len(s.reports),
+			TotalMessages: 0,
+		}
+		if userIsBanned(s.user) {
+			dashboard.BannedUsers++
+		}
+		for _, user := range s.users {
+			if userIsBanned(user) {
+				dashboard.BannedUsers++
+			}
+		}
+		for _, item := range s.feedback {
+			if item.Status != "已解决" {
+				dashboard.OpenFeedback++
+			}
+		}
+		for _, items := range s.messages {
+			dashboard.TotalMessages += len(items)
+			for _, message := range items {
+				if message.Attachment != nil {
+					dashboard.AttachmentCount++
+					dashboard.AttachmentBytes += int(message.Attachment.Size)
+				}
+			}
+		}
+		return dashboard, nil
+	}
+	var dashboard adminDashboardResponse
+	err := s.pg.pool.QueryRow(ctx, `
+		SELECT
+			(SELECT COUNT(*) FROM users),
+			(SELECT COUNT(*) FROM users WHERE banned_at IS NOT NULL),
+			(SELECT COUNT(*) FROM groups),
+			(SELECT COUNT(*) FROM messages),
+			(SELECT COUNT(*) FROM reports WHERE status = 'open'),
+			(SELECT COUNT(*) FROM feedback WHERE status <> '已解决'),
+			(SELECT COUNT(*) FROM message_attachments),
+			COALESCE((SELECT SUM(size_bytes) FROM message_attachments), 0)
+	`).Scan(
+		&dashboard.TotalUsers,
+		&dashboard.BannedUsers,
+		&dashboard.TotalGroups,
+		&dashboard.TotalMessages,
+		&dashboard.OpenReports,
+		&dashboard.OpenFeedback,
+		&dashboard.AttachmentCount,
+		&dashboard.AttachmentBytes,
+	)
+	return dashboard, err
+}
+
+func (s *Store) adminSearchUsers(ctx context.Context, keyword, status, from, to string) ([]adminUserSummary, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		users := make([]User, 0, 1+len(s.users))
+		users = append(users, s.user)
+		for _, user := range s.users {
+			users = append(users, user)
+		}
+		s.mu.RUnlock()
+		items := make([]adminUserSummary, 0, len(users))
+		for _, user := range users {
+			if !matchesAdminUserFilters(user, keyword, status, from, to) {
+				continue
+			}
+			items = append(items, adminSummaryFromUser(user))
+		}
+		sort.Slice(items, func(i, j int) bool {
+			if items[i].CreatedAt.Equal(items[j].CreatedAt) {
+				return items[i].ID < items[j].ID
+			}
+			return items[i].CreatedAt.After(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	conditions := []string{"1=1"}
+	args := make([]any, 0, 4)
+	if keyword = strings.TrimSpace(keyword); keyword != "" {
+		pattern := "%" + strings.ToLower(keyword) + "%"
+		args = append(args, pattern)
+		conditions = append(conditions, fmt.Sprintf("(LOWER(id) LIKE $%d OR LOWER(phone) LIKE $%d OR LOWER(chat_id) LIKE $%d OR LOWER(nickname) LIKE $%d)", len(args), len(args), len(args), len(args)))
+	}
+	switch strings.TrimSpace(status) {
+	case "", "all":
+	case "active":
+		conditions = append(conditions, "banned_at IS NULL")
+	case "banned":
+		conditions = append(conditions, "banned_at IS NOT NULL")
+	default:
+		conditions = append(conditions, "1=0")
+	}
+	if fromTime, ok := parseAdminDateFilter(from); ok {
+		args = append(args, fromTime)
+		conditions = append(conditions, fmt.Sprintf("created_at >= $%d", len(args)))
+	}
+	if toTime, ok := parseAdminDateFilter(to); ok {
+		if len(strings.TrimSpace(to)) == len("2006-01-02") {
+			toTime = toTime.Add(24 * time.Hour)
+			args = append(args, toTime)
+			conditions = append(conditions, fmt.Sprintf("created_at < $%d", len(args)))
+		} else {
+			args = append(args, toTime)
+			conditions = append(conditions, fmt.Sprintf("created_at <= $%d", len(args)))
+		}
+	}
+	query := fmt.Sprintf(`SELECT id, phone, country_code, chat_id, nickname, avatar_url, created_at, banned_at, ban_reason
+		FROM users
+		WHERE %s
+		ORDER BY created_at DESC, id ASC`, strings.Join(conditions, " AND "))
+	rows, err := s.pg.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]adminUserSummary, 0)
+	for rows.Next() {
+		var item adminUserSummary
+		if err := rows.Scan(&item.ID, &item.Phone, &item.Country, &item.ChatID, &item.Nickname, &item.Avatar, &item.CreatedAt, &item.BannedAt, &item.BanReason); err != nil {
+			return nil, err
+		}
+		item.Status = "active"
+		if item.BannedAt != nil {
+			item.Status = "banned"
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) adminUserByID(ctx context.Context, userID string) (User, bool, error) {
+	userID = s.resolveAdminTargetUserID(userID)
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if s.user.ID == userID {
+			return s.user, true, nil
+		}
+		user, ok := s.users[userID]
+		return user, ok, nil
+	}
+	var user User
+	var settingsJSON, stickerStoreJSON []byte
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
+		FROM users WHERE id = $1`, userID).
+		Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	user.Settings = decodeUserSettings(settingsJSON)
+	user.StickerStore = decodeStickerStore(stickerStoreJSON)
+	return normalizeUserPreferences(user), true, nil
+}
+
+func (s *Store) setUserBanState(ctx context.Context, userID string, bannedAt *time.Time, reason string) (User, bool, error) {
+	userID = s.resolveAdminTargetUserID(userID)
+	reason = strings.TrimSpace(reason)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.user.ID == userID {
+			s.user.BannedAt = bannedAt
+			s.user.BanReason = reason
+			return s.user, true, nil
+		}
+		user, ok := s.users[userID]
+		if !ok {
+			return User{}, false, nil
+		}
+		user.BannedAt = bannedAt
+		user.BanReason = reason
+		s.users[userID] = user
+		return user, true, nil
+	}
+	var user User
+	var settingsJSON, stickerStoreJSON []byte
+	err := s.pg.pool.QueryRow(ctx, `UPDATE users
+		SET banned_at = $2, ban_reason = $3
+		WHERE id = $1
+		RETURNING id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store`,
+		userID, bannedAt, reason).
+		Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	user.Settings = decodeUserSettings(settingsJSON)
+	user.StickerStore = decodeStickerStore(stickerStoreJSON)
+	return normalizeUserPreferences(user), true, nil
+}
+
+func (s *Store) appendAdminAuditLog(ctx context.Context, admin AdminUser, action string, targetType string, targetID string, detail string) error {
+	log := AdminAuditLog{
+		ID:            newID("admin-audit"),
+		AdminUserID:   admin.ID,
+		AdminUsername: admin.Username,
+		Action:        action,
+		TargetType:    targetType,
+		TargetID:      targetID,
+		Detail:        detail,
+		CreatedAt:     time.Now(),
+	}
+	s.mu.Lock()
+	s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+	s.mu.Unlock()
+	if s.pg == nil {
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO admin_audit_logs(id, admin_user_id, admin_username, action, target_type, target_id, detail, created_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+		log.ID, log.AdminUserID, log.AdminUsername, log.Action, log.TargetType, log.TargetID, log.Detail, log.CreatedAt)
+	return err
+}
+
+func (s *Store) resolveAdminTargetUserID(userID string) string {
+	userID = strings.TrimSpace(userID)
+	if userID == "u-demo" {
+		return "u1"
+	}
+	return userID
+}
+
+func matchesAdminUserFilters(user User, keyword, status, from, to string) bool {
+	keyword = strings.ToLower(strings.TrimSpace(keyword))
+	if keyword != "" {
+		search := strings.ToLower(strings.Join([]string{user.ID, user.Phone, user.ChatID, user.Nickname}, " "))
+		if !strings.Contains(search, keyword) {
+			return false
+		}
+	}
+	switch strings.TrimSpace(status) {
+	case "", "all":
+	case "active":
+		if userIsBanned(user) {
+			return false
+		}
+	case "banned":
+		if !userIsBanned(user) {
+			return false
+		}
+	default:
+		return false
+	}
+	if fromTime, ok := parseAdminDateFilter(from); ok && user.CreatedAt.Before(fromTime) {
+		return false
+	}
+	if toTime, ok := parseAdminDateFilter(to); ok {
+		if len(strings.TrimSpace(to)) == len("2006-01-02") {
+			if !user.CreatedAt.Before(toTime.Add(24 * time.Hour)) {
+				return false
+			}
+		} else if user.CreatedAt.After(toTime) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Store) userByPhone(ctx context.Context, country, phone string) (User, bool, error) {
 	if s.pg == nil {
 		s.mu.RLock()
@@ -1268,9 +1537,9 @@ func (s *Store) userByPhone(ctx context.Context, country, phone string) (User, b
 	}
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
 		FROM users WHERE country_code = $1 AND phone = $2`,
-		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -1291,6 +1560,7 @@ func (s *Store) createUser(ctx context.Context, country, phone, password, nickna
 		Nickname:          nickname,
 		Signature:         "",
 		Avatar:            avatar(firstRune(nickname)),
+		CreatedAt:         time.Now(),
 		Settings:          defaultUserSettings(),
 		Language:          "简体中文",
 		DisplayMode:       "桌面版",
@@ -1333,9 +1603,9 @@ func (s *Store) createUser(ctx context.Context, country, phone, password, nickna
 	if err != nil {
 		return User{}, err
 	}
-	_, err = s.pg.pool.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store)
-		VALUES ($1, $2, $3, $4, $5, $6, '', $7, $8, $9, $10, $11, $12)`,
-		user.ID, user.Country, user.Phone, string(hash), user.ChatID, user.Nickname, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON)
+	_, err = s.pg.pool.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store, created_at, banned_at, ban_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, '', $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+		user.ID, user.Country, user.Phone, string(hash), user.ChatID, user.Nickname, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON, user.CreatedAt, user.BannedAt, user.BanReason)
 	if isUniqueViolation(err) {
 		return User{}, errAlreadyExists
 	}
@@ -1431,8 +1701,8 @@ func (s *Store) userByID(ctx context.Context, userID string) (User, bool, error)
 	}
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store
-		FROM users WHERE id = $1`, userID).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
+	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
+		FROM users WHERE id = $1`, userID).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return User{}, false, nil
 	}
@@ -1512,8 +1782,8 @@ func (s *Store) persistUser(ctx context.Context, user User) error {
 	if err != nil {
 		return err
 	}
-	_, err = s.pg.pool.Exec(ctx, `UPDATE users SET nickname = $2, signature = $3, avatar_url = $4, settings = $5, language = $6, display_mode = $7, blocked_contact_ids = $8, sticker_store = $9 WHERE id = $1`,
-		user.ID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON)
+	_, err = s.pg.pool.Exec(ctx, `UPDATE users SET nickname = $2, signature = $3, avatar_url = $4, settings = $5, language = $6, display_mode = $7, blocked_contact_ids = $8, sticker_store = $9, banned_at = $10, ban_reason = $11 WHERE id = $1`,
+		user.ID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON, user.BannedAt, user.BanReason)
 	return err
 }
 
@@ -2671,13 +2941,13 @@ func upsertUser(ctx context.Context, tx pgx.Tx, user User, passwordHash string) 
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+	_, err = tx.Exec(ctx, `INSERT INTO users(id, country_code, phone, password_hash, chat_id, nickname, signature, avatar_url, settings, language, display_mode, blocked_contact_ids, sticker_store, created_at, banned_at, ban_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
 		ON CONFLICT (id) DO UPDATE SET country_code = EXCLUDED.country_code, phone = EXCLUDED.phone,
 			chat_id = EXCLUDED.chat_id, nickname = EXCLUDED.nickname, signature = EXCLUDED.signature, avatar_url = EXCLUDED.avatar_url,
 			settings = EXCLUDED.settings, language = EXCLUDED.language, display_mode = EXCLUDED.display_mode, blocked_contact_ids = EXCLUDED.blocked_contact_ids,
-			sticker_store = EXCLUDED.sticker_store`,
-		user.ID, user.Country, user.Phone, passwordHash, user.ChatID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON)
+			sticker_store = EXCLUDED.sticker_store, banned_at = EXCLUDED.banned_at, ban_reason = EXCLUDED.ban_reason`,
+		user.ID, user.Country, user.Phone, passwordHash, user.ChatID, user.Nickname, user.Signature, user.Avatar, settingsJSON, user.Language, user.DisplayMode, user.BlockedContactIDs, stickerStoreJSON, user.CreatedAt, user.BannedAt, user.BanReason)
 	return err
 }
 

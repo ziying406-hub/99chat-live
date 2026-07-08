@@ -45,6 +45,9 @@ type User struct {
 	Nickname          string          `json:"nickname"`
 	Signature         string          `json:"signature"`
 	Avatar            string          `json:"avatar"`
+	CreatedAt         time.Time       `json:"createdAt,omitempty"`
+	BannedAt          *time.Time      `json:"bannedAt,omitempty"`
+	BanReason         string          `json:"banReason,omitempty"`
 	Settings          map[string]bool `json:"settings,omitempty"`
 	Language          string          `json:"language,omitempty"`
 	DisplayMode       string          `json:"displayMode,omitempty"`
@@ -286,6 +289,34 @@ type adminLoginResponse struct {
 	Admin AdminUser `json:"admin"`
 }
 
+type adminDashboardResponse struct {
+	TotalUsers      int `json:"totalUsers"`
+	BannedUsers     int `json:"bannedUsers"`
+	TotalGroups     int `json:"totalGroups"`
+	TotalMessages   int `json:"totalMessages"`
+	OpenReports     int `json:"openReports"`
+	OpenFeedback    int `json:"openFeedback"`
+	AttachmentCount int `json:"attachmentCount"`
+	AttachmentBytes int `json:"attachmentBytes"`
+}
+
+type adminUserSummary struct {
+	ID        string     `json:"id"`
+	Phone     string     `json:"phone"`
+	Country   string     `json:"country"`
+	ChatID    string     `json:"chatId"`
+	Nickname  string     `json:"nickname"`
+	Avatar    string     `json:"avatar"`
+	CreatedAt time.Time  `json:"createdAt,omitempty"`
+	Status    string     `json:"status"`
+	BannedAt  *time.Time `json:"bannedAt,omitempty"`
+	BanReason string     `json:"banReason,omitempty"`
+}
+
+type adminUserBanRequest struct {
+	Reason string `json:"reason"`
+}
+
 type LoginDevice struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
@@ -411,6 +442,7 @@ func demoUser() User {
 		Nickname:  "chenshao",
 		Signature: "保持专注，保持联系。",
 		Avatar:    avatar("陈"),
+		CreatedAt: time.Now().Add(-72 * time.Hour),
 	})
 }
 
@@ -421,6 +453,9 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/admin/auth/login", s.adminLogin)
 	mux.HandleFunc("/api/admin/auth/logout", s.requireAdmin(s.adminLogout))
 	mux.HandleFunc("/api/admin/auth/me", s.requireAdmin(s.adminMe))
+	mux.HandleFunc("/api/admin/dashboard", s.requireAdmin(s.adminDashboard))
+	mux.HandleFunc("/api/admin/users", s.requireAdmin(s.adminUsersRoute))
+	mux.HandleFunc("/api/admin/users/", s.requireAdmin(s.adminUserRoute))
 	mux.HandleFunc("/api/auth/login", s.login)
 	mux.HandleFunc("/api/auth/send-code", s.sendAuthCode)
 	mux.HandleFunc("/api/auth/code-login", s.codeLogin)
@@ -504,6 +539,10 @@ func (s *Store) login(w http.ResponseWriter, r *http.Request) {
 	}
 	if !ok {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
+		return
+	}
+	if userIsBanned(user) {
+		writeError(w, http.StatusForbidden, "account banned")
 		return
 	}
 	token := s.issueToken(user.ID)
@@ -623,6 +662,10 @@ func (s *Store) codeLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "user not found")
 		return
 	}
+	if userIsBanned(user) {
+		writeError(w, http.StatusForbidden, "account banned")
+		return
+	}
 	token := s.issueToken(user.ID)
 	writeJSON(w, http.StatusOK, map[string]any{"token": token, "user": user})
 }
@@ -686,6 +729,113 @@ func (s *Store) adminMe(w http.ResponseWriter, r *http.Request, admin AdminUser)
 	writeJSON(w, http.StatusOK, admin)
 }
 
+func (s *Store) adminDashboard(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	dashboard, err := s.adminDashboardCounts(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "dashboard load failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, dashboard)
+}
+
+func (s *Store) adminUsersRoute(w http.ResponseWriter, r *http.Request, _ AdminUser) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := s.adminSearchUsers(r.Context(), strings.TrimSpace(r.URL.Query().Get("keyword")), strings.TrimSpace(r.URL.Query().Get("status")), strings.TrimSpace(r.URL.Query().Get("from")), strings.TrimSpace(r.URL.Query().Get("to")))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "user list failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (s *Store) adminUserRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/admin/users/")
+	path = strings.Trim(path, "/")
+	if path == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	parts := strings.Split(path, "/")
+	userID := strings.TrimSpace(parts[0])
+	if userID == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		user, ok, err := s.adminUserByID(r.Context(), userID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "user detail failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
+		return
+	}
+	if len(parts) != 2 || r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	switch parts[1] {
+	case "ban":
+		var req adminUserBanRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		req.Reason = strings.TrimSpace(req.Reason)
+		if req.Reason == "" {
+			writeError(w, http.StatusBadRequest, "ban reason required")
+			return
+		}
+		now := time.Now()
+		user, ok, err := s.setUserBanState(r.Context(), userID, &now, req.Reason)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "ban user failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if err := s.appendAdminAuditLog(r.Context(), admin, "user_banned", "user", user.ID, req.Reason); err != nil {
+			writeError(w, http.StatusInternalServerError, "ban audit failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
+	case "unban":
+		user, ok, err := s.setUserBanState(r.Context(), userID, nil, "")
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "unban user failed")
+			return
+		}
+		if !ok {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		if err := s.appendAdminAuditLog(r.Context(), admin, "user_unbanned", "user", user.ID, ""); err != nil {
+			writeError(w, http.StatusInternalServerError, "unban audit failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, adminSummaryFromUser(user))
+	default:
+		writeError(w, http.StatusNotFound, "not found")
+	}
+}
+
 func (s *Store) issueToken(userID string) string {
 	var bytes [24]byte
 	if _, err := cryptorand.Read(bytes[:]); err != nil {
@@ -721,6 +871,9 @@ func (s *Store) userFromToken(ctx context.Context, token string) (User, bool) {
 	if token == "" {
 		return User{}, false
 	}
+	if s.pg == nil && token == "demo-token" {
+		return s.user, true
+	}
 	s.mu.RLock()
 	userID := s.sessions[token]
 	s.mu.RUnlock()
@@ -744,13 +897,18 @@ func (s *Store) currentUser(r *http.Request) User {
 
 func (s *Store) requireAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.pg == nil {
+		if s.pg == nil && strings.TrimSpace(r.Header.Get("Authorization")) == "" {
 			next(w, r)
 			return
 		}
 		token := s.currentToken(r)
-		if _, ok := s.userFromToken(r.Context(), token); !ok {
+		user, ok := s.userFromToken(r.Context(), token)
+		if !ok {
 			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		if userIsBanned(user) {
+			writeError(w, http.StatusForbidden, "account banned")
 			return
 		}
 		next(w, r)
@@ -860,6 +1018,46 @@ func defaultUserSettings() map[string]bool {
 		"darkMode":                 false,
 		"showRecentMessage":        true,
 	}
+}
+
+func userIsBanned(user User) bool {
+	return user.BannedAt != nil
+}
+
+func adminSummaryFromUser(user User) adminUserSummary {
+	return adminUserSummary{
+		ID:        user.ID,
+		Phone:     user.Phone,
+		Country:   user.Country,
+		ChatID:    user.ChatID,
+		Nickname:  user.Nickname,
+		Avatar:    user.Avatar,
+		CreatedAt: user.CreatedAt,
+		Status:    adminUserStatus(user),
+		BannedAt:  user.BannedAt,
+		BanReason: user.BanReason,
+	}
+}
+
+func adminUserStatus(user User) string {
+	if userIsBanned(user) {
+		return "banned"
+	}
+	return "active"
+}
+
+func parseAdminDateFilter(value string) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if ts, err := time.Parse(time.RFC3339, value); err == nil {
+		return ts, true
+	}
+	if day, err := time.Parse("2006-01-02", value); err == nil {
+		return day, true
+	}
+	return time.Time{}, false
 }
 
 func mergeUserSettings(base map[string]bool, patch map[string]bool) map[string]bool {
@@ -4025,7 +4223,7 @@ func seedStore() *Store {
 	}
 	return &Store{
 		user:           mergeSeedUserPreferences(demoUser()),
-		users:          map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公")}},
+		users:          map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公"), CreatedAt: now.Add(-12 * time.Hour)}},
 		adminUsers:     map[string]AdminUserRecord{admin.ID: admin},
 		adminSessions:  map[string]AdminSession{},
 		adminAuditLogs: []AdminAuditLog{},

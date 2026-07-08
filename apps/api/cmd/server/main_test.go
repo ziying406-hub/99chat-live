@@ -75,6 +75,69 @@ func TestAdminRoutesRequireAdminToken(t *testing.T) {
 	}
 }
 
+func adminTokenForTest(t *testing.T, mux http.Handler) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/auth/login", bytes.NewBufferString(`{"username":"admin","password":"admin123"}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin login failed: %d %s", rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode admin token: %v", err)
+	}
+	return response.Token
+}
+
+func TestAdminDashboardReturnsCounts(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected dashboard 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response map[string]int
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode dashboard: %v", err)
+	}
+	if response["totalUsers"] == 0 || response["totalGroups"] == 0 || response["totalMessages"] == 0 {
+		t.Fatalf("expected nonzero dashboard counts, got %+v", response)
+	}
+}
+
+func TestAdminBanUserBlocksLoginAndWritesAudit(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/users/u-demo/ban", bytes.NewBufferString(`{"reason":"spam"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected ban 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"country":"+60","phone":"174319676","password":"demo123456"}`))
+	loginRec := httptest.NewRecorder()
+	mux.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusForbidden {
+		t.Fatalf("expected banned login 403, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+	if len(store.adminAuditLogs) != 1 || store.adminAuditLogs[0].Action != "user_banned" {
+		t.Fatalf("expected user_banned audit log, got %+v", store.adminAuditLogs)
+	}
+}
+
 func TestAdminAuditLogSchemaIncludesAdminUsername(t *testing.T) {
 	migration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "001_initial_schema.sql"))
 	if err != nil {
