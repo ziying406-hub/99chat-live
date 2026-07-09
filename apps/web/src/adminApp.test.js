@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adminRoutes } from "./adminStatus.js";
-import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminFilterFields, renderAdminNavMarkup, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
+import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminFilterFields, renderAdminNavMarkup, renderAdminPlaceholder, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
 
 test("deriveSection maps admin entry routes", () => {
   assert.equal(deriveSection("/admin/login"), "login");
   assert.equal(deriveSection("/admin.html"), "login");
   assert.equal(deriveSection("/admin/users"), "users");
+  assert.equal(deriveSection("/admin/settings"), "settings");
+  assert.equal(deriveSection("/admin/admins"), "admins");
   assert.equal(deriveSection("/admin"), "dashboard");
 });
 
@@ -81,4 +83,17 @@ test("admin filter fields expose section-specific controls", () => {
   assert.match(renderAdminFilterFields("feedback", { user: "u2" }), /name="user"/);
   assert.match(renderAdminFilterFields("audit-logs", { admin: "admin" }), /name="admin"/);
   assert.match(renderAdminFilterFields("audit-logs", { action: "user_banned" }), /name="action"/);
+});
+
+test("admin planning placeholders render second-phase copy", () => {
+  assert.match(renderAdminNavMarkup("settings"), /系统设置/);
+  assert.match(renderAdminNavMarkup("admins"), /管理员与权限/);
+
+  const settings = renderAdminPlaceholder("settings");
+  assert.match(settings, /第二期开放/);
+  assert.match(settings, /系统配置、注册开关、上传限制/);
+
+  const admins = renderAdminPlaceholder("admins");
+  assert.match(admins, /第二期开放/);
+  assert.match(admins, /超级管理员、客服、内容审核、运营/);
 });

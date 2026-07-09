@@ -82,6 +82,18 @@ const tableMeta = {
     description: "查看后台操作留痕。",
     empty: "当前没有审计日志。",
     filterPlaceholder: "搜索操作、管理员、目标或详情"
+  },
+  settings: {
+    title: "系统设置",
+    description: "注册开关、上传大小、群人数上限与默认风控规则将在第二期集中开放。",
+    empty: "第二期开放",
+    filterPlaceholder: ""
+  },
+  admins: {
+    title: "管理员与权限",
+    description: "超级管理员、客服、内容审核、运营等角色权限将在第二期开放。",
+    empty: "第二期开放",
+    filterPlaceholder: ""
   }
 };
 
@@ -299,6 +311,9 @@ async function loadSection(section = state.section) {
       const rawRows = await loaders[section](normalizeLoaderFilters(section, filters));
       state.rows = filterRows(section, Array.isArray(rawRows) ? rawRows : [], keyword);
       state.detail = null;
+    } else if (tableMeta[section]) {
+      state.rows = [];
+      state.detail = null;
     }
   } catch (error) {
     state.error = error.message || "加载失败";
@@ -443,6 +458,9 @@ function statusPill(kind, value) {
 
 function renderTableScreen() {
 	const meta = tableMeta[state.section];
+  if (state.section === "settings" || state.section === "admins") {
+    return renderAdminPlaceholder(state.section);
+  }
   const filters = state.filters[state.section] || {};
 	return `
 		${renderError()}
@@ -476,6 +494,29 @@ function renderTableContent(meta) {
   if (state.section === "feedback") return renderFeedbackTable();
   if (state.section === "files") return renderFilesTable();
   return renderAuditLogTable();
+}
+
+export function renderAdminPlaceholder(section) {
+  const meta = tableMeta[section] || {
+    title: "第二期开放",
+    description: "该模块将在后续版本开放。",
+    empty: "第二期开放"
+  };
+  const details = section === "settings"
+    ? ["系统配置、注册开关、上传限制", "群人数上限、默认风控规则", "上线前先保持只读占位，避免引入错误配置"]
+    : ["超级管理员、客服、内容审核、运营", "按模块控制可见范围和操作权限", "上线前先保持单管理员模型，避免权限半成品"];
+  return `
+    ${renderError()}
+    <section class="admin-panel admin-placeholder-panel">
+      <div class="admin-empty admin-placeholder-empty">
+        <strong>${escapeHtml(meta.empty)}</strong>
+        <p>${escapeHtml(meta.description)}</p>
+        <ul>
+          ${details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}
+        </ul>
+      </div>
+    </section>
+  `;
 }
 
 function renderUsersTable() {
