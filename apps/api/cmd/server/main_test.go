@@ -1784,6 +1784,13 @@ func TestRuntimeStoreKeepsDemoAccountEmptyByDefault(t *testing.T) {
 	if len(store.messages) != 0 {
 		t.Fatalf("expected no messages, got %d", len(store.messages))
 	}
+	admin, ok := store.adminUsers["admin-1"]
+	if !ok {
+		t.Fatal("expected bootstrap admin to exist when demo data is disabled")
+	}
+	if admin.Username != "admin" || admin.Role != "super_admin" || !passwordMatches(admin.PasswordHash, "admin123") {
+		t.Fatalf("unexpected bootstrap admin: %+v", admin)
+	}
 }
 
 func TestRuntimeStoreCanSeedDemoDataWhenEnabled(t *testing.T) {
@@ -1796,6 +1803,20 @@ func TestRuntimeStoreCanSeedDemoDataWhenEnabled(t *testing.T) {
 	}
 	if len(store.contacts) == 0 {
 		t.Fatal("expected seeded contacts when SEED_DEMO_DATA=true")
+	}
+}
+
+func TestBootstrapAdminUsesEnvironmentOverrides(t *testing.T) {
+	t.Setenv("ADMIN_USERNAME", "ops")
+	t.Setenv("ADMIN_PASSWORD", "secret-pass")
+
+	admin := bootstrapAdminRecord()
+
+	if admin.Username != "ops" {
+		t.Fatalf("username = %q, want ops", admin.Username)
+	}
+	if !passwordMatches(admin.PasswordHash, "secret-pass") {
+		t.Fatal("bootstrap admin password did not use ADMIN_PASSWORD")
 	}
 }
 
