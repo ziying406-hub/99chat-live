@@ -403,15 +403,12 @@ func (pg *PostgresStore) hasSeedData(ctx context.Context) (bool, error) {
 
 func (pg *PostgresStore) ensureBootstrapAdmin(ctx context.Context) error {
 	admin := bootstrapAdminRecord()
-	resetPassword := strings.EqualFold(strings.TrimSpace(os.Getenv("SEED_DEMO_DATA")), "true") ||
-		strings.EqualFold(strings.TrimSpace(os.Getenv("RESET_ADMIN_PASSWORD")), "true") ||
-		strings.TrimSpace(os.Getenv("ADMIN_PASSWORD")) != ""
 	_, err := pg.pool.Exec(ctx, `INSERT INTO admin_users(id, username, password_hash, role, created_at)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (username) DO UPDATE SET
-			password_hash = CASE WHEN $6 THEN EXCLUDED.password_hash ELSE admin_users.password_hash END,
+			password_hash = EXCLUDED.password_hash,
 			role = EXCLUDED.role`,
-		admin.ID, admin.Username, admin.PasswordHash, admin.Role, admin.CreatedAt, resetPassword)
+		admin.ID, admin.Username, admin.PasswordHash, admin.Role, admin.CreatedAt)
 	return err
 }
 
