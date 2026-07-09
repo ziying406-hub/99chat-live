@@ -43,7 +43,7 @@ Full access. Owns admin account management, role changes, system settings, and a
 
 ### `support`
 
-Customer support role. Can inspect users and handle feedback, but cannot delete content, alter system settings, or manage other admins.
+Customer support role. Can inspect users, view reports, and handle feedback, but cannot delete content, alter system settings, or manage other admins.
 
 ### `moderator`
 
@@ -92,7 +92,7 @@ Permission keys should be stable API contracts. Display names can change, but ke
 | `groups.blacklist` | Yes | No | Yes | No |
 | `messages.view` | Yes | No | Yes | Yes |
 | `messages.delete` | Yes | No | Yes | No |
-| `reports.view` | Yes | No | Yes | Yes |
+| `reports.view` | Yes | Yes | Yes | Yes |
 | `reports.resolve` | Yes | No | Yes | No |
 | `feedback.view` | Yes | Yes | No | Yes |
 | `feedback.update` | Yes | Yes | No | Yes |
@@ -330,7 +330,7 @@ Manual smoke tests:
 - Whether new admins are invited by username/password setup or created directly by super admin.
 - Whether two-factor authentication is required before admin management goes live.
 - Whether denied attempts should always be logged or only for sensitive modules.
-- Whether `support` should be allowed to view reports linked to feedback.
+- Whether `support` should be allowed to add internal notes to reports without resolving them.
 
 These decisions do not block the design. They should be resolved before implementation planning.
 
