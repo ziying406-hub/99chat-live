@@ -6,7 +6,9 @@ export const adminRoutes = [
   { key: "reports", path: "/admin/reports", label: "举报" },
   { key: "feedback", path: "/admin/feedback", label: "反馈" },
   { key: "files", path: "/admin/files", label: "文件" },
-  { key: "audit-logs", path: "/admin/audit-logs", label: "审计" }
+  { key: "audit-logs", path: "/admin/audit-logs", label: "审计" },
+  { key: "settings", path: "/admin/settings", label: "系统设置", stage: "二期" },
+  { key: "admins", path: "/admin/admins", label: "管理员与权限", stage: "二期" }
 ];
 
 const labels = {

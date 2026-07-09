@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { adminRoutes, adminStatusLabel, requiresConfirmation } from "./adminStatus.js";
 
-test("admin route metadata includes all MVP sections", () => {
+test("admin route metadata includes MVP and planning placeholder sections", () => {
   assert.deepEqual(adminRoutes.map(route => route.key), [
     "dashboard",
     "users",
@@ -12,7 +12,9 @@ test("admin route metadata includes all MVP sections", () => {
     "reports",
     "feedback",
     "files",
-    "audit-logs"
+    "audit-logs",
+    "settings",
+    "admins"
   ]);
 });
 

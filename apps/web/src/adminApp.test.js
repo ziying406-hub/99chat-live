@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adminRoutes } from "./adminStatus.js";
-import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminFilterFields, renderAdminNavMarkup, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
+import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminFilterFields, renderAdminNavMarkup, renderAdminPlaceholder, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
 
 test("deriveSection maps admin entry routes", () => {
   assert.equal(deriveSection("/admin/login"), "login");
   assert.equal(deriveSection("/admin.html"), "login");
   assert.equal(deriveSection("/admin/users"), "users");
+  assert.equal(deriveSection("/admin/settings"), "settings");
+  assert.equal(deriveSection("/admin/admins"), "admins");
   assert.equal(deriveSection("/admin"), "dashboard");
 });
 
@@ -34,6 +36,16 @@ test("sidebar nav markup renders button type and route for every admin section",
   }
 
   assert.match(markup, /class="admin-nav-link active"/);
+});
+
+test("sidebar nav marks planning sections with second-phase badges", () => {
+  const markup = renderAdminNavMarkup("settings");
+  const navButton = path => markup.match(new RegExp(`data-route="${path.replaceAll("/", "\\/")}"[\\s\\S]*?<\\/button>`))?.[0] || "";
+
+  assert.match(navButton("/admin/settings"), /系统设置[\s\S]*class="admin-nav-stage"[\s\S]*二期/);
+  assert.match(navButton("/admin/admins"), /管理员与权限[\s\S]*class="admin-nav-stage"[\s\S]*二期/);
+  assert.doesNotMatch(navButton("/admin"), /class="admin-nav-stage"/);
+  assert.doesNotMatch(navButton("/admin/users"), /class="admin-nav-stage"/);
 });
 
 test("delegated click guard only ignores routed submit buttons", () => {
@@ -81,4 +93,21 @@ test("admin filter fields expose section-specific controls", () => {
   assert.match(renderAdminFilterFields("feedback", { user: "u2" }), /name="user"/);
   assert.match(renderAdminFilterFields("audit-logs", { admin: "admin" }), /name="admin"/);
   assert.match(renderAdminFilterFields("audit-logs", { action: "user_banned" }), /name="action"/);
+});
+
+test("admin planning placeholders render second-phase copy", () => {
+  assert.match(renderAdminNavMarkup("settings"), /系统设置/);
+  assert.match(renderAdminNavMarkup("admins"), /管理员与权限/);
+
+  const settings = renderAdminPlaceholder("settings");
+  assert.match(settings, /第二期开放/);
+  assert.match(settings, /当前不可操作/);
+  assert.match(settings, /第一期先保持后台可观测与可治理/);
+  assert.match(settings, /系统配置、注册开关、上传限制/);
+
+  const admins = renderAdminPlaceholder("admins");
+  assert.match(admins, /第二期开放/);
+  assert.match(admins, /当前不可操作/);
+  assert.match(admins, /第一期继续使用单管理员模型/);
+  assert.match(admins, /超级管理员、客服、内容审核、运营/);
 });
