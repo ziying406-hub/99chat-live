@@ -1,5 +1,5 @@
 import { createAdminApi } from "./adminApi.js";
-import { adminRoutes, adminStatusLabel, requiresConfirmation } from "./adminStatus.js";
+import { adminRoutes, adminStatusLabel, firstVisibleAdminPath, hasAdminPermission, requiresConfirmation, visibleAdminRoutes } from "./adminStatus.js";
 
 const win = typeof window === "undefined" ? null : window;
 const doc = typeof document === "undefined" ? null : document;
@@ -111,6 +111,10 @@ export function resolveSectionAccess({ admin, section }) {
   if (admin && section === "login") {
     return { allowed: false, redirectTo: "/admin", load: true };
   }
+  const route = adminRoutes.find(item => item.key === section);
+  if (admin && route && !hasAdminPermission(admin, route.permission)) {
+    return { allowed: false, redirectTo: firstVisibleAdminPath(admin), load: true };
+  }
   return { allowed: true, redirectTo: "", load: false };
 }
 
@@ -121,8 +125,8 @@ export function adminNavButtonAttrs(route) {
   };
 }
 
-export function renderAdminNavMarkup(currentSection) {
-  return adminRoutes.map(route => `
+export function renderAdminNavMarkup(currentSection, admin = null) {
+  return visibleAdminRoutes(admin).map(route => `
           <button
             class="admin-nav-link${currentSection === route.key ? " active" : ""}"
             type="${adminNavButtonAttrs(route).type}"
@@ -379,7 +383,7 @@ function renderSidebar() {
         </div>
       </div>
       <nav class="admin-nav">
-        ${renderAdminNavMarkup(state.section)}
+        ${renderAdminNavMarkup(state.section, state.admin)}
       </nav>
     </aside>
   `;
@@ -497,6 +501,14 @@ function renderTableContent(meta) {
   return renderAuditLogTable();
 }
 
+function adminCan(permission) {
+  return hasAdminPermission(state.admin, permission);
+}
+
+function renderNoActions() {
+  return `<span class="admin-inline-flag">只读</span>`;
+}
+
 export function renderAdminPlaceholder(section) {
   const meta = tableMeta[section] || {
     title: "第二期开放",
@@ -543,9 +555,10 @@ function renderUsersTable() {
             <td>${escapeHtml(formatDate(user.createdAt))}</td>
             <td>
               <div class="admin-row-actions">
-                ${user.status === "banned"
+                ${adminCan("users.ban") ? (user.status === "banned"
                   ? `<button class="ghost-btn inline" data-action="unban-user" data-id="${escapeHtml(user.id)}">解封</button>`
-                  : `<button class="danger-btn inline" data-action="ban-user" data-id="${escapeHtml(user.id)}" data-name="${escapeHtml(user.nickname || user.id)}">封禁</button>`}
+                  : `<button class="danger-btn inline" data-action="ban-user" data-id="${escapeHtml(user.id)}" data-name="${escapeHtml(user.nickname || user.id)}">封禁</button>`)
+                  : renderNoActions()}
               </div>
             </td>
           </tr>
@@ -590,7 +603,9 @@ function renderMessagesTable() {
             <td>${escapeHtml(formatDate(message.createdAt))}</td>
             <td>
               <div class="admin-row-actions">
-                <button class="danger-btn inline" data-action="delete-message" data-id="${escapeHtml(message.id)}" data-name="${escapeHtml(message.body || message.id)}">删除</button>
+                ${adminCan("messages.delete")
+                  ? `<button class="danger-btn inline" data-action="delete-message" data-id="${escapeHtml(message.id)}" data-name="${escapeHtml(message.body || message.id)}">删除</button>`
+                  : renderNoActions()}
               </div>
             </td>
           </tr>
@@ -613,8 +628,10 @@ function renderReportsTable() {
             <td>${escapeHtml(report.resolution || "—")}<small>${escapeHtml(formatDate(report.createdAt))}</small></td>
             <td>
               <div class="admin-row-actions">
-                <button class="ghost-btn inline" data-action="resolve-report" data-id="${escapeHtml(report.id)}" data-status="resolved">解决</button>
-                <button class="ghost-btn inline" data-action="resolve-report" data-id="${escapeHtml(report.id)}" data-status="rejected">驳回</button>
+                ${adminCan("reports.resolve")
+                  ? `<button class="ghost-btn inline" data-action="resolve-report" data-id="${escapeHtml(report.id)}" data-status="resolved">解决</button>
+                <button class="ghost-btn inline" data-action="resolve-report" data-id="${escapeHtml(report.id)}" data-status="rejected">驳回</button>`
+                  : renderNoActions()}
               </div>
             </td>
           </tr>
@@ -637,8 +654,10 @@ function renderFeedbackTable() {
             <td>${escapeHtml(item.adminNote || "—")}<small>${escapeHtml(formatDate(item.createdAt))}</small></td>
             <td>
               <div class="admin-row-actions">
-                <button class="ghost-btn inline" data-action="feedback-status" data-id="${escapeHtml(item.id)}" data-status="reviewing">处理中</button>
-                <button class="ghost-btn inline" data-action="feedback-status" data-id="${escapeHtml(item.id)}" data-status="resolved">已解决</button>
+                ${adminCan("feedback.update")
+                  ? `<button class="ghost-btn inline" data-action="feedback-status" data-id="${escapeHtml(item.id)}" data-status="reviewing">处理中</button>
+                <button class="ghost-btn inline" data-action="feedback-status" data-id="${escapeHtml(item.id)}" data-status="resolved">已解决</button>`
+                  : renderNoActions()}
               </div>
             </td>
           </tr>

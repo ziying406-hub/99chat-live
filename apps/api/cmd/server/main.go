@@ -291,6 +291,7 @@ type AdminUser struct {
 	ID          string     `json:"id"`
 	Username    string     `json:"username"`
 	Role        string     `json:"role"`
+	Permissions []string   `json:"permissions,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
 	DisabledAt  *time.Time `json:"disabledAt,omitempty"`
@@ -340,6 +341,64 @@ type adminDashboardResponse struct {
 	OpenFeedback    int `json:"openFeedback"`
 	AttachmentCount int `json:"attachmentCount"`
 	AttachmentBytes int `json:"attachmentBytes"`
+}
+
+var adminPermissionKeys = []string{
+	"dashboard.view",
+	"users.view",
+	"users.ban",
+	"groups.view",
+	"groups.mute",
+	"groups.blacklist",
+	"messages.view",
+	"messages.delete",
+	"reports.view",
+	"reports.resolve",
+	"feedback.view",
+	"feedback.update",
+	"files.view",
+	"audit_logs.view",
+	"settings.view",
+	"settings.update",
+	"admins.view",
+	"admins.invite",
+	"admins.disable",
+	"admins.role_update",
+}
+
+var adminRolePermissions = map[string][]string{
+	"super_admin": adminPermissionKeys,
+	"support": {
+		"dashboard.view",
+		"users.view",
+		"reports.view",
+		"feedback.view",
+		"feedback.update",
+	},
+	"moderator": {
+		"dashboard.view",
+		"users.view",
+		"users.ban",
+		"groups.view",
+		"groups.mute",
+		"groups.blacklist",
+		"messages.view",
+		"messages.delete",
+		"reports.view",
+		"reports.resolve",
+		"files.view",
+		"audit_logs.view",
+	},
+	"operator": {
+		"dashboard.view",
+		"users.view",
+		"groups.view",
+		"messages.view",
+		"reports.view",
+		"feedback.view",
+		"feedback.update",
+		"files.view",
+	},
 }
 
 type adminUserSummary struct {
@@ -497,20 +556,20 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/admin/auth/login", s.adminLogin)
 	mux.HandleFunc("/api/admin/auth/logout", s.requireAdmin(s.adminLogout))
 	mux.HandleFunc("/api/admin/auth/me", s.requireAdmin(s.adminMe))
-	mux.HandleFunc("/api/admin/dashboard", s.requireAdmin(s.adminDashboard))
-	mux.HandleFunc("/api/admin/users", s.requireAdmin(s.adminUsersRoute))
-	mux.HandleFunc("/api/admin/users/", s.requireAdmin(s.adminUserRoute))
-	mux.HandleFunc("/api/admin/groups", s.requireAdmin(s.adminGroupsRoute))
-	mux.HandleFunc("/api/admin/groups/", s.requireAdmin(s.adminGroupRoute))
-	mux.HandleFunc("/api/admin/messages", s.requireAdmin(s.adminMessagesRoute))
-	mux.HandleFunc("/api/admin/messages/", s.requireAdmin(s.adminMessageRoute))
-	mux.HandleFunc("/api/admin/reports", s.requireAdmin(s.adminReportsRoute))
-	mux.HandleFunc("/api/admin/reports/", s.requireAdmin(s.adminReportRoute))
-	mux.HandleFunc("/api/admin/feedback", s.requireAdmin(s.adminFeedbackRoute))
-	mux.HandleFunc("/api/admin/feedback/", s.requireAdmin(s.adminFeedbackItemRoute))
-	mux.HandleFunc("/api/admin/files", s.requireAdmin(s.adminFilesRoute))
-	mux.HandleFunc("/api/admin/files/", s.requireAdmin(s.adminFileRoute))
-	mux.HandleFunc("/api/admin/audit-logs", s.requireAdmin(s.adminAuditLogsRoute))
+	mux.HandleFunc("/api/admin/dashboard", s.requireAdminPermission("dashboard.view", s.adminDashboard))
+	mux.HandleFunc("/api/admin/users", s.requireAdminPermission("users.view", s.adminUsersRoute))
+	mux.HandleFunc("/api/admin/users/", s.requireAdminDynamicPermission(adminUserPermissionForRequest, s.adminUserRoute))
+	mux.HandleFunc("/api/admin/groups", s.requireAdminPermission("groups.view", s.adminGroupsRoute))
+	mux.HandleFunc("/api/admin/groups/", s.requireAdminDynamicPermission(adminGroupPermissionForRequest, s.adminGroupRoute))
+	mux.HandleFunc("/api/admin/messages", s.requireAdminPermission("messages.view", s.adminMessagesRoute))
+	mux.HandleFunc("/api/admin/messages/", s.requireAdminDynamicPermission(adminMessagePermissionForRequest, s.adminMessageRoute))
+	mux.HandleFunc("/api/admin/reports", s.requireAdminPermission("reports.view", s.adminReportsRoute))
+	mux.HandleFunc("/api/admin/reports/", s.requireAdminDynamicPermission(adminReportPermissionForRequest, s.adminReportRoute))
+	mux.HandleFunc("/api/admin/feedback", s.requireAdminPermission("feedback.view", s.adminFeedbackRoute))
+	mux.HandleFunc("/api/admin/feedback/", s.requireAdminDynamicPermission(adminFeedbackPermissionForRequest, s.adminFeedbackItemRoute))
+	mux.HandleFunc("/api/admin/files", s.requireAdminPermission("files.view", s.adminFilesRoute))
+	mux.HandleFunc("/api/admin/files/", s.requireAdminPermission("files.view", s.adminFileRoute))
+	mux.HandleFunc("/api/admin/audit-logs", s.requireAdminPermission("audit_logs.view", s.adminAuditLogsRoute))
 	mux.HandleFunc("/api/auth/login", s.login)
 	mux.HandleFunc("/api/auth/send-code", s.sendAuthCode)
 	mux.HandleFunc("/api/auth/code-login", s.codeLogin)
@@ -690,7 +749,7 @@ func (s *Store) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, adminLoginResponse{
 		Token: token,
-		Admin: admin.AdminUser,
+		Admin: adminWithPermissions(admin.AdminUser),
 	})
 }
 
@@ -1375,8 +1434,98 @@ func (s *Store) requireAdmin(next func(http.ResponseWriter, *http.Request, Admin
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		next(w, r, admin)
+		next(w, r, adminWithPermissions(admin))
 	}
+}
+
+func (s *Store) requireAdminPermission(permission string, next func(http.ResponseWriter, *http.Request, AdminUser)) http.HandlerFunc {
+	return s.requireAdmin(func(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+		if !adminHasPermission(admin, permission) {
+			writeError(w, http.StatusForbidden, "permission denied")
+			return
+		}
+		next(w, r, admin)
+	})
+}
+
+func (s *Store) requireAdminDynamicPermission(permissionForRequest func(*http.Request) string, next func(http.ResponseWriter, *http.Request, AdminUser)) http.HandlerFunc {
+	return s.requireAdmin(func(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+		permission := permissionForRequest(r)
+		if permission == "" || !adminHasPermission(admin, permission) {
+			writeError(w, http.StatusForbidden, "permission denied")
+			return
+		}
+		next(w, r, admin)
+	})
+}
+
+func adminWithPermissions(admin AdminUser) AdminUser {
+	admin.Permissions = adminPermissionsForRole(admin.Role)
+	return admin
+}
+
+func adminPermissionsForRole(role string) []string {
+	permissions, ok := adminRolePermissions[role]
+	if !ok {
+		return []string{}
+	}
+	return append([]string{}, permissions...)
+}
+
+func adminHasPermission(admin AdminUser, permission string) bool {
+	if permission == "" {
+		return false
+	}
+	for _, allowed := range adminPermissionsForRole(admin.Role) {
+		if allowed == permission {
+			return true
+		}
+	}
+	return false
+}
+
+func adminUserPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodGet {
+		return "users.view"
+	}
+	if r.Method == http.MethodPost {
+		return "users.ban"
+	}
+	return "users.view"
+}
+
+func adminGroupPermissionForRequest(r *http.Request) string {
+	if strings.Contains(r.URL.Path, "/blacklist/") {
+		return "groups.blacklist"
+	}
+	if r.Method == http.MethodPost {
+		return "groups.mute"
+	}
+	if r.Method == http.MethodGet {
+		return "groups.view"
+	}
+	return "groups.view"
+}
+
+func adminMessagePermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodDelete {
+		return "messages.delete"
+	}
+	return "messages.view"
+}
+
+func adminReportPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		return "reports.resolve"
+	}
+	return "reports.view"
+}
+
+func adminFeedbackPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		return "feedback.update"
+	}
+	return "feedback.view"
 }
 
 func (s *Store) isSeedUser(userID string) bool {

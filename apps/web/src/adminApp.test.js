@@ -48,6 +48,20 @@ test("sidebar nav marks planning sections with second-phase badges", () => {
   assert.doesNotMatch(navButton("/admin/users"), /class="admin-nav-stage"/);
 });
 
+test("sidebar nav only renders routes visible to the admin permissions", () => {
+  const support = {
+    role: "support",
+    permissions: ["dashboard.view", "users.view", "reports.view", "feedback.view", "feedback.update"]
+  };
+  const markup = renderAdminNavMarkup("reports", support);
+
+  assert.match(markup, /data-route="\/admin\/reports"/);
+  assert.match(markup, /data-route="\/admin\/feedback"/);
+  assert.doesNotMatch(markup, /data-route="\/admin\/messages"/);
+  assert.doesNotMatch(markup, /data-route="\/admin\/audit-logs"/);
+  assert.doesNotMatch(markup, /data-route="\/admin\/admins"/);
+});
+
 test("delegated click guard only ignores routed submit buttons", () => {
   assert.equal(shouldIgnoreAdminClick({ dataset: { route: "/admin/users" }, type: "submit" }), true);
   assert.equal(shouldIgnoreAdminClick({ dataset: { route: "/admin/users" }, type: "button" }), false);

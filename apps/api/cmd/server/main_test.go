@@ -61,6 +61,9 @@ func TestAdminLoginReturnsTokenAndProfile(t *testing.T) {
 	if response.Admin.Username != "admin" || response.Admin.Role != "super_admin" {
 		t.Fatalf("unexpected admin profile: %+v", response.Admin)
 	}
+	if !containsString(response.Admin.Permissions, "admins.role_update") || !containsString(response.Admin.Permissions, "reports.view") {
+		t.Fatalf("expected admin permissions in login response, got %+v", response.Admin.Permissions)
+	}
 }
 
 func TestAdminRoutesRequireAdminToken(t *testing.T) {
@@ -91,6 +94,81 @@ func adminTokenForTest(t *testing.T, mux http.Handler) string {
 		t.Fatalf("decode admin token: %v", err)
 	}
 	return response.Token
+}
+
+func adminTokenForRoleForTest(t *testing.T, store *Store, mux http.Handler, role string) string {
+	t.Helper()
+	password := "role-pass-123"
+	admin := AdminUserRecord{
+		AdminUser: AdminUser{
+			ID:        "admin-" + role,
+			Username:  role,
+			Role:      role,
+			CreatedAt: time.Now().Add(-time.Hour),
+		},
+		PasswordHash: mustHashPasswordForTest(t, password),
+	}
+	store.adminUsers[admin.ID] = admin
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/auth/login", bytes.NewBufferString(fmt.Sprintf(`{"username":%q,"password":%q}`, role, password)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin login for role %s failed: %d %s", role, rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode admin token for role %s: %v", role, err)
+	}
+	return response.Token
+}
+
+func mustHashPasswordForTest(t *testing.T, password string) string {
+	t.Helper()
+	hash, err := hashPassword(password)
+	if err != nil {
+		t.Fatalf("hash test password: %v", err)
+	}
+	return hash
+}
+
+func TestAdminRolePermissionsAllowSupportToViewReportsOnly(t *testing.T) {
+	store := seedStore()
+	store.reports = []Report{{ID: "report-support-view", TargetID: "u1", TargetType: "user", Reason: "needs help", CreatedAt: time.Now()}}
+	mux := store.routes("")
+	token := adminTokenForRoleForTest(t, store, mux, "support")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/reports", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected support reports view 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+
+	resolveReq := httptest.NewRequest(http.MethodPost, "/api/admin/reports/report-support-view/resolve", bytes.NewBufferString(`{"status":"resolved","resolution":"handled"}`))
+	resolveReq.Header.Set("Authorization", "Bearer "+token)
+	resolveRec := httptest.NewRecorder()
+	mux.ServeHTTP(resolveRec, resolveReq)
+	if resolveRec.Code != http.StatusForbidden {
+		t.Fatalf("expected support report resolve 403, got %d: %s", resolveRec.Code, resolveRec.Body.String())
+	}
+}
+
+func TestAdminRolePermissionsDenyUnknownRoles(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForRoleForTest(t, store, mux, "unknown_role")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected unknown role 403, got %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 func TestAdminDashboardReturnsCounts(t *testing.T) {
