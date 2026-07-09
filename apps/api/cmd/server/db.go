@@ -270,6 +270,17 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			detail TEXT NOT NULL DEFAULT '',
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
+		`ALTER TABLE admin_users DROP CONSTRAINT IF EXISTS admin_users_role_check`,
+		`ALTER TABLE admin_users ADD CONSTRAINT admin_users_role_check CHECK (role IN ('super_admin', 'support', 'moderator', 'operator', 'admin'))`,
+		`CREATE TABLE IF NOT EXISTS admin_system_settings (
+			id TEXT PRIMARY KEY,
+			registration_enabled BOOLEAN NOT NULL DEFAULT true,
+			max_upload_bytes BIGINT NOT NULL DEFAULT 67108864,
+			max_group_members INTEGER NOT NULL DEFAULT 500,
+			sensitive_words JSONB NOT NULL DEFAULT '[]'::jsonb,
+			spam_detection_enabled BOOLEAN NOT NULL DEFAULT false,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS banned_at TIMESTAMPTZ`,
 		`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE reports ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open'`,
@@ -362,6 +373,7 @@ func (s *Store) clearRuntimeData() {
 	s.adminUsers = map[string]AdminUserRecord{}
 	s.adminSessions = map[string]AdminSession{}
 	s.adminAuditLogs = []AdminAuditLog{}
+	s.systemSettings = defaultAdminSystemSettings()
 	s.passwordHashes = map[string]string{}
 	s.sessions = map[string]string{}
 	s.sessionCreatedAt = map[string]time.Time{}
@@ -719,6 +731,10 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	systemSettings, err := pg.loadAdminSystemSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	groupBots, err := pg.loadGroupBots(ctx)
 	if err != nil {
 		return nil, err
@@ -757,6 +773,7 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		adminUsers:        map[string]AdminUserRecord{},
 		adminSessions:     map[string]AdminSession{},
 		adminAuditLogs:    adminAuditLogs,
+		systemSettings:    systemSettings,
 		hub:               hub,
 	}, nil
 }
@@ -1323,6 +1340,342 @@ func (s *Store) markAdminLogin(ctx context.Context, adminUserID string, loginAt 
 	}
 	_, err := s.pg.pool.Exec(ctx, `UPDATE admin_users SET last_login_at = $2 WHERE id = $1`, adminUserID, loginAt)
 	return err
+}
+
+func (pg *PostgresStore) loadAdminSystemSettings(ctx context.Context) (AdminSystemSettings, error) {
+	defaults := defaultAdminSystemSettings()
+	var settings AdminSystemSettings
+	var wordsJSON []byte
+	err := pg.pool.QueryRow(ctx, `SELECT registration_enabled, max_upload_bytes, max_group_members, sensitive_words, spam_detection_enabled
+		FROM admin_system_settings WHERE id = 'default'`).
+		Scan(&settings.RegistrationEnabled, &settings.MaxUploadBytes, &settings.MaxGroupMembers, &wordsJSON, &settings.SpamDetectionEnabled)
+	if errors.Is(err, pgx.ErrNoRows) {
+		wordsJSON, marshalErr := json.Marshal(defaults.SensitiveWords)
+		if marshalErr != nil {
+			return AdminSystemSettings{}, marshalErr
+		}
+		_, insertErr := pg.pool.Exec(ctx, `INSERT INTO admin_system_settings(id, registration_enabled, max_upload_bytes, max_group_members, sensitive_words, spam_detection_enabled)
+			VALUES ('default', $1, $2, $3, $4, $5)`,
+			defaults.RegistrationEnabled, defaults.MaxUploadBytes, defaults.MaxGroupMembers, wordsJSON, defaults.SpamDetectionEnabled)
+		if insertErr != nil {
+			return AdminSystemSettings{}, insertErr
+		}
+		return defaults, nil
+	}
+	if err != nil {
+		return AdminSystemSettings{}, err
+	}
+	if len(wordsJSON) > 0 {
+		_ = json.Unmarshal(wordsJSON, &settings.SensitiveWords)
+	}
+	settings.SensitiveWords = normalizeSensitiveWords(settings.SensitiveWords)
+	return settings, nil
+}
+
+func (s *Store) adminSystemSettings(ctx context.Context) (AdminSystemSettings, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if s.systemSettings.MaxUploadBytes == 0 {
+			return defaultAdminSystemSettings(), nil
+		}
+		return s.systemSettings, nil
+	}
+	return s.pg.loadAdminSystemSettings(ctx)
+}
+
+func (s *Store) updateAdminSystemSettings(ctx context.Context, admin AdminUser, next AdminSystemSettings) (AdminSystemSettings, error) {
+	settings, err := validateAdminSystemSettings(next)
+	if err != nil {
+		return AdminSystemSettings{}, err
+	}
+	log := s.newAdminAuditLog(admin, "system_settings_updated", "system", "settings", "updated system settings")
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.adminAuditLogHook != nil {
+			if err := s.adminAuditLogHook(log); err != nil {
+				return AdminSystemSettings{}, err
+			}
+		}
+		s.systemSettings = settings
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		return settings, nil
+	}
+	wordsJSON, err := json.Marshal(settings.SensitiveWords)
+	if err != nil {
+		return AdminSystemSettings{}, err
+	}
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return AdminSystemSettings{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `INSERT INTO admin_system_settings(id, registration_enabled, max_upload_bytes, max_group_members, sensitive_words, spam_detection_enabled, updated_at)
+		VALUES ('default', $1, $2, $3, $4, $5, now())
+		ON CONFLICT (id) DO UPDATE SET registration_enabled = EXCLUDED.registration_enabled,
+			max_upload_bytes = EXCLUDED.max_upload_bytes,
+			max_group_members = EXCLUDED.max_group_members,
+			sensitive_words = EXCLUDED.sensitive_words,
+			spam_detection_enabled = EXCLUDED.spam_detection_enabled,
+			updated_at = now()`,
+		settings.RegistrationEnabled, settings.MaxUploadBytes, settings.MaxGroupMembers, wordsJSON, settings.SpamDetectionEnabled); err != nil {
+		return AdminSystemSettings{}, err
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return AdminSystemSettings{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AdminSystemSettings{}, err
+	}
+	return settings, nil
+}
+
+func validateAdminSystemSettings(settings AdminSystemSettings) (AdminSystemSettings, error) {
+	if settings.MaxUploadBytes < 1024 || settings.MaxUploadBytes > 100*1024*1024 {
+		return AdminSystemSettings{}, errInvalidAdminSettings
+	}
+	if settings.MaxGroupMembers < 2 || settings.MaxGroupMembers > 5000 {
+		return AdminSystemSettings{}, errInvalidAdminSettings
+	}
+	settings.SensitiveWords = normalizeSensitiveWords(settings.SensitiveWords)
+	return settings, nil
+}
+
+func normalizeSensitiveWords(words []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, word := range words {
+		trimmed := strings.TrimSpace(word)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, trimmed)
+	}
+	return out
+}
+
+func (s *Store) adminAccounts(ctx context.Context) ([]AdminUser, error) {
+	if s.pg == nil {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		items := make([]AdminUser, 0, len(s.adminUsers))
+		for _, record := range s.adminUsers {
+			items = append(items, adminWithPermissions(record.AdminUser))
+		}
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].CreatedAt.Before(items[j].CreatedAt)
+		})
+		return items, nil
+	}
+	rows, err := s.pg.pool.Query(ctx, `SELECT id, username, role, created_at, last_login_at, disabled_at
+		FROM admin_users ORDER BY created_at ASC, username ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AdminUser{}
+	for rows.Next() {
+		var admin AdminUser
+		if err := rows.Scan(&admin.ID, &admin.Username, &admin.Role, &admin.CreatedAt, &admin.LastLoginAt, &admin.DisabledAt); err != nil {
+			return nil, err
+		}
+		items = append(items, adminWithPermissions(admin))
+	}
+	return items, rows.Err()
+}
+
+func (s *Store) createAdminAccount(ctx context.Context, actor AdminUser, username string, password string, role string) (AdminUser, error) {
+	username = strings.TrimSpace(username)
+	role = strings.TrimSpace(role)
+	if !validAdminUsername(username) || len(password) < 8 || !validAdminRole(role) {
+		return AdminUser{}, errInvalidAdminAccount
+	}
+	passwordHash, err := hashPassword(password)
+	if err != nil {
+		return AdminUser{}, err
+	}
+	now := time.Now()
+	admin := AdminUser{
+		ID:        newID("admin"),
+		Username:  username,
+		Role:      role,
+		CreatedAt: now,
+	}
+	log := s.newAdminAuditLog(actor, "admin_created", "admin", admin.ID, username)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, existing := range s.adminUsers {
+			if strings.EqualFold(existing.Username, username) {
+				return AdminUser{}, errAdminUsernameExists
+			}
+		}
+		if s.adminAuditLogHook != nil {
+			if err := s.adminAuditLogHook(log); err != nil {
+				return AdminUser{}, err
+			}
+		}
+		s.adminUsers[admin.ID] = AdminUserRecord{AdminUser: admin, PasswordHash: passwordHash}
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		return adminWithPermissions(admin), nil
+	}
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return AdminUser{}, err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `INSERT INTO admin_users(id, username, password_hash, role, created_at)
+		VALUES ($1, $2, $3, $4, $5)`, admin.ID, username, passwordHash, role, now); err != nil {
+		if isUniqueViolation(err) {
+			return AdminUser{}, errAdminUsernameExists
+		}
+		return AdminUser{}, err
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return AdminUser{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AdminUser{}, err
+	}
+	return adminWithPermissions(admin), nil
+}
+
+func (s *Store) setAdminAccountDisabled(ctx context.Context, actor AdminUser, adminID string, disabled bool) (AdminUser, error) {
+	if actor.ID == adminID {
+		return AdminUser{}, errAdminSelfMutation
+	}
+	now := time.Now()
+	action := "admin_enabled"
+	detail := "enabled admin"
+	var disabledAt *time.Time
+	if disabled {
+		action = "admin_disabled"
+		detail = "disabled admin"
+		disabledAt = &now
+	}
+	log := s.newAdminAuditLog(actor, action, "admin", adminID, detail)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		record, ok := s.adminUsers[adminID]
+		if !ok {
+			return AdminUser{}, errAdminNotFound
+		}
+		if s.adminAuditLogHook != nil {
+			if err := s.adminAuditLogHook(log); err != nil {
+				return AdminUser{}, err
+			}
+		}
+		record.DisabledAt = disabledAt
+		s.adminUsers[adminID] = record
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		return adminWithPermissions(record.AdminUser), nil
+	}
+	return s.updateAdminAccountDisabledPostgres(ctx, log, adminID, disabledAt)
+}
+
+func (s *Store) updateAdminAccountDisabledPostgres(ctx context.Context, log AdminAuditLog, adminID string, disabledAt *time.Time) (AdminUser, error) {
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return AdminUser{}, err
+	}
+	defer tx.Rollback(ctx)
+	var admin AdminUser
+	err = tx.QueryRow(ctx, `UPDATE admin_users SET disabled_at = $2 WHERE id = $1
+		RETURNING id, username, role, created_at, last_login_at, disabled_at`, adminID, disabledAt).
+		Scan(&admin.ID, &admin.Username, &admin.Role, &admin.CreatedAt, &admin.LastLoginAt, &admin.DisabledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminUser{}, errAdminNotFound
+	}
+	if err != nil {
+		return AdminUser{}, err
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return AdminUser{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AdminUser{}, err
+	}
+	return adminWithPermissions(admin), nil
+}
+
+func (s *Store) setAdminAccountRole(ctx context.Context, actor AdminUser, adminID string, role string) (AdminUser, error) {
+	role = strings.TrimSpace(role)
+	if actor.ID == adminID {
+		return AdminUser{}, errAdminSelfMutation
+	}
+	if !validAdminRole(role) {
+		return AdminUser{}, errInvalidAdminAccount
+	}
+	log := s.newAdminAuditLog(actor, "admin_role_updated", "admin", adminID, role)
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		record, ok := s.adminUsers[adminID]
+		if !ok {
+			return AdminUser{}, errAdminNotFound
+		}
+		if s.adminAuditLogHook != nil {
+			if err := s.adminAuditLogHook(log); err != nil {
+				return AdminUser{}, err
+			}
+		}
+		record.Role = role
+		s.adminUsers[adminID] = record
+		s.adminAuditLogs = append([]AdminAuditLog{log}, s.adminAuditLogs...)
+		return adminWithPermissions(record.AdminUser), nil
+	}
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return AdminUser{}, err
+	}
+	defer tx.Rollback(ctx)
+	var admin AdminUser
+	err = tx.QueryRow(ctx, `UPDATE admin_users SET role = $2 WHERE id = $1
+		RETURNING id, username, role, created_at, last_login_at, disabled_at`, adminID, role).
+		Scan(&admin.ID, &admin.Username, &admin.Role, &admin.CreatedAt, &admin.LastLoginAt, &admin.DisabledAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return AdminUser{}, errAdminNotFound
+	}
+	if err != nil {
+		return AdminUser{}, err
+	}
+	if err := s.insertAdminAuditLogTx(ctx, tx, log); err != nil {
+		return AdminUser{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return AdminUser{}, err
+	}
+	return adminWithPermissions(admin), nil
+}
+
+func validAdminRole(role string) bool {
+	_, ok := adminRolePermissions[role]
+	return ok
+}
+
+func validAdminUsername(username string) bool {
+	if len(username) < 3 || len(username) > 32 {
+		return false
+	}
+	for _, r := range username {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func (s *Store) adminDashboardCounts(ctx context.Context) (adminDashboardResponse, error) {
@@ -4449,11 +4802,6 @@ func decodeStickerStore(raw []byte) StickerStore {
 		_ = json.Unmarshal(raw, &store)
 	}
 	return normalizeStickerStore(store)
-}
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
 func uniqueChatID() string {

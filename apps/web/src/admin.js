@@ -1,4 +1,4 @@
-import { createAdminApi } from "./adminApi.js";
+import { createAdminApi } from "./adminApi.js?v=20260710-admin-settings";
 import { adminRoutes, adminStatusLabel, firstVisibleAdminPath, hasAdminPermission, requiresConfirmation, visibleAdminRoutes } from "./adminStatus.js";
 
 const win = typeof window === "undefined" ? null : window;
@@ -14,7 +14,8 @@ const loaders = {
   reports: filters => api.listReports(filters),
   feedback: filters => api.listFeedback(filters),
   files: filters => api.listFiles(filters),
-  "audit-logs": filters => api.listAuditLogs(filters)
+  "audit-logs": filters => api.listAuditLogs(filters),
+  admins: () => api.listAdmins()
 };
 
 const state = {
@@ -85,14 +86,14 @@ const tableMeta = {
   },
   settings: {
     title: "系统设置",
-    description: "注册开关、上传大小、群人数上限与默认风控规则将在第二期集中开放。第一期先保持后台可观测与可治理，避免错误配置影响线上用户。",
-    empty: "第二期开放",
+    description: "管理注册开关、上传限制、群人数上限与基础风控规则。",
+    empty: "暂无系统设置。",
     filterPlaceholder: ""
   },
   admins: {
     title: "管理员与权限",
-    description: "超级管理员、客服、内容审核、运营等角色权限将在第二期开放。第一期继续使用单管理员模型，避免权限半成品造成误授权。",
-    empty: "第二期开放",
+    description: "管理后台管理员账号、角色和启用状态。",
+    empty: "当前没有管理员账号。",
     filterPlaceholder: ""
   }
 };
@@ -310,6 +311,9 @@ async function loadSection(section = state.section) {
     if (section === "dashboard") {
       state.detail = await api.getDashboard();
       state.rows = [];
+    } else if (section === "settings") {
+      state.detail = await api.getSettings();
+      state.rows = [];
     } else if (loaders[section]) {
       const filters = state.filters[section] || {};
       const keyword = filters.keyword || "";
@@ -463,8 +467,11 @@ function statusPill(kind, value) {
 
 function renderTableScreen() {
 	const meta = tableMeta[state.section];
-  if (state.section === "settings" || state.section === "admins") {
-    return renderAdminPlaceholder(state.section);
+  if (state.section === "settings") {
+    return renderAdminSettingsPanel(state.detail, state.admin);
+  }
+  if (state.section === "admins") {
+    return renderAdminAccountsPanel(state.rows, state.admin);
   }
   const filters = state.filters[state.section] || {};
 	return `
@@ -537,6 +544,145 @@ export function renderAdminPlaceholder(section) {
         <ul class="admin-placeholder-list">
           ${plan.details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}
         </ul>
+      </div>
+    </section>
+  `;
+}
+
+function settingChecked(settings, key) {
+  return settings?.[key] ? "checked" : "";
+}
+
+function roleLabel(role) {
+  return {
+    super_admin: "超级管理员",
+    support: "客服",
+    moderator: "内容审核",
+    operator: "运营"
+  }[role] || role || "—";
+}
+
+function adminRoleOptions(currentRole = "") {
+  return ["super_admin", "support", "moderator", "operator"].map(role => `
+    <option value="${escapeHtml(role)}" ${currentRole === role ? "selected" : ""}>${escapeHtml(roleLabel(role))}</option>
+  `).join("");
+}
+
+export function renderAdminSettingsPanel(settings = {}, admin = null) {
+  const canUpdate = hasAdminPermission(admin, "settings.update");
+  const safe = {
+    registrationEnabled: settings?.registrationEnabled !== false,
+    maxUploadBytes: settings?.maxUploadBytes || 67108864,
+    maxGroupMembers: settings?.maxGroupMembers || 500,
+    sensitiveWords: Array.isArray(settings?.sensitiveWords) ? settings.sensitiveWords : [],
+    spamDetectionEnabled: Boolean(settings?.spamDetectionEnabled)
+  };
+  if (!canUpdate) {
+    return `
+      ${renderError()}
+      <section class="admin-panel">
+        <div class="admin-empty">只读</div>
+        <div class="admin-table-wrap">
+          <table class="admin-table">
+            <tbody>
+              <tr><th>注册开关</th><td>${safe.registrationEnabled ? "开启" : "关闭"}</td></tr>
+              <tr><th>上传大小上限</th><td>${escapeHtml(formatBytes(safe.maxUploadBytes))}</td></tr>
+              <tr><th>群人数上限</th><td>${escapeHtml(String(safe.maxGroupMembers))}</td></tr>
+              <tr><th>敏感词</th><td>${escapeHtml(safe.sensitiveWords.join("、") || "未配置")}</td></tr>
+              <tr><th>刷屏检测</th><td>${safe.spamDetectionEnabled ? "开启" : "关闭"}</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    `;
+  }
+  return `
+    ${renderError()}
+    <section class="admin-panel">
+      <form class="admin-settings-form" data-form="admin-settings">
+        <div class="admin-filter-field">
+          <span>注册开关</span>
+          <label class="admin-check-row">
+            <input type="checkbox" name="registrationEnabled" ${settingChecked(safe, "registrationEnabled")} />
+            <span>允许新用户注册</span>
+          </label>
+        </div>
+        <label class="admin-filter-field">
+          <span>上传大小上限（字节）</span>
+          <input class="input admin-compact-input" type="number" name="maxUploadBytes" min="1024" max="104857600" value="${escapeHtml(safe.maxUploadBytes)}" required />
+        </label>
+        <label class="admin-filter-field">
+          <span>群人数上限</span>
+          <input class="input admin-compact-input" type="number" name="maxGroupMembers" min="2" max="5000" value="${escapeHtml(safe.maxGroupMembers)}" required />
+        </label>
+        <label class="admin-filter-field">
+          <span>敏感词</span>
+          <textarea class="textarea admin-compact-input" name="sensitiveWords" placeholder="每行一个或用逗号分隔">${escapeHtml(safe.sensitiveWords.join("\n"))}</textarea>
+        </label>
+        <div class="admin-filter-field">
+          <span>刷屏检测</span>
+          <label class="admin-check-row">
+            <input type="checkbox" name="spamDetectionEnabled" ${settingChecked(safe, "spamDetectionEnabled")} />
+            <span>开启基础刷屏检测</span>
+          </label>
+        </div>
+        <div class="admin-row-actions">
+          <button class="primary-btn inline" type="submit">保存设置</button>
+        </div>
+      </form>
+    </section>
+  `;
+}
+
+export function renderAdminAccountsPanel(admins = [], admin = null) {
+  const canCreate = hasAdminPermission(admin, "admins.invite");
+  const canDisable = hasAdminPermission(admin, "admins.disable");
+  const canUpdateRole = hasAdminPermission(admin, "admins.role_update");
+  return `
+    ${renderError()}
+    <section class="admin-panel">
+      ${canCreate ? `
+        <form class="admin-toolbar" data-form="admin-create">
+          <input class="input admin-compact-input" name="username" placeholder="管理员用户名" required />
+          <input class="input admin-compact-input" name="password" type="password" placeholder="至少 8 位密码" required />
+          <select class="select admin-compact-input" name="role">${adminRoleOptions("support")}</select>
+          <button class="primary-btn inline" type="submit">新增管理员</button>
+        </form>
+      ` : `<div class="admin-empty">只读</div>`}
+      <div class="admin-table-wrap">
+        ${admins.length ? `
+          <table class="admin-table">
+            <thead><tr><th>管理员</th><th>角色</th><th>权限</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead>
+            <tbody>
+              ${admins.map(item => {
+                const disabled = Boolean(item.disabledAt);
+                const isSelf = item.id === admin?.id;
+                return `
+                  <tr>
+                    <td><strong>${escapeHtml(item.username)}</strong><small>${escapeHtml(item.id)}</small></td>
+                    <td>
+                      ${canUpdateRole && !isSelf ? `
+                        <select class="select admin-compact-input" data-action="admin-role" data-id="${escapeHtml(item.id)}">
+                          ${adminRoleOptions(item.role)}
+                        </select>
+                      ` : escapeHtml(roleLabel(item.role))}
+                    </td>
+                    <td>${escapeHtml(String(item.permissions?.length || 0))}<small>项权限</small></td>
+                    <td>${disabled ? statusPill("user", "banned") : statusPill("user", "active")}</td>
+                    <td>${escapeHtml(formatDate(item.createdAt))}</td>
+                    <td>
+                      <div class="admin-row-actions">
+                        ${canDisable && !isSelf
+                          ? `<button class="${disabled ? "ghost-btn" : "danger-btn"} inline" data-action="admin-status" data-id="${escapeHtml(item.id)}" data-disabled="${disabled ? "false" : "true"}">${disabled ? "启用" : "停用"}</button>`
+                          : renderNoActions()}
+                      </div>
+                    </td>
+                  </tr>
+                `;
+              }).join("")}
+            </tbody>
+          </table>
+        ` : `<div class="admin-empty">${escapeHtml(tableMeta.admins.empty)}</div>`}
       </div>
     </section>
   `;
@@ -814,6 +960,48 @@ async function handleConfirmedAction(form) {
   }
 }
 
+function parseSensitiveWords(value) {
+  return String(value || "")
+    .split(/[\n,，]/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+async function submitAdminSettings(form) {
+  const formData = new FormData(form);
+  const payload = {
+    registrationEnabled: formData.get("registrationEnabled") === "on",
+    maxUploadBytes: Number(formData.get("maxUploadBytes") || 0),
+    maxGroupMembers: Number(formData.get("maxGroupMembers") || 0),
+    sensitiveWords: parseSensitiveWords(formData.get("sensitiveWords")),
+    spamDetectionEnabled: formData.get("spamDetectionEnabled") === "on"
+  };
+  try {
+    state.detail = await api.updateSettings(payload);
+    toast("系统设置已保存");
+    await loadSection();
+  } catch (error) {
+    state.error = error.message || "设置保存失败";
+    render();
+  }
+}
+
+async function submitAdminCreate(form) {
+  const formData = new FormData(form);
+  try {
+    await api.createAdmin({
+      username: String(formData.get("username") || "").trim(),
+      password: String(formData.get("password") || ""),
+      role: String(formData.get("role") || "support")
+    });
+    toast("管理员已新增");
+    await loadSection();
+  } catch (error) {
+    state.error = error.message || "管理员新增失败";
+    render();
+  }
+}
+
 async function handleAction(button) {
   if (button.dataset.route) {
     navigate(button.dataset.route);
@@ -863,6 +1051,9 @@ async function handleAction(button) {
       if (adminNote === null) return;
       await api.updateFeedback(button.dataset.id || "", { status, adminNote: adminNote.trim() });
       toast("反馈状态已更新");
+    } else if (action === "admin-status") {
+      await api.updateAdminStatus(button.dataset.id || "", button.dataset.disabled === "true");
+      toast(button.dataset.disabled === "true" ? "管理员已停用" : "管理员已启用");
     }
     await loadSection();
   } catch (error) {
@@ -893,7 +1084,30 @@ root?.addEventListener("submit", event => {
 	}
   if (form.dataset.form === "confirm") {
     handleConfirmedAction(form);
+    return;
   }
+  if (form.dataset.form === "admin-settings") {
+    submitAdminSettings(form);
+    return;
+  }
+  if (form.dataset.form === "admin-create") {
+    submitAdminCreate(form);
+  }
+});
+
+root?.addEventListener("change", event => {
+  const target = event.target;
+  if (!(target instanceof HTMLSelectElement)) return;
+  if (target.dataset.action !== "admin-role") return;
+  api.updateAdminRole(target.dataset.id || "", target.value)
+    .then(() => {
+      toast("管理员角色已更新");
+      return loadSection();
+    })
+    .catch(error => {
+      state.error = error.message || "角色更新失败";
+      render();
+    });
 });
 
 win?.addEventListener("popstate", () => {
