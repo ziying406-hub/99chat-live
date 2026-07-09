@@ -314,6 +314,9 @@ func (s *Store) syncFromPostgres(ctx context.Context) error {
 	if s.pg == nil {
 		return nil
 	}
+	if err := s.pg.ensureBootstrapAdmin(ctx); err != nil {
+		return err
+	}
 	seeded, err := s.pg.hasSeedData(ctx)
 	if err != nil {
 		return err
@@ -396,6 +399,20 @@ func (pg *PostgresStore) hasSeedData(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+func (pg *PostgresStore) ensureBootstrapAdmin(ctx context.Context) error {
+	admin := bootstrapAdminRecord()
+	resetPassword := strings.EqualFold(strings.TrimSpace(os.Getenv("SEED_DEMO_DATA")), "true") ||
+		strings.EqualFold(strings.TrimSpace(os.Getenv("RESET_ADMIN_PASSWORD")), "true") ||
+		strings.TrimSpace(os.Getenv("ADMIN_PASSWORD")) != ""
+	_, err := pg.pool.Exec(ctx, `INSERT INTO admin_users(id, username, password_hash, role, created_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (username) DO UPDATE SET
+			password_hash = CASE WHEN $6 THEN EXCLUDED.password_hash ELSE admin_users.password_hash END,
+			role = EXCLUDED.role`,
+		admin.ID, admin.Username, admin.PasswordHash, admin.Role, admin.CreatedAt, resetPassword)
+	return err
 }
 
 func (pg *PostgresStore) resetMarkerApplied(ctx context.Context, marker string) (bool, error) {

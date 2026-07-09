@@ -447,10 +447,11 @@ func runtimeStore() *Store {
 }
 
 func emptyDemoStore() *Store {
+	admin := bootstrapAdminRecord()
 	return &Store{
 		user:              demoUser(),
 		users:             map[string]User{},
-		adminUsers:        map[string]AdminUserRecord{},
+		adminUsers:        map[string]AdminUserRecord{admin.ID: admin},
 		adminSessions:     map[string]AdminSession{},
 		adminAuditLogs:    []AdminAuditLog{},
 		passwordHashes:    map[string]string{"u1": "demo:demo123456"},
@@ -4643,16 +4644,8 @@ func (s *Store) websocket(w http.ResponseWriter, r *http.Request) {
 
 func seedStore() *Store {
 	now := time.Now()
-	adminHash, _ := hashPassword("admin123")
-	admin := AdminUserRecord{
-		AdminUser: AdminUser{
-			ID:        "admin-1",
-			Username:  "admin",
-			Role:      "super_admin",
-			CreatedAt: now.Add(-48 * time.Hour),
-		},
-		PasswordHash: adminHash,
-	}
+	admin := bootstrapAdminRecord()
+	admin.CreatedAt = now.Add(-48 * time.Hour)
 	contacts := []Contact{
 		{ID: "388770", Nickname: "陈刀仔（日进斗金）", Signature: "愿你每天都好运", ChatID: "cdz888", Avatar: avatar("陈"), Remark: "老朋友", Tags: []string{"优先", "线下"}},
 		{ID: "388769", Nickname: "苏雅", Signature: "在线接待", ChatID: "suya66", Avatar: avatar("苏"), Tags: []string{"客服"}},
@@ -4738,6 +4731,27 @@ func seedStore() *Store {
 		},
 		hub:      &Hub{clients: map[*WSConn]bool{}},
 		sessions: map[string]string{},
+	}
+}
+
+func bootstrapAdminRecord() AdminUserRecord {
+	username := strings.TrimSpace(os.Getenv("ADMIN_USERNAME"))
+	if username == "" {
+		username = "admin"
+	}
+	password := os.Getenv("ADMIN_PASSWORD")
+	if password == "" {
+		password = "admin123"
+	}
+	adminHash, _ := hashPassword(password)
+	return AdminUserRecord{
+		AdminUser: AdminUser{
+			ID:        "admin-1",
+			Username:  username,
+			Role:      "super_admin",
+			CreatedAt: time.Now().Add(-48 * time.Hour),
+		},
+		PasswordHash: adminHash,
 	}
 }
 
