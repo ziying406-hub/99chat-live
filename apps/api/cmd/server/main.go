@@ -291,6 +291,7 @@ type AdminUser struct {
 	ID          string     `json:"id"`
 	Username    string     `json:"username"`
 	Role        string     `json:"role"`
+	Permissions []string   `json:"permissions,omitempty"`
 	CreatedAt   time.Time  `json:"createdAt"`
 	LastLoginAt *time.Time `json:"lastLoginAt,omitempty"`
 	DisabledAt  *time.Time `json:"disabledAt,omitempty"`
@@ -321,6 +322,14 @@ type AdminUserRecord struct {
 	PasswordHash string `json:"-"`
 }
 
+type AdminSystemSettings struct {
+	RegistrationEnabled  bool     `json:"registrationEnabled"`
+	MaxUploadBytes       int64    `json:"maxUploadBytes"`
+	MaxGroupMembers      int      `json:"maxGroupMembers"`
+	SensitiveWords       []string `json:"sensitiveWords"`
+	SpamDetectionEnabled bool     `json:"spamDetectionEnabled"`
+}
+
 type adminLoginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -340,6 +349,82 @@ type adminDashboardResponse struct {
 	OpenFeedback    int `json:"openFeedback"`
 	AttachmentCount int `json:"attachmentCount"`
 	AttachmentBytes int `json:"attachmentBytes"`
+}
+
+func defaultAdminSystemSettings() AdminSystemSettings {
+	return AdminSystemSettings{
+		RegistrationEnabled:  true,
+		MaxUploadBytes:       maxUploadSizeBytes,
+		MaxGroupMembers:      500,
+		SensitiveWords:       []string{},
+		SpamDetectionEnabled: false,
+	}
+}
+
+var (
+	errInvalidAdminSettings = errors.New("invalid admin settings")
+	errInvalidAdminAccount  = errors.New("invalid admin account")
+	errAdminUsernameExists  = errors.New("admin username exists")
+	errAdminSelfMutation    = errors.New("admin cannot modify own account")
+	errAdminNotFound        = errors.New("admin not found")
+)
+
+var adminPermissionKeys = []string{
+	"dashboard.view",
+	"users.view",
+	"users.ban",
+	"groups.view",
+	"groups.mute",
+	"groups.blacklist",
+	"messages.view",
+	"messages.delete",
+	"reports.view",
+	"reports.resolve",
+	"feedback.view",
+	"feedback.update",
+	"files.view",
+	"audit_logs.view",
+	"settings.view",
+	"settings.update",
+	"admins.view",
+	"admins.invite",
+	"admins.disable",
+	"admins.role_update",
+}
+
+var adminRolePermissions = map[string][]string{
+	"super_admin": adminPermissionKeys,
+	"support": {
+		"dashboard.view",
+		"users.view",
+		"reports.view",
+		"feedback.view",
+		"feedback.update",
+	},
+	"moderator": {
+		"dashboard.view",
+		"users.view",
+		"users.ban",
+		"groups.view",
+		"groups.mute",
+		"groups.blacklist",
+		"messages.view",
+		"messages.delete",
+		"reports.view",
+		"reports.resolve",
+		"files.view",
+		"audit_logs.view",
+	},
+	"operator": {
+		"dashboard.view",
+		"users.view",
+		"groups.view",
+		"messages.view",
+		"reports.view",
+		"feedback.view",
+		"feedback.update",
+		"files.view",
+	},
 }
 
 type adminUserSummary struct {
@@ -389,6 +474,7 @@ type Store struct {
 	adminUsers        map[string]AdminUserRecord
 	adminSessions     map[string]AdminSession
 	adminAuditLogs    []AdminAuditLog
+	systemSettings    AdminSystemSettings
 	adminAuditLogHook func(AdminAuditLog) error
 	passwordHashes    map[string]string
 	hub               *Hub
@@ -454,6 +540,7 @@ func emptyDemoStore() *Store {
 		adminUsers:        map[string]AdminUserRecord{admin.ID: admin},
 		adminSessions:     map[string]AdminSession{},
 		adminAuditLogs:    []AdminAuditLog{},
+		systemSettings:    defaultAdminSystemSettings(),
 		passwordHashes:    map[string]string{"u1": "demo:demo123456"},
 		contacts:          []Contact{},
 		conversations:     []Conversation{},
@@ -497,20 +584,23 @@ func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/admin/auth/login", s.adminLogin)
 	mux.HandleFunc("/api/admin/auth/logout", s.requireAdmin(s.adminLogout))
 	mux.HandleFunc("/api/admin/auth/me", s.requireAdmin(s.adminMe))
-	mux.HandleFunc("/api/admin/dashboard", s.requireAdmin(s.adminDashboard))
-	mux.HandleFunc("/api/admin/users", s.requireAdmin(s.adminUsersRoute))
-	mux.HandleFunc("/api/admin/users/", s.requireAdmin(s.adminUserRoute))
-	mux.HandleFunc("/api/admin/groups", s.requireAdmin(s.adminGroupsRoute))
-	mux.HandleFunc("/api/admin/groups/", s.requireAdmin(s.adminGroupRoute))
-	mux.HandleFunc("/api/admin/messages", s.requireAdmin(s.adminMessagesRoute))
-	mux.HandleFunc("/api/admin/messages/", s.requireAdmin(s.adminMessageRoute))
-	mux.HandleFunc("/api/admin/reports", s.requireAdmin(s.adminReportsRoute))
-	mux.HandleFunc("/api/admin/reports/", s.requireAdmin(s.adminReportRoute))
-	mux.HandleFunc("/api/admin/feedback", s.requireAdmin(s.adminFeedbackRoute))
-	mux.HandleFunc("/api/admin/feedback/", s.requireAdmin(s.adminFeedbackItemRoute))
-	mux.HandleFunc("/api/admin/files", s.requireAdmin(s.adminFilesRoute))
-	mux.HandleFunc("/api/admin/files/", s.requireAdmin(s.adminFileRoute))
-	mux.HandleFunc("/api/admin/audit-logs", s.requireAdmin(s.adminAuditLogsRoute))
+	mux.HandleFunc("/api/admin/dashboard", s.requireAdminPermission("dashboard.view", s.adminDashboard))
+	mux.HandleFunc("/api/admin/users", s.requireAdminPermission("users.view", s.adminUsersRoute))
+	mux.HandleFunc("/api/admin/users/", s.requireAdminDynamicPermission(adminUserPermissionForRequest, s.adminUserRoute))
+	mux.HandleFunc("/api/admin/groups", s.requireAdminPermission("groups.view", s.adminGroupsRoute))
+	mux.HandleFunc("/api/admin/groups/", s.requireAdminDynamicPermission(adminGroupPermissionForRequest, s.adminGroupRoute))
+	mux.HandleFunc("/api/admin/messages", s.requireAdminPermission("messages.view", s.adminMessagesRoute))
+	mux.HandleFunc("/api/admin/messages/", s.requireAdminDynamicPermission(adminMessagePermissionForRequest, s.adminMessageRoute))
+	mux.HandleFunc("/api/admin/reports", s.requireAdminPermission("reports.view", s.adminReportsRoute))
+	mux.HandleFunc("/api/admin/reports/", s.requireAdminDynamicPermission(adminReportPermissionForRequest, s.adminReportRoute))
+	mux.HandleFunc("/api/admin/feedback", s.requireAdminPermission("feedback.view", s.adminFeedbackRoute))
+	mux.HandleFunc("/api/admin/feedback/", s.requireAdminDynamicPermission(adminFeedbackPermissionForRequest, s.adminFeedbackItemRoute))
+	mux.HandleFunc("/api/admin/files", s.requireAdminPermission("files.view", s.adminFilesRoute))
+	mux.HandleFunc("/api/admin/files/", s.requireAdminPermission("files.view", s.adminFileRoute))
+	mux.HandleFunc("/api/admin/audit-logs", s.requireAdminPermission("audit_logs.view", s.adminAuditLogsRoute))
+	mux.HandleFunc("/api/admin/settings", s.requireAdminDynamicPermission(adminSettingsPermissionForRequest, s.adminSettingsRoute))
+	mux.HandleFunc("/api/admin/admins", s.requireAdminDynamicPermission(adminAdminsPermissionForRequest, s.adminAdminsRoute))
+	mux.HandleFunc("/api/admin/admins/", s.requireAdminDynamicPermission(adminAdminPermissionForRequest, s.adminAdminRoute))
 	mux.HandleFunc("/api/auth/login", s.login)
 	mux.HandleFunc("/api/auth/send-code", s.sendAuthCode)
 	mux.HandleFunc("/api/auth/code-login", s.codeLogin)
@@ -690,7 +780,7 @@ func (s *Store) adminLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusOK, adminLoginResponse{
 		Token: token,
-		Admin: admin.AdminUser,
+		Admin: adminWithPermissions(admin.AdminUser),
 	})
 }
 
@@ -1280,6 +1370,132 @@ func (s *Store) adminAuditLogsRoute(w http.ResponseWriter, r *http.Request, _ Ad
 	writeJSON(w, http.StatusOK, items)
 }
 
+func (s *Store) adminSettingsRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	switch r.Method {
+	case http.MethodGet:
+		settings, err := s.adminSystemSettings(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "settings load failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	case http.MethodPost:
+		var req AdminSystemSettings
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		settings, err := s.updateAdminSystemSettings(r.Context(), admin, req)
+		if err != nil {
+			if errors.Is(err, errInvalidAdminSettings) {
+				writeError(w, http.StatusBadRequest, "invalid settings")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "settings update failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, settings)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Store) adminAdminsRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	switch r.Method {
+	case http.MethodGet:
+		admins, err := s.adminAccounts(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "admin list failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, admins)
+	case http.MethodPost:
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Role     string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		created, err := s.createAdminAccount(r.Context(), admin, req.Username, req.Password, req.Role)
+		if err != nil {
+			if errors.Is(err, errInvalidAdminAccount) {
+				writeError(w, http.StatusBadRequest, "invalid admin account")
+				return
+			}
+			if errors.Is(err, errAdminUsernameExists) {
+				writeError(w, http.StatusConflict, "admin username exists")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "admin create failed")
+			return
+		}
+		writeJSON(w, http.StatusCreated, created)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (s *Store) adminAdminRoute(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/admins/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+		writeError(w, http.StatusNotFound, "admin not found")
+		return
+	}
+	adminID := strings.TrimSpace(parts[0])
+	switch parts[1] {
+	case "status":
+		var req struct {
+			Disabled bool `json:"disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		updated, err := s.setAdminAccountDisabled(r.Context(), admin, adminID, req.Disabled)
+		if err != nil {
+			writeAdminAccountError(w, err, "admin status update failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	case "role":
+		var req struct {
+			Role string `json:"role"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid json")
+			return
+		}
+		updated, err := s.setAdminAccountRole(r.Context(), admin, adminID, req.Role)
+		if err != nil {
+			writeAdminAccountError(w, err, "admin role update failed")
+			return
+		}
+		writeJSON(w, http.StatusOK, updated)
+	default:
+		writeError(w, http.StatusNotFound, "admin not found")
+	}
+}
+
+func writeAdminAccountError(w http.ResponseWriter, err error, fallback string) {
+	if errors.Is(err, errInvalidAdminAccount) || errors.Is(err, errAdminSelfMutation) {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if errors.Is(err, errAdminNotFound) {
+		writeError(w, http.StatusNotFound, "admin not found")
+		return
+	}
+	writeError(w, http.StatusInternalServerError, fallback)
+}
+
 func (s *Store) issueToken(userID string) string {
 	var bytes [24]byte
 	if _, err := cryptorand.Read(bytes[:]); err != nil {
@@ -1375,8 +1591,126 @@ func (s *Store) requireAdmin(next func(http.ResponseWriter, *http.Request, Admin
 			writeError(w, http.StatusUnauthorized, "authentication required")
 			return
 		}
-		next(w, r, admin)
+		next(w, r, adminWithPermissions(admin))
 	}
+}
+
+func (s *Store) requireAdminPermission(permission string, next func(http.ResponseWriter, *http.Request, AdminUser)) http.HandlerFunc {
+	return s.requireAdmin(func(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+		if !adminHasPermission(admin, permission) {
+			writeError(w, http.StatusForbidden, "permission denied")
+			return
+		}
+		next(w, r, admin)
+	})
+}
+
+func (s *Store) requireAdminDynamicPermission(permissionForRequest func(*http.Request) string, next func(http.ResponseWriter, *http.Request, AdminUser)) http.HandlerFunc {
+	return s.requireAdmin(func(w http.ResponseWriter, r *http.Request, admin AdminUser) {
+		permission := permissionForRequest(r)
+		if permission == "" || !adminHasPermission(admin, permission) {
+			writeError(w, http.StatusForbidden, "permission denied")
+			return
+		}
+		next(w, r, admin)
+	})
+}
+
+func adminWithPermissions(admin AdminUser) AdminUser {
+	admin.Permissions = adminPermissionsForRole(admin.Role)
+	return admin
+}
+
+func adminPermissionsForRole(role string) []string {
+	permissions, ok := adminRolePermissions[role]
+	if !ok {
+		return []string{}
+	}
+	return append([]string{}, permissions...)
+}
+
+func adminHasPermission(admin AdminUser, permission string) bool {
+	if permission == "" {
+		return false
+	}
+	for _, allowed := range adminPermissionsForRole(admin.Role) {
+		if allowed == permission {
+			return true
+		}
+	}
+	return false
+}
+
+func adminUserPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodGet {
+		return "users.view"
+	}
+	if r.Method == http.MethodPost {
+		return "users.ban"
+	}
+	return "users.view"
+}
+
+func adminGroupPermissionForRequest(r *http.Request) string {
+	if strings.Contains(r.URL.Path, "/blacklist/") {
+		return "groups.blacklist"
+	}
+	if r.Method == http.MethodPost {
+		return "groups.mute"
+	}
+	if r.Method == http.MethodGet {
+		return "groups.view"
+	}
+	return "groups.view"
+}
+
+func adminMessagePermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodDelete {
+		return "messages.delete"
+	}
+	return "messages.view"
+}
+
+func adminReportPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		return "reports.resolve"
+	}
+	return "reports.view"
+}
+
+func adminFeedbackPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		return "feedback.update"
+	}
+	return "feedback.view"
+}
+
+func adminSettingsPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		return "settings.update"
+	}
+	return "settings.view"
+}
+
+func adminAdminsPermissionForRequest(r *http.Request) string {
+	if r.Method == http.MethodPost {
+		return "admins.invite"
+	}
+	return "admins.view"
+}
+
+func adminAdminPermissionForRequest(r *http.Request) string {
+	path := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/admin/admins/"), "/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 2 && r.Method == http.MethodPost {
+		if parts[1] == "status" {
+			return "admins.disable"
+		}
+		if parts[1] == "role" {
+			return "admins.role_update"
+		}
+	}
+	return ""
 }
 
 func (s *Store) isSeedUser(userID string) bool {
@@ -4712,6 +5046,7 @@ func seedStore() *Store {
 		adminUsers:     map[string]AdminUserRecord{admin.ID: admin},
 		adminSessions:  map[string]AdminSession{},
 		adminAuditLogs: []AdminAuditLog{},
+		systemSettings: defaultAdminSystemSettings(),
 		passwordHashes: map[string]string{"u1": "demo:demo123456"},
 		contacts:       contacts,
 		conversations:  conversations,

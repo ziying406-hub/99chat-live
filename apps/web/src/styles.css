@@ -8980,6 +8980,26 @@ button:disabled,
   line-height: 1.5;
 }
 
+.admin-body .admin-settings-form {
+  display: grid;
+  gap: 16px;
+  max-width: 720px;
+}
+
+.admin-body .admin-check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: #334155;
+  font-weight: 800;
+}
+
+.admin-body .admin-check-row input {
+  width: 18px;
+  height: 18px;
+  accent-color: #2563eb;
+}
+
 .admin-body .admin-modal-backdrop {
   position: fixed;
   inset: 0;

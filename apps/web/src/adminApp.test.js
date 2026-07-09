@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { adminRoutes } from "./adminStatus.js";
-import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminFilterFields, renderAdminNavMarkup, renderAdminPlaceholder, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
+import { adminNavButtonAttrs, deriveSection, normalizeLoaderFilters, renderAdminAccountsPanel, renderAdminFilterFields, renderAdminNavMarkup, renderAdminSettingsPanel, resolveSectionAccess, shouldIgnoreAdminClick } from "./admin.js";
 
 test("deriveSection maps admin entry routes", () => {
   assert.equal(deriveSection("/admin/login"), "login");
@@ -46,6 +46,20 @@ test("sidebar nav marks planning sections with second-phase badges", () => {
   assert.match(navButton("/admin/admins"), /管理员与权限[\s\S]*class="admin-nav-stage"[\s\S]*二期/);
   assert.doesNotMatch(navButton("/admin"), /class="admin-nav-stage"/);
   assert.doesNotMatch(navButton("/admin/users"), /class="admin-nav-stage"/);
+});
+
+test("sidebar nav only renders routes visible to the admin permissions", () => {
+  const support = {
+    role: "support",
+    permissions: ["dashboard.view", "users.view", "reports.view", "feedback.view", "feedback.update"]
+  };
+  const markup = renderAdminNavMarkup("reports", support);
+
+  assert.match(markup, /data-route="\/admin\/reports"/);
+  assert.match(markup, /data-route="\/admin\/feedback"/);
+  assert.doesNotMatch(markup, /data-route="\/admin\/messages"/);
+  assert.doesNotMatch(markup, /data-route="\/admin\/audit-logs"/);
+  assert.doesNotMatch(markup, /data-route="\/admin\/admins"/);
 });
 
 test("delegated click guard only ignores routed submit buttons", () => {
@@ -95,19 +109,50 @@ test("admin filter fields expose section-specific controls", () => {
   assert.match(renderAdminFilterFields("audit-logs", { action: "user_banned" }), /name="action"/);
 });
 
-test("admin planning placeholders render second-phase copy", () => {
-  assert.match(renderAdminNavMarkup("settings"), /系统设置/);
-  assert.match(renderAdminNavMarkup("admins"), /管理员与权限/);
+test("admin planning menus keep second-phase labels while pages render real controls", () => {
+	assert.match(renderAdminNavMarkup("settings"), /系统设置/);
+	assert.match(renderAdminNavMarkup("admins"), /管理员与权限/);
 
-  const settings = renderAdminPlaceholder("settings");
-  assert.match(settings, /第二期开放/);
-  assert.match(settings, /当前不可操作/);
-  assert.match(settings, /第一期先保持后台可观测与可治理/);
-  assert.match(settings, /系统配置、注册开关、上传限制/);
+  const admin = { role: "super_admin", permissions: ["settings.update", "admins.invite", "admins.disable", "admins.role_update"] };
+  const settings = renderAdminSettingsPanel({
+    registrationEnabled: true,
+    maxUploadBytes: 67108864,
+    maxGroupMembers: 500,
+    sensitiveWords: ["spam"],
+    spamDetectionEnabled: false
+  }, admin);
+  assert.match(settings, /data-form="admin-settings"/);
+  assert.match(settings, /name="registrationEnabled"/);
+  assert.match(settings, /name="maxUploadBytes"/);
+  assert.match(settings, /name="maxGroupMembers"/);
+  assert.match(settings, /name="sensitiveWords"/);
+  assert.doesNotMatch(settings, /当前不可操作/);
 
-  const admins = renderAdminPlaceholder("admins");
-  assert.match(admins, /第二期开放/);
-  assert.match(admins, /当前不可操作/);
-  assert.match(admins, /第一期继续使用单管理员模型/);
-  assert.match(admins, /超级管理员、客服、内容审核、运营/);
+  const admins = renderAdminAccountsPanel([
+    { id: "admin-1", username: "admin", role: "super_admin", permissions: ["dashboard.view"], createdAt: "2026-07-10T00:00:00Z" }
+  ], admin);
+  assert.match(admins, /data-form="admin-create"/);
+  assert.match(admins, /data-action="admin-role"/);
+  assert.match(admins, /admin/);
+  assert.doesNotMatch(admins, /当前不可操作/);
+});
+
+test("admin settings and account panels hide mutating controls without permissions", () => {
+  const readonly = { role: "support", permissions: ["settings.view", "admins.view"] };
+  const settings = renderAdminSettingsPanel({
+    registrationEnabled: true,
+    maxUploadBytes: 67108864,
+    maxGroupMembers: 500,
+    sensitiveWords: [],
+    spamDetectionEnabled: false
+  }, readonly);
+  assert.doesNotMatch(settings, /data-form="admin-settings"/);
+  assert.match(settings, /只读/);
+
+  const admins = renderAdminAccountsPanel([
+    { id: "admin-1", username: "admin", role: "super_admin", permissions: ["dashboard.view"], createdAt: "2026-07-10T00:00:00Z" }
+  ], readonly);
+  assert.doesNotMatch(admins, /data-form="admin-create"/);
+  assert.doesNotMatch(admins, /data-action="admin-role"/);
+  assert.match(admins, /只读/);
 });

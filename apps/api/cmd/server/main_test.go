@@ -61,6 +61,9 @@ func TestAdminLoginReturnsTokenAndProfile(t *testing.T) {
 	if response.Admin.Username != "admin" || response.Admin.Role != "super_admin" {
 		t.Fatalf("unexpected admin profile: %+v", response.Admin)
 	}
+	if !containsString(response.Admin.Permissions, "admins.role_update") || !containsString(response.Admin.Permissions, "reports.view") {
+		t.Fatalf("expected admin permissions in login response, got %+v", response.Admin.Permissions)
+	}
 }
 
 func TestAdminRoutesRequireAdminToken(t *testing.T) {
@@ -91,6 +94,250 @@ func adminTokenForTest(t *testing.T, mux http.Handler) string {
 		t.Fatalf("decode admin token: %v", err)
 	}
 	return response.Token
+}
+
+func adminTokenForRoleForTest(t *testing.T, store *Store, mux http.Handler, role string) string {
+	t.Helper()
+	password := "role-pass-123"
+	admin := AdminUserRecord{
+		AdminUser: AdminUser{
+			ID:        "admin-" + role,
+			Username:  role,
+			Role:      role,
+			CreatedAt: time.Now().Add(-time.Hour),
+		},
+		PasswordHash: mustHashPasswordForTest(t, password),
+	}
+	store.adminUsers[admin.ID] = admin
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/auth/login", bytes.NewBufferString(fmt.Sprintf(`{"username":%q,"password":%q}`, role, password)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin login for role %s failed: %d %s", role, rec.Code, rec.Body.String())
+	}
+	var response struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatalf("decode admin token for role %s: %v", role, err)
+	}
+	return response.Token
+}
+
+func mustHashPasswordForTest(t *testing.T, password string) string {
+	t.Helper()
+	hash, err := hashPassword(password)
+	if err != nil {
+		t.Fatalf("hash test password: %v", err)
+	}
+	return hash
+}
+
+func TestAdminRolePermissionsAllowSupportToViewReportsOnly(t *testing.T) {
+	store := seedStore()
+	store.reports = []Report{{ID: "report-support-view", TargetID: "u1", TargetType: "user", Reason: "needs help", CreatedAt: time.Now()}}
+	mux := store.routes("")
+	token := adminTokenForRoleForTest(t, store, mux, "support")
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/reports", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected support reports view 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+
+	resolveReq := httptest.NewRequest(http.MethodPost, "/api/admin/reports/report-support-view/resolve", bytes.NewBufferString(`{"status":"resolved","resolution":"handled"}`))
+	resolveReq.Header.Set("Authorization", "Bearer "+token)
+	resolveRec := httptest.NewRecorder()
+	mux.ServeHTTP(resolveRec, resolveReq)
+	if resolveRec.Code != http.StatusForbidden {
+		t.Fatalf("expected support report resolve 403, got %d: %s", resolveRec.Code, resolveRec.Body.String())
+	}
+}
+
+func TestAdminRolePermissionsDenyUnknownRoles(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForRoleForTest(t, store, mux, "unknown_role")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/dashboard", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected unknown role 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminSystemSettingsCanBeReadAndUpdated(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	getReq := httptest.NewRequest(http.MethodGet, "/api/admin/settings", nil)
+	getReq.Header.Set("Authorization", "Bearer "+token)
+	getRec := httptest.NewRecorder()
+	mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("expected settings read 200, got %d: %s", getRec.Code, getRec.Body.String())
+	}
+
+	var settings AdminSystemSettings
+	if err := json.NewDecoder(getRec.Body).Decode(&settings); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	if !settings.RegistrationEnabled || settings.MaxUploadBytes == 0 || settings.MaxGroupMembers == 0 {
+		t.Fatalf("unexpected default settings: %+v", settings)
+	}
+
+	updateBody := `{"registrationEnabled":false,"maxUploadBytes":2048,"maxGroupMembers":88,"sensitiveWords":[" spam ","Spam","广告"],"spamDetectionEnabled":true}`
+	updateReq := httptest.NewRequest(http.MethodPost, "/api/admin/settings", bytes.NewBufferString(updateBody))
+	updateReq.Header.Set("Authorization", "Bearer "+token)
+	updateRec := httptest.NewRecorder()
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("expected settings update 200, got %d: %s", updateRec.Code, updateRec.Body.String())
+	}
+
+	var updated AdminSystemSettings
+	if err := json.NewDecoder(updateRec.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode updated settings: %v", err)
+	}
+	if updated.RegistrationEnabled || updated.MaxUploadBytes != 2048 || updated.MaxGroupMembers != 88 || !updated.SpamDetectionEnabled {
+		t.Fatalf("unexpected updated settings: %+v", updated)
+	}
+	if fmt.Sprint(updated.SensitiveWords) != "[spam 广告]" {
+		t.Fatalf("expected trimmed deduped sensitive words, got %+v", updated.SensitiveWords)
+	}
+	if len(store.adminAuditLogs) == 0 || store.adminAuditLogs[0].Action != "system_settings_updated" {
+		t.Fatalf("expected system settings audit log, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminSystemSettingsRejectInvalidValues(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/settings", bytes.NewBufferString(`{"registrationEnabled":true,"maxUploadBytes":99,"maxGroupMembers":1}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid settings 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if len(store.adminAuditLogs) != 0 {
+		t.Fatalf("expected no audit log for invalid settings, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminSystemSettingsRequireUpdatePermission(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForRoleForTest(t, store, mux, "support")
+
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/settings", bytes.NewBufferString(`{"registrationEnabled":true,"maxUploadBytes":2048,"maxGroupMembers":20}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected support settings update 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminAccountManagementListCreateDisableAndRoleUpdate(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/admins", bytes.NewBufferString(`{"username":"support-one","password":"support-pass-123","role":"support"}`))
+	createReq.Header.Set("Authorization", "Bearer "+token)
+	createRec := httptest.NewRecorder()
+	mux.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected admin create 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+
+	var created AdminUser
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created admin: %v", err)
+	}
+	if created.ID == "" || created.Username != "support-one" || created.Role != "support" || len(created.Permissions) == 0 {
+		t.Fatalf("unexpected created admin: %+v", created)
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/admin/admins", nil)
+	listReq.Header.Set("Authorization", "Bearer "+token)
+	listRec := httptest.NewRecorder()
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("expected admin list 200, got %d: %s", listRec.Code, listRec.Body.String())
+	}
+	var admins []AdminUser
+	if err := json.NewDecoder(listRec.Body).Decode(&admins); err != nil {
+		t.Fatalf("decode admin list: %v", err)
+	}
+	if len(admins) != 2 {
+		t.Fatalf("expected 2 admins, got %+v", admins)
+	}
+
+	statusReq := httptest.NewRequest(http.MethodPost, "/api/admin/admins/"+created.ID+"/status", bytes.NewBufferString(`{"disabled":true}`))
+	statusReq.Header.Set("Authorization", "Bearer "+token)
+	statusRec := httptest.NewRecorder()
+	mux.ServeHTTP(statusRec, statusReq)
+	if statusRec.Code != http.StatusOK {
+		t.Fatalf("expected disable admin 200, got %d: %s", statusRec.Code, statusRec.Body.String())
+	}
+	if store.adminUsers[created.ID].DisabledAt == nil {
+		t.Fatalf("expected created admin disabled, got %+v", store.adminUsers[created.ID].AdminUser)
+	}
+
+	roleReq := httptest.NewRequest(http.MethodPost, "/api/admin/admins/"+created.ID+"/role", bytes.NewBufferString(`{"role":"moderator"}`))
+	roleReq.Header.Set("Authorization", "Bearer "+token)
+	roleRec := httptest.NewRecorder()
+	mux.ServeHTTP(roleRec, roleReq)
+	if roleRec.Code != http.StatusOK {
+		t.Fatalf("expected role update 200, got %d: %s", roleRec.Code, roleRec.Body.String())
+	}
+	if store.adminUsers[created.ID].Role != "moderator" {
+		t.Fatalf("expected moderator role, got %+v", store.adminUsers[created.ID].AdminUser)
+	}
+	if len(store.adminAuditLogs) < 3 {
+		t.Fatalf("expected audit logs for create, disable, and role update, got %+v", store.adminAuditLogs)
+	}
+}
+
+func TestAdminAccountManagementProtectsSelfAndPermissions(t *testing.T) {
+	store := seedStore()
+	mux := store.routes("")
+	token := adminTokenForTest(t, mux)
+
+	selfStatusReq := httptest.NewRequest(http.MethodPost, "/api/admin/admins/admin-1/status", bytes.NewBufferString(`{"disabled":true}`))
+	selfStatusReq.Header.Set("Authorization", "Bearer "+token)
+	selfStatusRec := httptest.NewRecorder()
+	mux.ServeHTTP(selfStatusRec, selfStatusReq)
+	if selfStatusRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected self disable 400, got %d: %s", selfStatusRec.Code, selfStatusRec.Body.String())
+	}
+
+	selfRoleReq := httptest.NewRequest(http.MethodPost, "/api/admin/admins/admin-1/role", bytes.NewBufferString(`{"role":"support"}`))
+	selfRoleReq.Header.Set("Authorization", "Bearer "+token)
+	selfRoleRec := httptest.NewRecorder()
+	mux.ServeHTTP(selfRoleRec, selfRoleReq)
+	if selfRoleRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected self role update 400, got %d: %s", selfRoleRec.Code, selfRoleRec.Body.String())
+	}
+
+	supportToken := adminTokenForRoleForTest(t, store, mux, "support")
+	createReq := httptest.NewRequest(http.MethodPost, "/api/admin/admins", bytes.NewBufferString(`{"username":"blocked","password":"blocked-pass-123","role":"support"}`))
+	createReq.Header.Set("Authorization", "Bearer "+supportToken)
+	createRec := httptest.NewRecorder()
+	mux.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusForbidden {
+		t.Fatalf("expected support admin create 403, got %d: %s", createRec.Code, createRec.Body.String())
+	}
 }
 
 func TestAdminDashboardReturnsCounts(t *testing.T) {
