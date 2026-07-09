@@ -8611,7 +8611,8 @@ button:disabled,
   min-height: 42px;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
+  gap: 10px;
   padding: 0 14px;
   border: 0;
   border-radius: 14px;
@@ -8619,6 +8620,18 @@ button:disabled,
   color: rgba(255, 255, 255, 0.72);
   cursor: pointer;
   font-weight: 700;
+}
+
+.admin-body .admin-nav-stage {
+  padding: 3px 7px;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.18);
+  color: #bae6fd;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .admin-body .admin-nav-link:hover {

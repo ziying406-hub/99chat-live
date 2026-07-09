@@ -129,6 +129,7 @@ export function renderAdminNavMarkup(currentSection) {
             data-route="${adminNavButtonAttrs(route).route}"
           >
             <span>${escapeHtml(route.label)}</span>
+            ${route.stage ? `<span class="admin-nav-stage">${escapeHtml(route.stage)}</span>` : ""}
           </button>
         `).join("");
 }

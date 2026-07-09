@@ -38,6 +38,16 @@ test("sidebar nav markup renders button type and route for every admin section",
   assert.match(markup, /class="admin-nav-link active"/);
 });
 
+test("sidebar nav marks planning sections with second-phase badges", () => {
+  const markup = renderAdminNavMarkup("settings");
+  const navButton = path => markup.match(new RegExp(`data-route="${path.replaceAll("/", "\\/")}"[\\s\\S]*?<\\/button>`))?.[0] || "";
+
+  assert.match(navButton("/admin/settings"), /系统设置[\s\S]*class="admin-nav-stage"[\s\S]*二期/);
+  assert.match(navButton("/admin/admins"), /管理员与权限[\s\S]*class="admin-nav-stage"[\s\S]*二期/);
+  assert.doesNotMatch(navButton("/admin"), /class="admin-nav-stage"/);
+  assert.doesNotMatch(navButton("/admin/users"), /class="admin-nav-stage"/);
+});
+
 test("delegated click guard only ignores routed submit buttons", () => {
   assert.equal(shouldIgnoreAdminClick({ dataset: { route: "/admin/users" }, type: "submit" }), true);
   assert.equal(shouldIgnoreAdminClick({ dataset: { route: "/admin/users" }, type: "button" }), false);
