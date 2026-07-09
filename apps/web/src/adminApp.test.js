@@ -91,9 +91,13 @@ test("admin planning placeholders render second-phase copy", () => {
 
   const settings = renderAdminPlaceholder("settings");
   assert.match(settings, /第二期开放/);
+  assert.match(settings, /当前不可操作/);
+  assert.match(settings, /第一期先保持后台可观测与可治理/);
   assert.match(settings, /系统配置、注册开关、上传限制/);
 
   const admins = renderAdminPlaceholder("admins");
   assert.match(admins, /第二期开放/);
+  assert.match(admins, /当前不可操作/);
+  assert.match(admins, /第一期继续使用单管理员模型/);
   assert.match(admins, /超级管理员、客服、内容审核、运营/);
 });

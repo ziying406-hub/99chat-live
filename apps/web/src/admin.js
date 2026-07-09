@@ -85,13 +85,13 @@ const tableMeta = {
   },
   settings: {
     title: "系统设置",
-    description: "注册开关、上传大小、群人数上限与默认风控规则将在第二期集中开放。",
+    description: "注册开关、上传大小、群人数上限与默认风控规则将在第二期集中开放。第一期先保持后台可观测与可治理，避免错误配置影响线上用户。",
     empty: "第二期开放",
     filterPlaceholder: ""
   },
   admins: {
     title: "管理员与权限",
-    description: "超级管理员、客服、内容审核、运营等角色权限将在第二期开放。",
+    description: "超级管理员、客服、内容审核、运营等角色权限将在第二期开放。第一期继续使用单管理员模型，避免权限半成品造成误授权。",
     empty: "第二期开放",
     filterPlaceholder: ""
   }
@@ -502,17 +502,27 @@ export function renderAdminPlaceholder(section) {
     description: "该模块将在后续版本开放。",
     empty: "第二期开放"
   };
-  const details = section === "settings"
-    ? ["系统配置、注册开关、上传限制", "群人数上限、默认风控规则", "上线前先保持只读占位，避免引入错误配置"]
-    : ["超级管理员、客服、内容审核、运营", "按模块控制可见范围和操作权限", "上线前先保持单管理员模型，避免权限半成品"];
+  const plan = section === "settings"
+    ? {
+        status: "当前不可操作",
+        reason: "第一期先保持后台可观测与可治理，配置写入能力放到第二期统一设计。",
+        details: ["系统配置、注册开关、上传限制", "群人数上限、默认风控规则", "上线前先保持只读占位，避免引入错误配置"]
+      }
+    : {
+        status: "当前不可操作",
+        reason: "第一期继续使用单管理员模型，角色、范围和审计策略放到第二期统一上线。",
+        details: ["超级管理员、客服、内容审核、运营", "按模块控制可见范围和操作权限", "上线前先保持单管理员模型，避免权限半成品"]
+      };
   return `
     ${renderError()}
     <section class="admin-panel admin-placeholder-panel">
-      <div class="admin-empty admin-placeholder-empty">
+      <div class="admin-placeholder-card">
+        <span class="admin-placeholder-status">${escapeHtml(plan.status)}</span>
         <strong>${escapeHtml(meta.empty)}</strong>
         <p>${escapeHtml(meta.description)}</p>
-        <ul>
-          ${details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}
+        <div class="admin-placeholder-note">${escapeHtml(plan.reason)}</div>
+        <ul class="admin-placeholder-list">
+          ${plan.details.map(item => `<li>${escapeHtml(item)}</li>`).join("")}
         </ul>
       </div>
     </section>
