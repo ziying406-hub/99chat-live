@@ -57,12 +57,22 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260708-mention-ui-notify-cache";
+const APP_VERSION = "20260711-mobile-compat";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
 const MOCK_USER_PREFERENCES_KEY = "chatlite-mock-user-preferences";
 const MOCK_REGISTERED_ACCOUNT_KEY = "chatlite-mock-registered-account";
+
+installStructuredCloneFallback();
+
+function installStructuredCloneFallback() {
+  if (typeof globalThis.structuredClone === "function") return;
+  globalThis.structuredClone = value => {
+    if (value == null || typeof value !== "object") return value;
+    return JSON.parse(JSON.stringify(value));
+  };
+}
 
 function resolveApiBase() {
   const configured = window.CHAT_API_BASE || "";

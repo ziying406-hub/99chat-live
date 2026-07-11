@@ -12,21 +12,40 @@
   <body>
     <div id="app"></div>
     <script>
+      (function () {
+        try {
+          new Function("let value = null; value ??= 1; value ||= 2; return ({ value })?.value;");
+        } catch (_) {
+          document.documentElement.classList.add("unsupported-browser");
+          window.__CHAT_UNSUPPORTED_BROWSER__ = true;
+        }
+      })();
       window.addEventListener("error", event => {
-        const app = document.querySelector("#app");
+        var app = document.querySelector("#app");
         if (!app || app.innerHTML) return;
         app.innerHTML = "<main style='font-family:system-ui;padding:24px;color:#111827'><h1>页面启动失败</h1><pre style='white-space:pre-wrap;background:#f3f4f6;padding:16px;border-radius:8px'>" +
           String(event.message || "未知错误") + "\n" + String(event.filename || "") + ":" + String(event.lineno || "") +
           "</pre></main>";
       });
       window.addEventListener("unhandledrejection", event => {
-        const app = document.querySelector("#app");
+        var app = document.querySelector("#app");
+        var reason = event.reason || {};
+        var message = reason.stack || reason.message || event.reason || "未知错误";
         if (!app || app.innerHTML) return;
         app.innerHTML = "<main style='font-family:system-ui;padding:24px;color:#111827'><h1>页面启动失败</h1><pre style='white-space:pre-wrap;background:#f3f4f6;padding:16px;border-radius:8px'>" +
-          String(event.reason?.stack || event.reason?.message || event.reason || "未知错误") +
+          String(message) +
           "</pre></main>";
       });
     </script>
-    <script type="module" src="/src/app.js?v=20260708-mention-ui-notify-cache"></script>
+    <script>
+      if (window.__CHAT_UNSUPPORTED_BROWSER__) {
+        document.querySelector("#app").innerHTML = "<main style='min-height:100vh;display:grid;place-items:center;padding:24px;font-family:system-ui,-apple-system,BlinkMacSystemFont,\"Segoe UI\",sans-serif;color:#0f172a;background:#eef4ff'><section style='width:min(420px,100%);border:1px solid #dbe7ff;border-radius:22px;background:#fff;padding:28px;box-shadow:0 18px 50px rgba(15,23,42,.14)'><h1 style='margin:0 0 12px;font-size:24px'>浏览器版本过低</h1><p style='margin:0;color:#64748b;line-height:1.7'>当前手机浏览器不支持 99Chat 所需的安全功能，请升级浏览器，或使用最新版 Chrome / Safari 打开。</p></section></main>";
+      } else {
+        var script = document.createElement("script");
+        script.type = "module";
+        script.src = "/src/app.js?v=20260711-mobile-compat";
+        document.body.appendChild(script);
+      }
+    </script>
   </body>
 </html>
