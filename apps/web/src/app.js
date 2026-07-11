@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260711-empty-list-guard";
+const APP_VERSION = "20260711-mobile-empty-chat";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -738,8 +738,8 @@ function renderMessageSidebar() {
           <div class="panel-subtitle">${items.length} 个会话${unread ? ` · ${unread} 条未读` : ""}</div>
         </div>
         <div class="icon-row">
-          <button class="icon-btn" title="全部已读" data-action="mark-read">✓</button>
-          <button class="icon-btn" title="添加" data-modal="quick-add">${icons.plus}</button>
+          ${unread ? `<button class="icon-btn" title="全部已读" aria-label="全部已读" data-action="mark-read">✓</button>` : ""}
+          <button class="icon-btn" title="添加聊天" aria-label="添加聊天" data-modal="quick-add">${icons.plus}</button>
         </div>
       </header>
       <div class="search-box"><input data-action="search" value="${escapeAttr(state.query)}" placeholder="搜索"></div>
@@ -757,8 +757,22 @@ function renderMessageSidebar() {
           <div class="sidebar-group-title${pinned.length ? " spaced" : ""}">最近 (${recent.length})</div>
           ${recent.map(renderConversationListItem).join("")}
         ` : ""}
+        ${!items.length ? renderMessageSidebarEmptyState() : ""}
       </div>
     </aside>`;
+}
+
+function renderMessageSidebarEmptyState() {
+  return `
+    <section class="message-empty-state">
+      <div class="message-empty-icon">${icons.chat}</div>
+      <h3>还没有聊天</h3>
+      <p>先添加好友，或创建群聊开始第一条会话。</p>
+      <div class="message-empty-actions">
+        <button class="primary-btn inline" type="button" data-modal="add-friend">添加好友</button>
+        <button class="ghost-btn inline" type="button" data-modal="create-group">发起群聊</button>
+      </div>
+    </section>`;
 }
 
 function renderConversationListItem(c) {
