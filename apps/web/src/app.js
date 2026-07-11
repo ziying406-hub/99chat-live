@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260711-mobile-compat";
+const APP_VERSION = "20260711-empty-list-guard";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -270,8 +270,21 @@ async function loadData() {
     ]);
     state.user = user;
     ensureUserSettings();
-    state.data = { conversations, contacts, groups, directoryGroups: discoverGroups, requests, collections, groupJoinRequests: {}, groupBlacklists: {}, groupBots: {}, auditLogs: {}, loginDevices: [], messages: {} };
-    state.selectedConversationId = resolveSelectedConversationId(state.selectedConversationId, conversations);
+    state.data = {
+      conversations: listOrEmpty(conversations),
+      contacts: listOrEmpty(contacts),
+      groups: listOrEmpty(groups),
+      directoryGroups: listOrEmpty(discoverGroups),
+      requests: listOrEmpty(requests),
+      collections: listOrEmpty(collections),
+      groupJoinRequests: {},
+      groupBlacklists: {},
+      groupBots: {},
+      auditLogs: {},
+      loginDevices: [],
+      messages: {}
+    };
+    state.selectedConversationId = resolveSelectedConversationId(state.selectedConversationId, state.data.conversations);
     if (state.selectedConversationId) {
       markConversationRead(state.selectedConversationId);
       await loadMessages(state.selectedConversationId);
@@ -312,6 +325,10 @@ async function api(path, options = {}) {
     throw error;
   }
   return res.json();
+}
+
+function listOrEmpty(value) {
+  return Array.isArray(value) ? value : [];
 }
 
 function isNetworkFailure(error) {
@@ -5017,7 +5034,7 @@ async function updateFriendRequest(requestId, status, options = {}) {
         state.data.requests = state.data.requests.map(item => item.id === requestId ? { ...item, ...updated } : item);
         await loadFriendRequests();
         if (status === "accepted") {
-          state.data.contacts = await api("/api/contacts");
+          state.data.contacts = listOrEmpty(await api("/api/contacts"));
         }
       }
     }
@@ -6107,7 +6124,7 @@ function groupRoleLabel(role) {
 
 function filteredConversations() {
   const q = state.query.toLowerCase();
-  return sortConversationList(state.data.conversations.filter(c => {
+  return sortConversationList(listOrEmpty(state.data.conversations).filter(c => {
     const matchesQ = !q || `${c.title} ${c.lastText}`.toLowerCase().includes(q);
     const matchesFilter = state.filter === "all" || (state.filter === "unread" && c.unread) || (state.filter === "group" && c.kind === "group");
     return matchesQ && matchesFilter;
@@ -6115,12 +6132,12 @@ function filteredConversations() {
 }
 
 function sortConversations() {
-  state.data.conversations = sortConversationList(state.data.conversations);
+  state.data.conversations = sortConversationList(listOrEmpty(state.data.conversations));
 }
 
 function filteredContacts() {
   const q = state.query.toLowerCase();
-  return state.data.contacts.filter(c => !q || `${c.nickname} ${c.chatId} ${c.signature} ${c.remark || ""} ${(c.tags || []).join(" ")}`.toLowerCase().includes(q));
+  return listOrEmpty(state.data.contacts).filter(c => !q || `${c.nickname} ${c.chatId} ${c.signature} ${c.remark || ""} ${(c.tags || []).join(" ")}`.toLowerCase().includes(q));
 }
 
 function getConversation(id) {
