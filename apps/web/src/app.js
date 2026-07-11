@@ -57,7 +57,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260711-mobile-empty-chat";
+const APP_VERSION = "20260712-contact-default";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -3634,8 +3634,7 @@ function bindEvents() {
     clearKnownSidePageHash();
     state.section = el.dataset.section;
     state.query = "";
-    state.sidePage = state.section === "me" ? "profile" : state.section === "contact" ? "friend-requests" : null;
-    if (state.sidePage === "friend-requests") await loadFriendRequests();
+    state.sidePage = state.section === "me" ? "profile" : null;
     render();
   }));
   document.querySelectorAll("[data-conversation]").forEach(el => el.addEventListener("click", async () => {
