@@ -6174,6 +6174,8 @@ button:disabled,
 
   .rail {
     order: 2;
+    position: relative;
+    z-index: 40;
     flex-direction: row;
     gap: 0;
     padding: 6px 10px max(6px, env(safe-area-inset-bottom));
