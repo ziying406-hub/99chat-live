@@ -1525,7 +1525,13 @@ func (s *Store) issueToken(userID string) string {
 		s.sessionCreatedAt = map[string]time.Time{}
 	}
 	s.sessions[token] = userID
-	s.sessionCreatedAt[token] = time.Now()
+	createdAt := time.Now()
+	s.sessionCreatedAt[token] = createdAt
+	if s.pg != nil {
+		if err := s.saveUserSession(context.Background(), token, userID, createdAt); err != nil {
+			log.Printf("persist user session: %v", err)
+		}
+	}
 	return token
 }
 
@@ -1547,6 +1553,13 @@ func (s *Store) userFromToken(ctx context.Context, token string) (User, bool) {
 	}
 	if s.pg == nil && token == "demo-token" {
 		return s.user, true
+	}
+	if s.pg != nil {
+		user, ok, err := s.userBySessionToken(ctx, token)
+		if err != nil || !ok {
+			return User{}, false
+		}
+		return user, true
 	}
 	s.mu.RLock()
 	userID := s.sessions[token]
@@ -5128,6 +5141,11 @@ func checkPasswordHash(password, hash string) bool {
 }
 
 func hashAdminToken(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
+}
+
+func hashSessionToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
 }

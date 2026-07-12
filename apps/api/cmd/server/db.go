@@ -260,6 +260,13 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			revoked_at TIMESTAMPTZ
 		)`,
+		`CREATE TABLE IF NOT EXISTS user_sessions (
+			id TEXT PRIMARY KEY,
+			user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			token_hash TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			revoked_at TIMESTAMPTZ
+		)`,
 		`CREATE TABLE IF NOT EXISTS admin_audit_logs (
 			id TEXT PRIMARY KEY,
 			admin_user_id TEXT NOT NULL REFERENCES admin_users(id),
@@ -303,6 +310,7 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_collections_user_kind ON collections(user_id, kind, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_sessions_token_hash ON admin_sessions(token_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_user_sessions_token_hash ON user_sessions(token_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_audit_logs_created_at ON admin_audit_logs(created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_reports_status_created_at ON reports(status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_feedback_status_created_at ON feedback(status, created_at)`,
@@ -1259,6 +1267,32 @@ func (s *Store) saveAdminSession(ctx context.Context, session AdminSession) erro
 		VALUES ($1, $2, $3, $4, $5, $6)`,
 		session.ID, session.AdminUserID, session.TokenHash, session.ExpiresAt, session.CreatedAt, session.RevokedAt)
 	return err
+}
+
+func (s *Store) saveUserSession(ctx context.Context, token, userID string, createdAt time.Time) error {
+	if s.pg == nil {
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO user_sessions(id, user_id, token_hash, created_at)
+		VALUES ($1, $2, $3, $4)`, newID("session"), userID, hashSessionToken(token), createdAt)
+	return err
+}
+
+func (s *Store) userBySessionToken(ctx context.Context, token string) (User, bool, error) {
+	if s.pg == nil {
+		return User{}, false, nil
+	}
+	var userID string
+	err := s.pg.pool.QueryRow(ctx, `SELECT user_id FROM user_sessions
+		WHERE token_hash = $1 AND revoked_at IS NULL`, hashSessionToken(token)).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return User{}, false, nil
+	}
+	if err != nil {
+		return User{}, false, err
+	}
+	user, ok, err := s.userByID(ctx, userID)
+	return user, ok, err
 }
 
 func (s *Store) adminBySessionToken(ctx context.Context, token string) (AdminUser, AdminSession, bool, error) {
