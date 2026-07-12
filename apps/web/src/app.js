@@ -37,6 +37,7 @@ import { buildPendingMessage, markMessageFailed, replacePendingMessage } from ".
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
+import { friendRealtimeUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
@@ -57,7 +58,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260712-stable-theme";
+const APP_VERSION = "20260712-friend-realtime";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -368,12 +369,31 @@ async function refreshGroupsAndConversations() {
   state.data.directoryGroups = discoverGroups;
 }
 
+async function refreshFriendRealtimeState() {
+  if (state.useMock || !state.data) return;
+  const [requests, contacts, conversations] = await Promise.all([
+    api("/api/friend-requests"),
+    api("/api/contacts"),
+    api("/api/conversations")
+  ]);
+  state.data.requests = listOrEmpty(requests);
+  state.data.contacts = listOrEmpty(contacts);
+  state.data.conversations = listOrEmpty(conversations);
+}
+
 function connectRealtime() {
   if (state.useMock || state.ws) return;
   try {
     const ws = new WebSocket(`${WS_BASE}/ws`);
-    ws.onmessage = event => {
+    ws.onmessage = async event => {
       const envelope = JSON.parse(event.data);
+      const friendUpdate = friendRealtimeUpdate(envelope, state.user?.id);
+      if (friendUpdate.refresh) {
+        await refreshFriendRealtimeState().catch(() => {});
+        if (friendUpdate.toast) toast(friendUpdate.toast);
+        render();
+        return;
+      }
       if (envelope.type === "message.created") {
         const id = envelope.conversationId;
         const message = envelope.payload;

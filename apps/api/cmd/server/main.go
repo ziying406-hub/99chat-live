@@ -168,6 +168,20 @@ type FriendRequest struct {
 	ToUserID   string    `json:"-"`
 }
 
+func friendRequestRealtimeEvent(eventType string, request FriendRequest, reviewer *Contact) map[string]any {
+	payload := map[string]any{
+		"id":         request.ID,
+		"fromUserId": request.FromUserID,
+		"toUserId":   request.ToUserID,
+		"status":     request.Status,
+		"user":       request.User,
+	}
+	if reviewer != nil {
+		payload["reviewer"] = *reviewer
+	}
+	return map[string]any{"type": eventType, "payload": payload}
+}
+
 type GroupJoinRequest struct {
 	ID        string    `json:"id"`
 	GroupID   string    `json:"groupId"`
@@ -2846,7 +2860,7 @@ func (s *Store) friendRequestsRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "friend request persistence failed")
 			return
 		}
-		s.hub.Broadcast(map[string]any{"type": "friend.requested", "payload": incoming})
+		s.hub.Broadcast(friendRequestRealtimeEvent("friend.requested", incoming, nil))
 		writeJSON(w, http.StatusCreated, outgoing)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -2898,6 +2912,12 @@ func (s *Store) friendRequestRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.Unlock()
 	}
+	reviewer := current.AsContact()
+	eventType := "friend.rejected"
+	if req.Status == "accepted" {
+		eventType = "friend.accepted"
+	}
+	s.hub.Broadcast(friendRequestRealtimeEvent(eventType, updated, &reviewer))
 	writeJSON(w, http.StatusOK, updated)
 }
 

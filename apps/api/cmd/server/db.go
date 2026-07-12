@@ -3757,6 +3757,9 @@ func (s *Store) updateFriendRequest(ctx context.Context, currentUserID, requestI
 	}
 	request.ID = requestID
 	request.Status = status
+	request.Direction = "incoming"
+	request.FromUserID = fromUserID
+	request.ToUserID = currentUserID
 	return request, nil
 }
 

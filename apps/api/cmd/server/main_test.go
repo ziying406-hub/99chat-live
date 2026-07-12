@@ -3204,6 +3204,30 @@ func TestFriendRequestAcceptAddsContactOnce(t *testing.T) {
 	}
 }
 
+func TestFriendRequestRealtimeEventKeepsBothParticipants(t *testing.T) {
+	request := FriendRequest{
+		ID:         "fr-live",
+		Status:     "accepted",
+		User:       Contact{ID: "sender", Nickname: "发送方"},
+		FromUserID: "sender",
+		ToUserID:   "recipient",
+	}
+
+	reviewer := Contact{ID: "recipient", Nickname: "接收方"}
+	event := friendRequestRealtimeEvent("friend.accepted", request, &reviewer)
+	if event["type"] != "friend.accepted" {
+		t.Fatalf("event type = %v", event["type"])
+	}
+	payload, ok := event["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("event payload = %#v", event["payload"])
+	}
+	reviewedBy, ok := payload["reviewer"].(Contact)
+	if payload["fromUserId"] != "sender" || payload["toUserId"] != "recipient" || payload["status"] != "accepted" || !ok || reviewedBy.ID != reviewer.ID || reviewedBy.Nickname != reviewer.Nickname {
+		t.Fatalf("event payload = %#v", payload)
+	}
+}
+
 func TestDiscoverGroupsAreSeparateFromJoinedGroupsAndJoinable(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()
