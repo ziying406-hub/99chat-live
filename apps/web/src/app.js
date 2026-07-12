@@ -37,7 +37,7 @@ import { buildPendingMessage, markMessageFailed, replacePendingMessage } from ".
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
-import { friendRealtimeUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
+import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
@@ -58,7 +58,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260712-friend-realtime";
+const APP_VERSION = "20260712-friend-realtime-resilient";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -115,6 +115,9 @@ const state = {
   useMock: false,
   data: null,
   ws: null,
+  wsReconnectTimer: null,
+  friendSyncTimer: null,
+  friendSyncSnapshot: [],
   scrollToBottom: false,
   preview: null,
   mention: null,
@@ -381,6 +384,36 @@ async function refreshFriendRealtimeState() {
   state.data.conversations = listOrEmpty(conversations);
 }
 
+async function syncFriendRealtimeState() {
+  if (state.useMock || !state.data || document.visibilityState === "hidden") return;
+  const previousRequests = state.friendSyncSnapshot;
+  await refreshFriendRealtimeState();
+  const nextRequests = state.data.requests || [];
+  const message = friendRequestSyncUpdate(previousRequests, nextRequests);
+  state.friendSyncSnapshot = nextRequests.map(request => ({ ...request }));
+  if (message) toast(message);
+  render();
+}
+
+function startFriendRealtimeSync() {
+  if (state.useMock || state.friendSyncTimer) return;
+  state.friendSyncSnapshot = (state.data?.requests || []).map(request => ({ ...request }));
+  state.friendSyncTimer = window.setInterval(() => {
+    syncFriendRealtimeState().catch(() => {});
+  }, 1500);
+  window.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") syncFriendRealtimeState().catch(() => {});
+  });
+}
+
+function scheduleRealtimeReconnect() {
+  if (state.useMock || state.wsReconnectTimer) return;
+  state.wsReconnectTimer = window.setTimeout(() => {
+    state.wsReconnectTimer = null;
+    connectRealtime();
+  }, 1000);
+}
+
 function connectRealtime() {
   if (state.useMock || state.ws) return;
   try {
@@ -473,7 +506,15 @@ function connectRealtime() {
         }
       }
     };
+    ws.onclose = () => {
+      if (state.ws === ws) state.ws = null;
+      scheduleRealtimeReconnect();
+    };
+    ws.onerror = () => {
+      // onclose clears the stale handle and schedules a reconnect.
+    };
     state.ws = ws;
+    startFriendRealtimeSync();
   } catch (_) {}
 }
 

@@ -2,6 +2,27 @@ function nicknameOf(contact, fallback = "对方") {
   return String(contact?.nickname || "").trim() || fallback;
 }
 
+export function friendRequestSyncUpdate(previousRequests, nextRequests) {
+  const previous = new Map((previousRequests || []).map(request => [request.id, request]));
+  for (const request of nextRequests || []) {
+    const earlier = previous.get(request.id);
+    const nickname = nicknameOf(request.user);
+    if (!earlier && request.direction === "incoming" && request.status === "pending") {
+      return `收到来自 ${nickname} 的好友申请`;
+    }
+    if (!earlier || earlier.status === request.status) continue;
+    if (request.direction === "outgoing") {
+      if (request.status === "accepted") return `${nickname} 已通过你的好友申请`;
+      if (request.status === "rejected") return `${nickname} 拒绝了你的好友申请`;
+    }
+    if (request.direction === "incoming") {
+      if (request.status === "accepted") return `你已通过 ${nickname} 的好友申请`;
+      if (request.status === "rejected") return `你已拒绝 ${nickname} 的好友申请`;
+    }
+  }
+  return "";
+}
+
 export function friendRealtimeUpdate(event, currentUserId) {
   const payload = event?.payload || {};
   const fromUserId = String(payload.fromUserId || "");
