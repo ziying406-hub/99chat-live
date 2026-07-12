@@ -3794,6 +3794,15 @@ func (s *Store) updateFriendRequest(ctx context.Context, currentUserID, requestI
 	request.Direction = "incoming"
 	request.FromUserID = fromUserID
 	request.ToUserID = currentUserID
+	// Keep the in-memory duplicate-request guard aligned with PostgreSQL.
+	// Otherwise a reviewed request can remain pending in the cache until a restart.
+	s.mu.Lock()
+	for i := range s.requests {
+		if s.requests[i].ID == requestID {
+			s.requests[i].Status = status
+		}
+	}
+	s.mu.Unlock()
 	return request, nil
 }
 
