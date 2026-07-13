@@ -58,7 +58,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260712-friend-realtime-resilient";
+const APP_VERSION = "20260713-realtime-sync-stable";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -385,25 +385,41 @@ async function refreshFriendRealtimeState() {
 }
 
 async function syncFriendRealtimeState() {
-  if (state.useMock || !state.data || document.visibilityState === "hidden") return;
+  if (state.useMock || !state.data || state.ws || document.visibilityState === "hidden") return;
   const previousRequests = state.friendSyncSnapshot;
+  const previousState = JSON.stringify({
+    requests: state.data.requests,
+    contacts: state.data.contacts,
+    conversations: state.data.conversations
+  });
   await refreshFriendRealtimeState();
   const nextRequests = state.data.requests || [];
   const message = friendRequestSyncUpdate(previousRequests, nextRequests);
   state.friendSyncSnapshot = nextRequests.map(request => ({ ...request }));
+  const nextState = JSON.stringify({
+    requests: state.data.requests,
+    contacts: state.data.contacts,
+    conversations: state.data.conversations
+  });
   if (message) toast(message);
-  render();
+  if (message || previousState !== nextState) render();
 }
 
 function startFriendRealtimeSync() {
-  if (state.useMock || state.friendSyncTimer) return;
+  if (state.useMock || state.ws || state.friendSyncTimer) return;
   state.friendSyncSnapshot = (state.data?.requests || []).map(request => ({ ...request }));
   state.friendSyncTimer = window.setInterval(() => {
     syncFriendRealtimeState().catch(() => {});
-  }, 1500);
+  }, 5000);
   window.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") syncFriendRealtimeState().catch(() => {});
+    if (document.visibilityState === "visible" && !state.ws) syncFriendRealtimeState().catch(() => {});
   });
+}
+
+function stopFriendRealtimeSync() {
+  if (!state.friendSyncTimer) return;
+  window.clearInterval(state.friendSyncTimer);
+  state.friendSyncTimer = null;
 }
 
 function scheduleRealtimeReconnect() {
@@ -508,13 +524,16 @@ function connectRealtime() {
     };
     ws.onclose = () => {
       if (state.ws === ws) state.ws = null;
+      startFriendRealtimeSync();
       scheduleRealtimeReconnect();
     };
     ws.onerror = () => {
       // onclose clears the stale handle and schedules a reconnect.
     };
+    ws.onopen = () => {
+      if (state.ws === ws) stopFriendRealtimeSync();
+    };
     state.ws = ws;
-    startFriendRealtimeSync();
   } catch (_) {}
 }
 
