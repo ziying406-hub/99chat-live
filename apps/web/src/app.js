@@ -21,6 +21,7 @@ import {
 import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
 import { buildContactCardPayload } from "./contactCard.js";
+import { messageAvatarContactKey } from "./messageAvatarAction.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, resolveSelectedConversationId, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
 import { writeClipboardText } from "./clipboardCopy.js";
 import { buildCreateGroupPayload, toggleCreateGroupSelection } from "./createGroupPayload.js";
@@ -1112,9 +1113,11 @@ function renderMessage(message) {
   const multiSelectActive = state.multiSelect?.conversationId === state.selectedConversationId;
   const selected = Boolean(state.multiSelect?.selectedIds?.includes(message.id));
   const highlighted = state.highlightedMessageId === message.id;
+  const avatarContactKey = messageAvatarContactKey(message, conversation, state.user.id);
+  const avatarMarkup = `<img class="avatar" src="${avatarSrc(mine ? state.user.avatar : avatar(message.senderName[0] || "友"))}" alt="">`;
   return `
     <article class="message ${mine ? "me" : "other"} ${isGroup ? "group" : "private"} ${multiSelectActive ? "selecting" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}" data-message-id="${escapeAttr(message.id)}">
-      <img class="avatar" src="${avatarSrc(mine ? state.user.avatar : avatar(message.senderName[0] || "友"))}" alt="">
+      ${avatarContactKey ? `<button class="message-avatar-button" type="button" data-open-contact="${escapeAttr(avatarContactKey)}" aria-label="查看 ${escapeAttr(message.senderName || "联系人")} 的资料">${avatarMarkup}</button>` : avatarMarkup}
       ${multiSelectActive ? `<button class="message-select-toggle ${selected ? "active" : ""}" type="button" data-toggle-message-select="${escapeAttr(message.id)}" aria-label="${selected ? "取消选择" : "选择消息"}">${selected ? "✓" : ""}</button>` : ""}
       <div class="bubble">
         <div class="sender">

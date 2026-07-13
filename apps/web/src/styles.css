@@ -1355,6 +1355,29 @@ a {
   transition: filter 160ms ease;
 }
 
+.message-avatar-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 40px;
+  place-items: center;
+  margin: -3px;
+  padding: 3px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.message-avatar-button:hover .avatar {
+  filter: brightness(0.94);
+}
+
+.message-avatar-button:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
 .message.me {
   flex-direction: row-reverse;
 }
