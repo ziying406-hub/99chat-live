@@ -59,7 +59,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260713-group-profile-permissions";
+const APP_VERSION = "20260713-group-profile-hydrate";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -245,7 +245,10 @@ async function openConversationFromHash(value) {
   state.selectedConversationId = conversationId;
   state.sidePage = null;
   markConversationRead(conversationId);
-  await loadMessages(conversationId);
+  await Promise.all([
+    loadMessages(conversationId),
+    loadConversationGroup(conversationId)
+  ]);
   scheduleScrollToBottom();
   render();
 }
@@ -292,7 +295,10 @@ async function loadData() {
     state.selectedConversationId = resolveSelectedConversationId(state.selectedConversationId, state.data.conversations);
     if (state.selectedConversationId) {
       markConversationRead(state.selectedConversationId);
-      await loadMessages(state.selectedConversationId);
+      await Promise.all([
+        loadMessages(state.selectedConversationId),
+        loadConversationGroup(state.selectedConversationId)
+      ]);
       scheduleScrollToBottom();
     }
   } catch (error) {
@@ -3730,7 +3736,10 @@ function bindEvents() {
     state.mentionIds = [];
     state.conversationMenu = null;
     markConversationRead(state.selectedConversationId);
-    await loadMessages(state.selectedConversationId);
+    await Promise.all([
+      loadMessages(state.selectedConversationId),
+      loadConversationGroup(state.selectedConversationId)
+    ]);
     scheduleScrollToBottom();
     render();
   }));
@@ -6239,6 +6248,22 @@ function filteredContacts() {
 
 function getConversation(id) {
   return state.data.conversations.find(c => c.id === id);
+}
+
+async function loadConversationGroup(conversationId) {
+  if (state.useMock || !state.data || !conversationId) return null;
+  const conversation = getConversation(conversationId);
+  if (conversation?.kind !== "group") return null;
+
+  const groupId = conversation.id.replace("group-", "");
+  try {
+    const group = await api(`/api/groups/${encodeURIComponent(groupId)}`);
+    upsertGroup(group);
+    return group;
+  } catch (_) {
+    // The current list response remains usable if a detail refresh is unavailable.
+    return null;
+  }
 }
 
 function ensureRealtimeConversation(conversationId, message = {}) {
