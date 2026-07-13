@@ -11,6 +11,10 @@ test("does not make the current user's message avatar open a contact", () => {
   assert.equal(messageAvatarContactKey({ senderId: "me" }, { kind: "session" }, "me"), "");
 });
 
-test("uses the group sender when that member is already a contact", () => {
-  assert.equal(messageAvatarContactKey({ senderId: "friend-2" }, { kind: "group" }, "me"), "friend-2");
+test("allows a group owner or admin to view a member profile", () => {
+  assert.equal(messageAvatarContactKey({ senderId: "friend-2" }, { kind: "group" }, "me", "admin"), "friend-2");
+});
+
+test("does not expose group member profiles to ordinary members", () => {
+  assert.equal(messageAvatarContactKey({ senderId: "friend-2" }, { kind: "group" }, "me", "member"), "");
 });

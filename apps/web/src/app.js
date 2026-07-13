@@ -59,7 +59,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260713-message-avatar-profile";
+const APP_VERSION = "20260713-group-profile-permissions";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -1113,7 +1113,8 @@ function renderMessage(message) {
   const multiSelectActive = state.multiSelect?.conversationId === state.selectedConversationId;
   const selected = Boolean(state.multiSelect?.selectedIds?.includes(message.id));
   const highlighted = state.highlightedMessageId === message.id;
-  const avatarContactKey = messageAvatarContactKey(message, conversation, state.user.id);
+  const group = isGroup ? state.data.groups.find(item => `group-${item.id}` === conversation.id) : null;
+  const avatarContactKey = messageAvatarContactKey(message, conversation, state.user.id, groupRoleForCurrentUser(group));
   const avatarMarkup = `<img class="avatar" src="${avatarSrc(mine ? state.user.avatar : avatar(message.senderName[0] || "友"))}" alt="">`;
   return `
     <article class="message ${mine ? "me" : "other"} ${isGroup ? "group" : "private"} ${multiSelectActive ? "selecting" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}" data-message-id="${escapeAttr(message.id)}">
