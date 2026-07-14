@@ -51,6 +51,7 @@ import { sendErrorMessage } from "./messageSendErrors.js";
 import { canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
 import { selectBatchConversationIds } from "./batchTargets.js";
 import { passwordActionTarget, validateForgotPasswordReset, validatePasswordChange } from "./passwordChange.js";
+import { profileCenterPath } from "./profileNavigation.js";
 import { prepareSearchResultNavigation } from "./searchNavigation.js";
 import { currentDeviceInfo, loginDeviceDisplay } from "./securityDevices.js";
 import { groupQrExpiryLabel, isGroupQrExpired } from "./groupQrStatus.js";
@@ -60,7 +61,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-enter-to-send";
+const APP_VERSION = "20260714-profile-back";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -3901,6 +3902,7 @@ function bindEvents() {
     e.preventDefault();
     state.section = "me";
     state.sidePage = "profile";
+    window.history.replaceState(null, "", profileCenterPath(window.location));
     render();
   }));
   document.querySelectorAll("[data-modal]").forEach(el => el.addEventListener("click", e => {
