@@ -41,6 +41,7 @@ import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
+import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
@@ -63,7 +64,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-persistence-notify";
+const APP_VERSION = "20260714-realtime-session-scope";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -457,6 +458,11 @@ function connectRealtime() {
       if (envelope.type === "message.created") {
         const id = envelope.conversationId;
         const message = envelope.payload;
+        if (!canReceiveRealtimeConversation({
+          conversationId: id,
+          currentUserId: state.user?.id,
+          contactIds: (state.data.contacts || []).map(contact => contact.id)
+        })) return;
         const incoming = message.senderId !== state.user?.id;
         const conv = ensureRealtimeConversation(id, message) || getConversation(id);
         state.data.messages[id] = [...(state.data.messages[id] || []), envelope.payload];
