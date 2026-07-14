@@ -191,9 +191,11 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'file', 'voice', 'contact', 'collection')),
 			body TEXT NOT NULL DEFAULT '',
 			mentions TEXT[] NOT NULL DEFAULT '{}',
+			burn_after_read BOOLEAN NOT NULL DEFAULT false,
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mentions TEXT[] NOT NULL DEFAULT '{}'`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS burn_after_read BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_message_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_conversation_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_sender_name TEXT NOT NULL DEFAULT ''`,
@@ -224,6 +226,12 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
 			user_id TEXT NOT NULL REFERENCES users(id),
 			hidden_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+			PRIMARY KEY (conversation_id, user_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS conversation_burn_settings (
+			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+			user_id TEXT NOT NULL REFERENCES users(id),
+			enabled BOOLEAN NOT NULL DEFAULT false,
 			PRIMARY KEY (conversation_id, user_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS collections (
@@ -460,6 +468,7 @@ func postgresResetDataTables() []string {
 		"reports",
 		"collections",
 		"conversation_hides",
+		"conversation_burn_settings",
 		"conversation_clears",
 		"message_reads",
 		"message_attachments",
@@ -763,6 +772,10 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	conversationBurns, err := pg.loadConversationBurnSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	messageClears, err := pg.loadConversationClears(ctx)
 	if err != nil {
 		return nil, err
@@ -778,6 +791,7 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		conversations:     conversations,
 		messages:          messages,
 		messageReads:      messageReads,
+		conversationBurns: conversationBurns,
 		messageClears:     messageClears,
 		conversationHides: conversationHides,
 		groups:            groups,
@@ -883,7 +897,7 @@ func (pg *PostgresStore) loadVisibleConversations(ctx context.Context, userID st
 }
 
 func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string) ([]Message, error) {
-	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, m.type, m.body, m.mentions, m.created_at,
+	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, m.type, m.body, m.mentions, m.burn_after_read, m.created_at,
 			m.quote_message_id, m.quote_conversation_id, m.quote_sender_name, m.quote_preview, m.quote_type, m.quote_type_label,
 			a.id, a.name, a.object_key, a.mime_type, a.size_bytes
 		FROM messages m
@@ -903,7 +917,7 @@ func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string
 		var size *int64
 		var mentions []string
 		var quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel string
-		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.Type, &msg.Body, &mentions, &msg.CreatedAt,
+		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.Type, &msg.Body, &mentions, &msg.BurnAfterRead, &msg.CreatedAt,
 			&quoteMessageID, &quoteConversationID, &quoteSenderName, &quotePreview, &quoteType, &quoteTypeLabel,
 			&attachmentID, &name, &objectKey, &mimeType, &size); err != nil {
 			return nil, err
@@ -1187,6 +1201,27 @@ func (pg *PostgresStore) loadMessageReads(ctx context.Context) (map[string]map[s
 		reads[conversationID][userID] = readAt
 	}
 	return reads, rows.Err()
+}
+
+func (pg *PostgresStore) loadConversationBurnSettings(ctx context.Context) (map[string]map[string]bool, error) {
+	rows, err := pg.pool.Query(ctx, `SELECT conversation_id, user_id, enabled FROM conversation_burn_settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	settings := map[string]map[string]bool{}
+	for rows.Next() {
+		var conversationID, userID string
+		var enabled bool
+		if err := rows.Scan(&conversationID, &userID, &enabled); err != nil {
+			return nil, err
+		}
+		if settings[conversationID] == nil {
+			settings[conversationID] = map[string]bool{}
+		}
+		settings[conversationID][userID] = enabled
+	}
+	return settings, rows.Err()
 }
 
 func (pg *PostgresStore) loadConversationClears(ctx context.Context) (map[string]map[string]time.Time, error) {
@@ -3318,7 +3353,18 @@ func (s *Store) persistConversationClear(ctx context.Context, conversationID, us
 	return err
 }
 
-func (s *Store) updateConversationSettings(ctx context.Context, conversationID string, pinned, muted *bool, unread *int) (Conversation, error) {
+func (s *Store) persistConversationBurnSetting(ctx context.Context, conversationID, userID string, enabled bool) error {
+	if s.pg == nil {
+		return nil
+	}
+	_, err := s.pg.pool.Exec(ctx, `INSERT INTO conversation_burn_settings(conversation_id, user_id, enabled)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (conversation_id, user_id) DO UPDATE SET enabled = EXCLUDED.enabled`,
+		conversationID, userID, enabled)
+	return err
+}
+
+func (s *Store) updateConversationSettings(ctx context.Context, userID, conversationID string, pinned, muted *bool, unread *int, burnAfterRead *bool) (Conversation, error) {
 	s.mu.Lock()
 	for i := range s.conversations {
 		if s.conversations[i].ID == conversationID {
@@ -3334,11 +3380,25 @@ func (s *Store) updateConversationSettings(ctx context.Context, conversationID s
 					s.conversations[i].Unread = 0
 				}
 			}
-			conversation := s.conversations[i]
+			if burnAfterRead != nil {
+				if s.conversationBurns == nil {
+					s.conversationBurns = map[string]map[string]bool{}
+				}
+				if s.conversationBurns[conversationID] == nil {
+					s.conversationBurns[conversationID] = map[string]bool{}
+				}
+				s.conversationBurns[conversationID][userID] = *burnAfterRead
+			}
+			conversation := s.conversationForUserLocked(s.conversations[i], userID)
 			s.mu.Unlock()
 			if s.pg != nil {
 				if _, err := s.pg.pool.Exec(ctx, `UPDATE conversations SET pinned = $2, muted = $3, unread = $4 WHERE id = $1`,
 					conversation.ID, conversation.Pinned, conversation.Muted, conversation.Unread); err != nil {
+					return Conversation{}, err
+				}
+			}
+			if burnAfterRead != nil {
+				if err := s.persistConversationBurnSetting(ctx, conversationID, userID, *burnAfterRead); err != nil {
 					return Conversation{}, err
 				}
 			}
@@ -4689,11 +4749,11 @@ func insertMessage(ctx context.Context, tx pgx.Tx, msg Message) error {
 		quoteTypeLabel = quote.TypeLabel
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO messages(
-			id, conversation_id, sender_user_id, type, body, mentions, created_at,
+			id, conversation_id, sender_user_id, type, body, mentions, burn_after_read, created_at,
 			quote_message_id, quote_conversation_id, quote_sender_name, quote_preview, quote_type, quote_type_label
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (id) DO NOTHING`,
-		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.CreatedAt,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (id) DO NOTHING`,
+		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.BurnAfterRead, msg.CreatedAt,
 		quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel); err != nil {
 		return err
 	}

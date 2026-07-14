@@ -2875,6 +2875,94 @@ func TestConversationSettingsPatchPersistsPinnedMutedAndUnread(t *testing.T) {
 	}
 }
 
+func TestBurnAfterReadMessageIsVisibleOnceToRecipient(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	first := registerTestUser(t, mux, "+60", "66070301", "Chat66Test1", "阅后发送方")
+	second := registerTestUser(t, mux, "+60", "66070302", "Chat66Test2", "阅后接收方")
+
+	requestReq := httptest.NewRequest(http.MethodPost, "/api/friend-requests", bytes.NewBufferString(`{"chatId":"`+second.User.ChatID+`","greeting":"hi"}`))
+	requestReq.Header.Set("Authorization", "Bearer "+first.Token)
+	requestRec := httptest.NewRecorder()
+	mux.ServeHTTP(requestRec, requestReq)
+	if requestRec.Code != http.StatusCreated {
+		t.Fatalf("expected friend request 201, got %d: %s", requestRec.Code, requestRec.Body.String())
+	}
+	var request FriendRequest
+	if err := json.NewDecoder(requestRec.Body).Decode(&request); err != nil {
+		t.Fatalf("decode friend request: %v", err)
+	}
+	acceptReq := httptest.NewRequest(http.MethodPatch, "/api/friend-requests/"+request.ID, bytes.NewBufferString(`{"status":"accepted"}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+second.Token)
+	acceptRec := httptest.NewRecorder()
+	mux.ServeHTTP(acceptRec, acceptReq)
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept 200, got %d: %s", acceptRec.Code, acceptRec.Body.String())
+	}
+
+	conversationID := canonicalPrivateConversationID(first.User.ID, second.User.ID)
+	settingReq := httptest.NewRequest(http.MethodPatch, "/api/conversations/"+conversationID, bytes.NewBufferString(`{"burnAfterRead":true}`))
+	settingReq.Header.Set("Authorization", "Bearer "+first.Token)
+	settingRec := httptest.NewRecorder()
+	mux.ServeHTTP(settingRec, settingReq)
+	if settingRec.Code != http.StatusOK {
+		t.Fatalf("expected burn setting 200, got %d: %s", settingRec.Code, settingRec.Body.String())
+	}
+
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/conversations/session-"+second.User.ID+"/messages", bytes.NewBufferString(`{"type":"text","body":"read once"}`))
+	sendReq.Header.Set("Authorization", "Bearer "+first.Token)
+	sendRec := httptest.NewRecorder()
+	mux.ServeHTTP(sendRec, sendReq)
+	if sendRec.Code != http.StatusCreated {
+		t.Fatalf("expected message 201, got %d: %s", sendRec.Code, sendRec.Body.String())
+	}
+	var sent Message
+	if err := json.NewDecoder(sendRec.Body).Decode(&sent); err != nil {
+		t.Fatalf("decode sent message: %v", err)
+	}
+	if !sent.BurnAfterRead {
+		t.Fatalf("sent message should be marked burnAfterRead: %+v", sent)
+	}
+
+	readOnceReq := httptest.NewRequest(http.MethodGet, "/api/conversations/session-"+first.User.ID+"/messages", nil)
+	readOnceReq.Header.Set("Authorization", "Bearer "+second.Token)
+	readOnceRec := httptest.NewRecorder()
+	mux.ServeHTTP(readOnceRec, readOnceReq)
+	var firstRead []Message
+	if err := json.NewDecoder(readOnceRec.Body).Decode(&firstRead); err != nil {
+		t.Fatalf("decode first recipient read: %v", err)
+	}
+	if !messageExists(firstRead, sent.ID) {
+		t.Fatalf("recipient should receive burn message once: %+v", firstRead)
+	}
+
+	readAgainReq := httptest.NewRequest(http.MethodGet, "/api/conversations/session-"+first.User.ID+"/messages", nil)
+	readAgainReq.Header.Set("Authorization", "Bearer "+second.Token)
+	readAgainRec := httptest.NewRecorder()
+	mux.ServeHTTP(readAgainRec, readAgainReq)
+	var secondRead []Message
+	if err := json.NewDecoder(readAgainRec.Body).Decode(&secondRead); err != nil {
+		t.Fatalf("decode second recipient read: %v", err)
+	}
+	if messageExists(secondRead, sent.ID) {
+		t.Fatalf("recipient should not receive burn message after reading it: %+v", secondRead)
+	}
+
+	senderReadReq := httptest.NewRequest(http.MethodGet, "/api/conversations/session-"+second.User.ID+"/messages", nil)
+	senderReadReq.Header.Set("Authorization", "Bearer "+first.Token)
+	senderReadRec := httptest.NewRecorder()
+	mux.ServeHTTP(senderReadRec, senderReadReq)
+	var senderRead []Message
+	if err := json.NewDecoder(senderReadRec.Body).Decode(&senderRead); err != nil {
+		t.Fatalf("decode sender read: %v", err)
+	}
+	if !messageExists(senderRead, sent.ID) {
+		t.Fatalf("sender should retain burn message: %+v", senderRead)
+	}
+}
+
 func TestDeleteConversationHidesItFromCurrentUserList(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()

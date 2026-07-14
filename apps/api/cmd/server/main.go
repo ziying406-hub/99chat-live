@@ -79,16 +79,17 @@ type Contact struct {
 }
 
 type Conversation struct {
-	ID          string    `json:"id"`
-	Kind        string    `json:"kind"`
-	Title       string    `json:"title"`
-	Avatar      string    `json:"avatar"`
-	Unread      int       `json:"unread"`
-	LastText    string    `json:"lastText"`
-	LastAt      time.Time `json:"lastAt"`
-	Pinned      bool      `json:"pinned"`
-	Muted       bool      `json:"muted"`
-	MentionedMe bool      `json:"mentionedMe,omitempty"`
+	ID            string    `json:"id"`
+	Kind          string    `json:"kind"`
+	Title         string    `json:"title"`
+	Avatar        string    `json:"avatar"`
+	Unread        int       `json:"unread"`
+	LastText      string    `json:"lastText"`
+	LastAt        time.Time `json:"lastAt"`
+	Pinned        bool      `json:"pinned"`
+	Muted         bool      `json:"muted"`
+	BurnAfterRead bool      `json:"burnAfterRead"`
+	MentionedMe   bool      `json:"mentionedMe,omitempty"`
 }
 
 type Message struct {
@@ -101,6 +102,7 @@ type Message struct {
 	Attachment     *Attachment `json:"attachment,omitempty"`
 	Quote          *Quote      `json:"quote,omitempty"`
 	Mentions       []string    `json:"mentions,omitempty"`
+	BurnAfterRead  bool        `json:"burnAfterRead,omitempty"`
 	CreatedAt      time.Time   `json:"createdAt"`
 	ReadCount      int         `json:"readCount"`
 	ReadTotal      int         `json:"readTotal"`
@@ -473,6 +475,7 @@ type Store struct {
 	conversations     []Conversation
 	messages          map[string][]Message
 	messageReads      map[string]map[string]time.Time
+	conversationBurns map[string]map[string]bool
 	messageClears     map[string]map[string]time.Time
 	conversationHides map[string]map[string]bool
 	groups            map[string]Group
@@ -560,6 +563,7 @@ func emptyDemoStore() *Store {
 		conversations:     []Conversation{},
 		messages:          map[string][]Message{},
 		messageReads:      map[string]map[string]time.Time{},
+		conversationBurns: map[string]map[string]bool{},
 		messageClears:     map[string]map[string]time.Time{},
 		conversationHides: map[string]map[string]bool{},
 		groups:            map[string]Group{},
@@ -2209,6 +2213,11 @@ func (s *Store) conversationsRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		s.mu.RUnlock()
 	}
+	s.mu.RLock()
+	for i := range items {
+		items[i] = s.conversationForUserLocked(items[i], current.ID)
+	}
+	s.mu.RUnlock()
 	items = filterSlice(items, func(item Conversation) bool { return !hidden[item.ID] })
 	sort.Slice(items, func(i, j int) bool { return items[i].LastAt.After(items[j].LastAt) })
 	if filter == "unread" || filter == "group" {
@@ -2337,6 +2346,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 		if s.messageReads[conversationID] == nil {
 			s.messageReads[conversationID] = map[string]time.Time{}
 		}
+		msg.BurnAfterRead = s.conversationBurnEnabledLocked(conversationID, current.ID)
 		s.messageReads[conversationID][current.ID] = msg.CreatedAt
 		s.messages[conversationID] = append(s.messages[conversationID], msg)
 		if s.conversationHides != nil && s.conversationHides[current.ID] != nil {
@@ -2494,7 +2504,7 @@ func (s *Store) readConversationMessages(ctx context.Context, conversationID, us
 	if s.messageReads[conversationID] == nil {
 		s.messageReads[conversationID] = map[string]time.Time{}
 	}
-	s.messageReads[conversationID][userID] = now
+	previousReadAt := s.messageReads[conversationID][userID]
 	messages := append([]Message(nil), s.messages[conversationID]...)
 	if messages == nil {
 		messages = []Message{}
@@ -2509,6 +2519,17 @@ func (s *Store) readConversationMessages(ctx context.Context, conversationID, us
 		}
 		messages = filtered
 	}
+	if !previousReadAt.IsZero() {
+		filtered := messages[:0]
+		for _, message := range messages {
+			if message.BurnAfterRead && message.SenderID != userID && !message.CreatedAt.After(previousReadAt) {
+				continue
+			}
+			filtered = append(filtered, message)
+		}
+		messages = filtered
+	}
+	s.messageReads[conversationID][userID] = now
 	for i := range messages {
 		messages[i] = s.withReadStatsLocked(messages[i])
 	}
@@ -2523,15 +2544,18 @@ func (s *Store) conversationSettingsRoute(w http.ResponseWriter, r *http.Request
 		return
 	}
 	var patch struct {
-		Pinned *bool `json:"pinned"`
-		Muted  *bool `json:"muted"`
-		Unread *int  `json:"unread"`
+		Pinned        *bool `json:"pinned"`
+		Muted         *bool `json:"muted"`
+		Unread        *int  `json:"unread"`
+		BurnAfterRead *bool `json:"burnAfterRead"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	conversation, err := s.updateConversationSettings(r.Context(), conversationID, patch.Pinned, patch.Muted, patch.Unread)
+	current := s.currentUser(r)
+	conversationID = s.canonicalConversationIDForUser(r.Context(), conversationID, current.ID)
+	conversation, err := s.updateConversationSettings(r.Context(), current.ID, conversationID, patch.Pinned, patch.Muted, patch.Unread, patch.BurnAfterRead)
 	if err != nil {
 		if errors.Is(err, errNotFound) {
 			writeError(w, http.StatusNotFound, "conversation not found")
@@ -4040,6 +4064,7 @@ func (s *Store) privateConversationContact(ctx context.Context, conversationID, 
 
 func (s *Store) conversationForUserLocked(conversation Conversation, userID string) Conversation {
 	conversation.MentionedMe = s.conversationMentionsUserLocked(conversation.ID, userID)
+	conversation.BurnAfterRead = s.conversationBurnEnabledLocked(conversation.ID, userID)
 	if conversation.Kind != "session" {
 		return conversation
 	}
@@ -4059,6 +4084,10 @@ func (s *Store) conversationForUserLocked(conversation Conversation, userID stri
 		conversation.Avatar = user.Avatar
 	}
 	return conversation
+}
+
+func (s *Store) conversationBurnEnabledLocked(conversationID, userID string) bool {
+	return s.conversationBurns != nil && s.conversationBurns[conversationID] != nil && s.conversationBurns[conversationID][userID]
 }
 
 func (s *Store) conversationMentionsUserLocked(conversationID, userID string) bool {
@@ -5074,21 +5103,22 @@ func seedStore() *Store {
 		},
 	}
 	return &Store{
-		user:           mergeSeedUserPreferences(demoUser()),
-		users:          map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公"), CreatedAt: now.Add(-12 * time.Hour)}},
-		adminUsers:     map[string]AdminUserRecord{admin.ID: admin},
-		adminSessions:  map[string]AdminSession{},
-		adminAuditLogs: []AdminAuditLog{},
-		systemSettings: defaultAdminSystemSettings(),
-		passwordHashes: map[string]string{"u1": "demo:demo123456"},
-		contacts:       contacts,
-		conversations:  conversations,
-		messages:       messages,
-		messageReads:   map[string]map[string]time.Time{},
-		messageClears:  map[string]map[string]time.Time{},
-		groups:         map[string]Group{"21444": group},
-		discoverGroups: discoverGroups,
-		groupBots:      map[string][]GroupBot{"21444": {defaultGroupBot("21444")}},
+		user:              mergeSeedUserPreferences(demoUser()),
+		users:             map[string]User{"bot-announcement": {ID: "bot-announcement", Country: "+60", Phone: "bot-announcement", ChatID: "bot_announcement", Nickname: "公告机器人", Avatar: avatar("公"), CreatedAt: now.Add(-12 * time.Hour)}},
+		adminUsers:        map[string]AdminUserRecord{admin.ID: admin},
+		adminSessions:     map[string]AdminSession{},
+		adminAuditLogs:    []AdminAuditLog{},
+		systemSettings:    defaultAdminSystemSettings(),
+		passwordHashes:    map[string]string{"u1": "demo:demo123456"},
+		contacts:          contacts,
+		conversations:     conversations,
+		messages:          messages,
+		messageReads:      map[string]map[string]time.Time{},
+		conversationBurns: map[string]map[string]bool{},
+		messageClears:     map[string]map[string]time.Time{},
+		groups:            map[string]Group{"21444": group},
+		discoverGroups:    discoverGroups,
+		groupBots:         map[string][]GroupBot{"21444": {defaultGroupBot("21444")}},
 		requests: []FriendRequest{
 			{ID: "fr1", User: contacts[0], Greeting: "你好，我是 陈刀仔（日进斗金）", Status: "pending", CreatedAt: now.Add(-25 * time.Hour)},
 			{ID: "fr2", User: contacts[1], Greeting: "你好，我是 苏雅", Status: "pending", CreatedAt: now.Add(-25 * time.Hour)},

@@ -46,7 +46,7 @@ import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
 import { canManageMember, memberStatusText } from "./groupMemberPermissions.js";
-import { canManageGroupSettings, canOpenGroupSidePage } from "./groupSettingsPermissions.js";
+import { canManageGroupSettings, canOpenGroupSidePage, regularGroupMemberSettingKeys } from "./groupSettingsPermissions.js";
 import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.js";
 import { canLeaveGroup } from "./groupMembership.js";
 import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferHint } from "./groupOwnerTransfer.js";
@@ -65,7 +65,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-member-settings-permissions";
+const APP_VERSION = "20260714-member-burn-after-read";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -1420,6 +1420,7 @@ function renderDetailPane(conv) {
 function renderSettingsPane(conv) {
   const group = currentGroup();
   const canManage = canManageGroup(group);
+  if (group && !canManage) return renderRegularGroupMemberSettingsPane(conv);
   const pendingApplications = pendingGroupJoinRequestCount(state.data.groupJoinRequests?.[group?.id]);
   return `
     <aside class="detail-pane">
@@ -1475,6 +1476,27 @@ function renderSettingsPane(conv) {
         ${group && canLeaveGroup(currentGroupMember(group)) ? settingButton("leave-group", "退出群聊", "danger-btn inline") : ""}
         ${group && isCurrentUserOwner(group) ? settingButton("dissolve-group", "解散群", "danger-btn inline") : ""}
         ${settingLink("report", "检举", "提交违规原因")}
+      </section>
+    </aside>`;
+}
+
+function renderRegularGroupMemberSettingsPane(conv) {
+  const settingKeys = new Set(regularGroupMemberSettingKeys());
+  return `
+    <aside class="detail-pane">
+      <header class="panel-header"><button class="icon-btn detail-mobile-back" data-mobile-close title="返回聊天" aria-label="返回聊天">${icons.back}</button><h3>聊天设置</h3></header>
+      <section class="section">
+        ${settingKeys.has("media") ? settingLink("media", "图片与视频", "全部 / 图片 / 视频 / 档案") : ""}
+        ${settingKeys.has("burn-after-read") ? `<button class="setting-row setting-toggle-row" type="button" data-conversation-quick="burn-after-read"><span>阅后即焚</span><span class="switch ${conv.burnAfterRead ? "on" : "off"}"></span></button>` : ""}
+        ${settingKeys.has("mute") ? `<button class="setting-row setting-toggle-row" type="button" data-conversation-quick="mute"><span>消息免打扰</span><span class="switch ${conv.muted ? "on" : "off"}"></span></button>` : ""}
+        ${settingKeys.has("pin") ? `<button class="setting-row setting-toggle-row" type="button" data-conversation-quick="pin"><span>置顶聊天</span><span class="switch ${conv.pinned ? "on" : "off"}"></span></button>` : ""}
+      </section>
+      <section class="section">
+        ${settingKeys.has("search") ? settingLink("search", "搜索聊天记录", "关键词查找") : ""}
+        ${settingKeys.has("clear-chat") ? settingButton("clear-chat", "清除聊天记录", "danger-btn inline") : ""}
+      </section>
+      <section class="section">
+        ${settingKeys.has("report") ? settingLink("report", "检举", "提交违规原因") : ""}
       </section>
     </aside>`;
 }
@@ -6115,12 +6137,15 @@ async function handleConversationQuickAction(action) {
   if (action === "mute") {
     await updateConversationSetting(conversation.id, { muted: !conversation.muted });
   }
+  if (action === "burn-after-read") {
+    await updateConversationSetting(conversation.id, { burnAfterRead: !conversation.burnAfterRead });
+  }
 }
 
 async function updateConversationSetting(conversationId, patch) {
   const conversation = getConversation(conversationId);
   if (!conversation) return;
-  const previous = { pinned: conversation.pinned, muted: conversation.muted, unread: conversation.unread };
+  const previous = { pinned: conversation.pinned, muted: conversation.muted, unread: conversation.unread, burnAfterRead: conversation.burnAfterRead };
   Object.assign(conversation, patch);
   try {
     if (!state.useMock) {
@@ -6132,10 +6157,12 @@ async function updateConversationSetting(conversationId, patch) {
     }
     if (Object.hasOwn(patch, "pinned")) toast(conversation.pinned ? "已置顶" : "已取消置顶");
     if (Object.hasOwn(patch, "muted")) toast(conversation.muted ? "已开启免打扰" : "已取消免打扰");
+    if (Object.hasOwn(patch, "burnAfterRead")) toast(conversation.burnAfterRead ? "已开启阅后即焚" : "已关闭阅后即焚");
   } catch (error) {
     conversation.pinned = previous.pinned;
     conversation.muted = previous.muted;
     conversation.unread = previous.unread;
+    conversation.burnAfterRead = previous.burnAfterRead;
     toast("会话设置保存失败");
   }
   sortConversations();

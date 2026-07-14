@@ -13,10 +13,33 @@ const MANAGER_GROUP_SIDE_PAGES = new Set([
   "audit-logs"
 ]);
 
+const MEMBER_BLOCKED_GROUP_SIDE_PAGES = new Set([
+  "members",
+  "announcement",
+  "qrcode",
+  "nickname",
+  "collections"
+]);
+
+const REGULAR_GROUP_MEMBER_SETTING_KEYS = [
+  "media",
+  "burn-after-read",
+  "mute",
+  "pin",
+  "search",
+  "clear-chat",
+  "report"
+];
+
 export function canManageGroupSettings(member) {
   return member?.role === "owner" || member?.role === "admin";
 }
 
 export function canOpenGroupSidePage(sidePage, member) {
-  return !MANAGER_GROUP_SIDE_PAGES.has(sidePage) || canManageGroupSettings(member);
+  if (canManageGroupSettings(member)) return true;
+  return !MANAGER_GROUP_SIDE_PAGES.has(sidePage) && !MEMBER_BLOCKED_GROUP_SIDE_PAGES.has(sidePage);
+}
+
+export function regularGroupMemberSettingKeys() {
+  return [...REGULAR_GROUP_MEMBER_SETTING_KEYS];
 }
