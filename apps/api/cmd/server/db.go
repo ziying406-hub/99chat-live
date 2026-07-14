@@ -1004,8 +1004,9 @@ func ensureGroupOwnerMember(group Group, owner Member) Group {
 	if owner.UserID == "" {
 		return group
 	}
-	for _, member := range group.Members {
+	for index, member := range group.Members {
 		if member.UserID == owner.UserID {
+			group.Members[index].Role = "owner"
 			return group
 		}
 	}
