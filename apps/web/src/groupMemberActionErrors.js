@@ -9,5 +9,11 @@ export function groupMemberActionErrorMessage(error) {
   if (message.includes("member not found")) {
     return "成员不存在或已离开群聊";
   }
+  if (message.includes("group or user not found")) {
+    return "该联系人账号不存在或暂时无法邀请";
+  }
+  if (message.includes("group blacklist blocks invite")) {
+    return "该联系人已在群黑名单中，无法邀请";
+  }
   return "成员操作失败";
 }

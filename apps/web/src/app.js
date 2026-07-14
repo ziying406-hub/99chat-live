@@ -65,7 +65,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-member-burn-after-read";
+const APP_VERSION = "20260714-invite-feedback";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -6089,43 +6089,63 @@ async function inviteSelectedMembers() {
     toast("黑名单成员不能被邀请入群");
     return;
   }
-  let invitedDirectly = 0;
-  let invitedPending = 0;
-  for (const userId of selected) {
-    if (state.useMock) {
-      const contact = state.data.contacts.find(c => c.id === userId);
-      if (contact && !group.members.some(member => member.userId === userId)) {
-        const privacy = getUserPrivacy(contact);
-        if (privacy.inviteGroupVerification) {
-          state.data.requests.unshift(createLocalGroupInviteRequest(contact, group));
+  const confirmButton = document.querySelector("[data-invite-confirm]");
+  if (confirmButton instanceof HTMLButtonElement) {
+    confirmButton.disabled = true;
+    confirmButton.textContent = "邀请中...";
+  }
+  try {
+    let invitedDirectly = 0;
+    let invitedPending = 0;
+    for (const userId of selected) {
+      if (state.useMock) {
+        const contact = state.data.contacts.find(c => c.id === userId);
+        if (contact && !group.members.some(member => member.userId === userId)) {
+          const privacy = getUserPrivacy(contact);
+          if (privacy.inviteGroupVerification) {
+            state.data.requests.unshift(createLocalGroupInviteRequest(contact, group));
+            invitedPending += 1;
+          } else {
+            group.members.push(createGroupMember(group, userId, contact.nickname));
+            appendLocalGroupSystemMessage(group, `${contact.nickname} 已加入群聊`);
+            invitedDirectly += 1;
+          }
+        }
+      } else {
+        const result = await api(`/api/groups/${group.id}/members`, {
+          method: "POST",
+          body: JSON.stringify({ userId })
+        });
+        if (result?.status === "pending") {
           invitedPending += 1;
-        } else {
-          group.members.push(createGroupMember(group, userId, contact.nickname));
-          appendLocalGroupSystemMessage(group, `${contact.nickname} 已加入群聊`);
+        } else if (result?.userId) {
+          upsertGroupMember(group.id, result);
           invitedDirectly += 1;
         }
       }
-    } else {
-      const result = await api(`/api/groups/${group.id}/members`, {
-        method: "POST",
-        body: JSON.stringify({ userId })
-      });
-      if (result?.status === "pending") {
-        invitedPending += 1;
-      } else if (result?.userId) {
-        upsertGroupMember(group.id, result);
-        invitedDirectly += 1;
+    }
+    if (!state.useMock) {
+      const [updated, messages] = await Promise.all([
+        api(`/api/groups/${group.id}`),
+        api(`/api/conversations/group-${group.id}/messages`)
+      ]);
+      upsertGroup(updated);
+      state.data.messages[`group-${group.id}`] = messages;
+    }
+    state.sidePage = "members";
+    toast(groupInviteToast(invitedDirectly, invitedPending));
+    render();
+  } catch (error) {
+    toast(groupMemberActionErrorMessage(error));
+  } finally {
+    if (state.sidePage === "invite-members") {
+      const button = document.querySelector("[data-invite-confirm]");
+      if (button instanceof HTMLButtonElement) {
+        button.disabled = false;
+        button.textContent = "确认";
       }
     }
   }
-  if (!state.useMock) {
-    const updated = await api(`/api/groups/${group.id}`);
-    upsertGroup(updated);
-    state.data.messages[`group-${group.id}`] = await api(`/api/conversations/group-${group.id}/messages`);
-  }
-  state.sidePage = "members";
-  toast(groupInviteToast(invitedDirectly, invitedPending));
-  render();
 }
 
 async function handleConversationQuickAction(action) {
