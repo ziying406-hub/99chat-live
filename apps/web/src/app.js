@@ -59,7 +59,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-mobile-profile-center";
+const APP_VERSION = "20260714-profile-layout-cleanup";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -3079,12 +3079,7 @@ function renderProfilePage() {
         <strong>查看</strong>
       </button>
     </section>
-    ${renderMobileProfileCenter()}
-    <section class="section">
-      <button class="setting-row setting-action-row danger-text-row" type="button" data-sidepage="account">
-        <span>${escapeHTML(accountActionCopy(state.useMock).title)}</span>
-      </button>
-    </section>`);
+    ${renderMobileProfileCenter()}`);
 }
 
 function page(title, body) {

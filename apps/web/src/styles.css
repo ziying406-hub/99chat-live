@@ -2745,7 +2745,7 @@ button.setting-row {
 }
 
 .profile-page-pane {
-  background: linear-gradient(to bottom, #2145d0 0 78px, #ffffff 78px 100%);
+  background: linear-gradient(180deg, #f8fbff 0%, #ffffff 180px);
 }
 
 .page-content {
@@ -3139,7 +3139,7 @@ button.setting-row {
   min-height: 78px;
   padding: 22px 24px 18px;
   border-bottom: 1px solid #edf1f7;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.96);
 }
 
 .profile-panel-header h2 {
