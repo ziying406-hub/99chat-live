@@ -46,6 +46,7 @@ import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
 import { canManageMember, memberStatusText } from "./groupMemberPermissions.js";
+import { canManageGroupSettings, canOpenGroupSidePage } from "./groupSettingsPermissions.js";
 import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.js";
 import { canLeaveGroup } from "./groupMembership.js";
 import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferHint } from "./groupOwnerTransfer.js";
@@ -64,7 +65,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-realtime-session-scope";
+const APP_VERSION = "20260714-member-settings-permissions";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -1390,6 +1391,7 @@ function renderConversationContextMenu() {
 
 function renderDetailPane(conv) {
   if (!conv || !state.sidePage) return "";
+  if (!canOpenGroupSidePage(state.sidePage, currentGroupMember())) return renderSettingsPane(conv);
   if (state.sidePage === "settings") return renderSettingsPane(conv);
   if (state.sidePage === "admin") return renderGroupAdminPane();
   if (state.sidePage === "audit-logs") return renderGroupAuditLogsPane();
@@ -1439,15 +1441,15 @@ function renderSettingsPane(conv) {
         ${group ? `
           <div class="conversation-control-strip">
             <button type="button" data-sidepage="members"><strong>${group.members.length}</strong><small>成员</small></button>
-            <button type="button" data-sidepage="join-mode"><strong>${escapeHTML(joinModeShortLabel(group.joinMode))}</strong><small>入群</small></button>
-            <button type="button" data-sidepage="applications"><strong>${pendingApplications || "0"}</strong><small>申请</small></button>
+            ${canManage ? `<button type="button" data-sidepage="join-mode"><strong>${escapeHTML(joinModeShortLabel(group.joinMode))}</strong><small>入群</small></button>` : ""}
+            ${canManage ? `<button type="button" data-sidepage="applications"><strong>${pendingApplications || "0"}</strong><small>申请</small></button>` : ""}
             <button type="button" data-conversation-quick="mute"><strong>${conv.muted ? "关" : "开"}</strong><small>通知</small></button>
           </div>
         ` : ""}
       </section>
       <section class="section">
         <div class="section-title-row"><h3>会话</h3></div>
-        ${group ? settingLink("join-mode", "入群方式", joinModeLabel(group.joinMode)) : `<div class="setting-row"><span>入群方式</span><strong>好友会话</strong></div>`}
+        ${group && canManage ? settingLink("join-mode", "入群方式", joinModeLabel(group.joinMode)) : `<div class="setting-row"><span>入群方式</span><strong>${escapeHTML(group ? joinModeLabel(group.joinMode) : "好友会话")}</strong></div>`}
         <button class="setting-row setting-toggle-row" type="button" data-conversation-quick="mute"><span>消息免打扰</span><span class="switch ${conv.muted ? "on" : "off"}"></span></button>
         <button class="setting-row setting-toggle-row" type="button" data-conversation-quick="pin"><span>置顶聊天</span><span class="switch ${conv.pinned ? "on" : "off"}"></span></button>
       </section>
@@ -1455,9 +1457,9 @@ function renderSettingsPane(conv) {
         <section class="section">
           <h3>群组</h3>
           ${settingLink("members", "群成员", `${group.members.length} 人`)}
-          ${settingLink("admin", "群组管理", canManage ? "管理员与权限" : "查看权限")}
-          ${settingLink("applications", "入群申请", pendingApplications ? `${pendingApplications} 条待处理` : "近期请求")}
-          ${settingLink("rename", "群组名称", group.title)}
+          ${canManage ? settingLink("admin", "群组管理", "管理员与权限") : ""}
+          ${canManage ? settingLink("applications", "入群申请", pendingApplications ? `${pendingApplications} 条待处理` : "近期请求") : ""}
+          ${canManage ? settingLink("rename", "群组名称", group.title) : ""}
           ${settingLink("announcement", "群公告", group.announcement || "未设置")}
           ${settingLink("qrcode", "群二维码", `群号 ${group.chatId}`)}
           ${settingLink("nickname", "我在本群的昵称", groupNicknameForConversation(conv))}
@@ -3682,6 +3684,14 @@ function scheduleForwardSearchKeepAlive() {
 }
 
 async function openSidePage(sidePage) {
+  const group = currentGroup();
+  if (group && !canOpenGroupSidePage(sidePage, currentGroupMember(group))) {
+    state.sidePage = "settings";
+    syncHashForSidePage("settings");
+    toast("此功能仅限群主或管理员使用");
+    render();
+    return;
+  }
   state.sidePage = sidePage;
   applySidePageSection(sidePage);
   syncHashForSidePage(sidePage);
@@ -6534,8 +6544,7 @@ function currentGroupMember(group = currentGroup()) {
 }
 
 function canManageGroup(group = currentGroup()) {
-  const member = currentGroupMember(group);
-  return ["owner", "admin"].includes(member?.role);
+  return canManageGroupSettings(currentGroupMember(group));
 }
 
 function isCurrentUserOwner(group = currentGroup()) {
