@@ -158,17 +158,18 @@ type Member struct {
 }
 
 type FriendRequest struct {
-	ID         string    `json:"id"`
-	Type       string    `json:"type,omitempty"`
-	User       Contact   `json:"user"`
-	Greeting   string    `json:"greeting"`
-	Status     string    `json:"status"`
-	Direction  string    `json:"direction"`
-	GroupID    string    `json:"groupId,omitempty"`
-	GroupTitle string    `json:"groupTitle,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-	FromUserID string    `json:"-"`
-	ToUserID   string    `json:"-"`
+	ID          string    `json:"id"`
+	Type        string    `json:"type,omitempty"`
+	User        Contact   `json:"user"`
+	Greeting    string    `json:"greeting"`
+	Status      string    `json:"status"`
+	Direction   string    `json:"direction"`
+	GroupID     string    `json:"groupId,omitempty"`
+	GroupTitle  string    `json:"groupTitle,omitempty"`
+	GroupChatID string    `json:"groupChatId,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
+	FromUserID  string    `json:"-"`
+	ToUserID    string    `json:"-"`
 }
 
 func friendRequestRealtimeEvent(eventType string, request FriendRequest, reviewer *Contact) map[string]any {
@@ -2995,32 +2996,34 @@ func (s *Store) groupInviteInboxItemsLocked(userID string) []FriendRequest {
 		}
 		if request.User.ID == userID {
 			items = append(items, FriendRequest{
-				ID:         request.ID,
-				Type:       "group-invite",
-				User:       *request.Inviter,
-				Greeting:   request.Greeting,
-				Status:     request.Status,
-				Direction:  "incoming",
-				GroupID:    request.GroupID,
-				GroupTitle: group.Title,
-				CreatedAt:  request.CreatedAt,
-				FromUserID: request.Inviter.ID,
-				ToUserID:   request.User.ID,
+				ID:          request.ID,
+				Type:        "group-invite",
+				User:        *request.Inviter,
+				Greeting:    request.Greeting,
+				Status:      request.Status,
+				Direction:   "incoming",
+				GroupID:     request.GroupID,
+				GroupTitle:  group.Title,
+				GroupChatID: group.ChatID,
+				CreatedAt:   request.CreatedAt,
+				FromUserID:  request.Inviter.ID,
+				ToUserID:    request.User.ID,
 			})
 		}
 		if request.Inviter.ID == userID {
 			items = append(items, FriendRequest{
-				ID:         request.ID,
-				Type:       "group-invite",
-				User:       request.User,
-				Greeting:   request.Greeting,
-				Status:     request.Status,
-				Direction:  "outgoing",
-				GroupID:    request.GroupID,
-				GroupTitle: group.Title,
-				CreatedAt:  request.CreatedAt,
-				FromUserID: request.Inviter.ID,
-				ToUserID:   request.User.ID,
+				ID:          request.ID,
+				Type:        "group-invite",
+				User:        request.User,
+				Greeting:    request.Greeting,
+				Status:      request.Status,
+				Direction:   "outgoing",
+				GroupID:     request.GroupID,
+				GroupTitle:  group.Title,
+				GroupChatID: group.ChatID,
+				CreatedAt:   request.CreatedAt,
+				FromUserID:  request.Inviter.ID,
+				ToUserID:    request.User.ID,
 			})
 		}
 	}

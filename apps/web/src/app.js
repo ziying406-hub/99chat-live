@@ -3346,7 +3346,7 @@ function renderModal() {
             <div class="contact-detail-grid">
               <div class="setting-row"><span>邀请人</span><strong>${escapeHTML(request.user?.nickname || "未提供")}</strong></div>
               <div class="setting-row"><span>群成员</span><strong>${memberCount ? `${memberCount} 人` : "等待加入后查看"}</strong></div>
-              <div class="setting-row"><span>群号</span><strong>${escapeHTML(group.chatId || request.groupId || "未提供")}</strong></div>
+              <div class="setting-row"><span>群号</span><strong>${escapeHTML(group.chatId || request.groupChatId || "未提供")}</strong></div>
             </div>
             <section class="contact-section">
               <div class="contact-section-title">群简介</div>

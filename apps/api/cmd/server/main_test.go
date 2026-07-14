@@ -4764,7 +4764,7 @@ func TestGroupInviteAppearsInRecipientInboxAndCanBeAccepted(t *testing.T) {
 	if err := json.NewDecoder(inboxRec.Body).Decode(&inbox); err != nil {
 		t.Fatalf("decode inbox: %v", err)
 	}
-	if len(inbox) != 1 || inbox[0].Type != "group-invite" || inbox[0].Direction != "incoming" || inbox[0].User.Nickname != "chenshao" || inbox[0].GroupTitle != "test" {
+	if len(inbox) != 1 || inbox[0].Type != "group-invite" || inbox[0].Direction != "incoming" || inbox[0].User.Nickname != "chenshao" || inbox[0].GroupTitle != "test" || inbox[0].GroupChatID != store.groups["21444"].ChatID {
 		t.Fatalf("recipient inbox = %+v", inbox)
 	}
 
