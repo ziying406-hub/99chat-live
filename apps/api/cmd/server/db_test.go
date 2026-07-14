@@ -33,4 +33,22 @@ func TestStoredGroupOwnerCanManageEvenWhenLegacyMemberRoleIsStale(t *testing.T) 
 	if !store.canManageGroup("group-1", "owner-1") {
 		t.Fatal("stored group owner should retain management permission")
 	}
+	if !store.isGroupOwner("group-1", "owner-1") {
+		t.Fatal("stored group owner should retain owner-only permission")
+	}
+}
+
+func TestRuntimeGroupsKeepGroupsForEveryAccount(t *testing.T) {
+	groups := runtimeGroups(map[string]Group{
+		"group-owner-1": {ID: "group-owner-1", OwnerUserID: "owner-1"},
+		"group-owner-2": {ID: "group-owner-2", OwnerUserID: "owner-2"},
+	})
+
+	if len(groups) != 2 {
+		t.Fatalf("runtime groups = %d, want 2", len(groups))
+	}
+	store := &Store{groups: groups}
+	if !store.canManageGroup("group-owner-2", "owner-2") {
+		t.Fatal("group owner loaded after the bootstrap account should retain permission")
+	}
 }

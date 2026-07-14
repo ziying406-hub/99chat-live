@@ -727,7 +727,7 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	groups, discoverGroups := splitJoinedAndDiscoverGroups(allGroups, user.ID)
+	groups := runtimeGroups(allGroups)
 	requests, err := pg.loadFriendRequests(ctx, user.ID)
 	if err != nil {
 		return nil, err
@@ -795,7 +795,7 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		messageClears:     messageClears,
 		conversationHides: conversationHides,
 		groups:            groups,
-		discoverGroups:    discoverGroups,
+		discoverGroups:    []Group{},
 		requests:          requests,
 		joinRequests:      joinRequests,
 		blacklists:        blacklists,
@@ -810,6 +810,14 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		systemSettings:    systemSettings,
 		hub:               hub,
 	}, nil
+}
+
+func runtimeGroups(allGroups map[string]Group) map[string]Group {
+	groups := make(map[string]Group, len(allGroups))
+	for id, group := range allGroups {
+		groups[id] = group
+	}
+	return groups
 }
 
 func (pg *PostgresStore) loadContacts(ctx context.Context, userID string) ([]Contact, error) {

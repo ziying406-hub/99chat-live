@@ -3930,6 +3930,9 @@ func (s *Store) isGroupOwner(groupID, userID string) bool {
 	if !ok {
 		return false
 	}
+	if group.OwnerUserID != "" {
+		return group.OwnerUserID == userID
+	}
 	return groupRoleFor(group, userID) == "owner"
 }
 
