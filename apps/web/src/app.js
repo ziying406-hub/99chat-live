@@ -21,6 +21,7 @@ import {
 import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
 import { buildContactCardPayload } from "./contactCard.js";
+import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, resolveSelectedConversationId, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
 import { writeClipboardText } from "./clipboardCopy.js";
@@ -59,7 +60,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-profile-layout-cleanup";
+const APP_VERSION = "20260714-enter-to-send";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -7577,28 +7578,35 @@ function updateMentionSuggestions() {
 }
 
 function handleEditorKeydown(event) {
-  if (!state.mention?.open) return;
-  if (event.key === "Escape") {
-    state.mention = null;
-    syncMentionMenu();
-    return;
+  if (state.mention?.open) {
+    if (event.key === "Escape") {
+      state.mention = null;
+      syncMentionMenu();
+      return;
+    }
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const items = getMentionCandidates(state.mention.query);
+      if (!items.length) return;
+      const direction = event.key === "ArrowDown" ? 1 : -1;
+      const current = state.mention.activeIndex ?? 0;
+      const next = (current + direction + items.length) % items.length;
+      state.mention = { ...state.mention, activeIndex: next };
+      syncMentionMenu();
+      return;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      const items = getMentionCandidates(state.mention.query);
+      const selected = items[state.mention.activeIndex ?? 0] || items[0];
+      if (selected) insertMention(selected);
+      return;
+    }
   }
-  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+
+  if (editorKeyAction(event, ensureUserSettings().enterToSend) === "send") {
     event.preventDefault();
-    const items = getMentionCandidates(state.mention.query);
-    if (!items.length) return;
-    const direction = event.key === "ArrowDown" ? 1 : -1;
-    const current = state.mention.activeIndex ?? 0;
-    const next = (current + direction + items.length) % items.length;
-    state.mention = { ...state.mention, activeIndex: next };
-    syncMentionMenu();
-    return;
-  }
-  if (event.key === "Enter" || event.key === "Tab") {
-    event.preventDefault();
-    const items = getMentionCandidates(state.mention.query);
-    const selected = items[state.mention.activeIndex ?? 0] || items[0];
-    if (selected) insertMention(selected);
+    document.querySelector("#composer")?.requestSubmit();
   }
 }
 
