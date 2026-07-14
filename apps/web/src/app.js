@@ -1,14 +1,15 @@
 import { toSvg as renderQrSvg } from "/public/vendor/qrcode-bundle.js";
 import { accountActionCopy, aboutDescription, authCodeHint, generalSettingHint, profileSidebarEntries } from "./accountMode.js";
 import { buildAboutInfo } from "./aboutInfo.js";
-import { emptyAuthDefaults } from "./authDefaults.js";
+import { readAuthDefaults, saveAuthDefaults } from "./authDefaults.js";
 import { buildAttachmentDescriptor, buildAttachmentMessagePayload, uploadMimeType } from "./attachmentPayload.js";
 import { auditLogSentence, sortAuditLogs } from "./auditLogDisplay.js";
 import {
   browserNotificationPayload,
+  browserNotificationDelivery,
   browserNotificationPermissionView,
   shouldShowBrowserNotification
-} from "./browserNotifications.js?v=20260708-mention-ui-notify-cache";
+} from "./browserNotifications.js?v=20260714-persistence-notify";
 import { DEMO_LOGIN_CODE, codeLoginFailureAction, sendCodeFailureMessage, validateDemoLoginCode } from "./authModes.js";
 import { createAddFriendDraft, updateAddFriendDraft } from "./addFriendDraft.js";
 import { generateRandomChatId, shouldReplaceChatId, userQrText } from "./chatIdentity.js";
@@ -52,6 +53,7 @@ import { canShowReadDetailAction, readStateControl } from "./messageReadActions.
 import { selectBatchConversationIds } from "./batchTargets.js";
 import { passwordActionTarget, validateForgotPasswordReset, validatePasswordChange } from "./passwordChange.js";
 import { chatReturnPath, profileCenterPath } from "./profileNavigation.js";
+import { persistentProfileAvatarUrl } from "./profileAvatarUpload.js";
 import { prepareSearchResultNavigation } from "./searchNavigation.js";
 import { currentDeviceInfo, loginDeviceDisplay } from "./securityDevices.js";
 import { groupQrExpiryLabel, isGroupQrExpired } from "./groupQrStatus.js";
@@ -61,7 +63,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-chat-settings-back";
+const APP_VERSION = "20260714-persistence-notify";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -585,6 +587,19 @@ async function showBrowserMessageNotification(conversation, message, { incoming,
     silent: !settings.notificationSound,
     data: { conversationId: conversation?.id || message?.conversationId || "" }
   };
+  let registration = null;
+  try {
+    registration = await Promise.race([
+      navigator.serviceWorker?.ready,
+      new Promise(resolve => setTimeout(() => resolve(null), 1200))
+    ]);
+  } catch (_) {}
+  if (browserNotificationDelivery({ serviceWorkerReady: Boolean(registration?.showNotification) }) === "service-worker") {
+    try {
+      await registration.showNotification(payload.title, options);
+      return;
+    } catch (_) {}
+  }
   try {
     const notification = new Notification(payload.title, options);
     notification.onclick = () => {
@@ -597,17 +612,6 @@ async function showBrowserMessageNotification(conversation, message, { incoming,
       }
       notification.close();
     };
-    return;
-  } catch (_) {}
-  try {
-    const registration = await Promise.race([
-      navigator.serviceWorker?.ready,
-      new Promise(resolve => setTimeout(() => resolve(null), 800))
-    ]);
-    if (registration?.showNotification) {
-      await registration.showNotification(payload.title, options);
-      return;
-    }
   } catch (_) {}
 }
 
@@ -652,7 +656,7 @@ function renderAuth() {
   const isCodeLogin = state.authMode === "code-login";
   const isForgotPassword = state.authMode === "forgot-password";
   const isPasswordLogin = !isRegister && !isCodeLogin && !isForgotPassword;
-  const authDefaults = emptyAuthDefaults();
+  const authDefaults = readAuthDefaults();
   return `
     <main class="auth-shell">
       <section class="auth-stage">
@@ -3676,6 +3680,9 @@ async function openSidePage(sidePage) {
   applySidePageSection(sidePage);
   syncHashForSidePage(sidePage);
   if (state.sidePage === "friend-requests") await loadFriendRequests();
+  if (state.sidePage === "qrcode" && getConversation(state.selectedConversationId)?.kind === "group") {
+    await loadConversationGroup(state.selectedConversationId);
+  }
   if (state.sidePage === "applications") await loadGroupJoinRequests();
   if (state.sidePage === "group-blacklist") await loadGroupBlacklist();
   if (state.sidePage === "invite-members") await loadGroupBlacklist();
@@ -4147,6 +4154,7 @@ async function onLogin(event) {
           code: form.get("code")
         })
       });
+      saveAuthDefaults(localStorage, { country: form.get("country") });
       await enterAuthedApp(result.token);
       toast("验证码登录成功");
     } catch (error) {
@@ -4188,6 +4196,7 @@ async function onLogin(event) {
       method: "POST",
       body: JSON.stringify(Object.fromEntries(form.entries()))
     });
+    saveAuthDefaults(localStorage, { country: form.get("country") });
     await enterAuthedApp(result.token);
   } catch (error) {
     if (isNetworkFailure(error)) {
@@ -4318,10 +4327,11 @@ function pickProfileAvatar() {
   picker.onchange = async () => {
     const file = picker.files?.[0];
     if (!file) return;
-    const nextAvatar = URL.createObjectURL(file);
     const previous = state.user.avatar;
-    state.user.avatar = nextAvatar;
     try {
+      const upload = await uploadFile(file);
+      const nextAvatar = persistentProfileAvatarUrl(upload);
+      state.user.avatar = nextAvatar;
       await persistUserPreferences({ avatar: nextAvatar });
       toast("头像已更新");
       render();

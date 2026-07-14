@@ -16,6 +16,10 @@ export function shouldShowBrowserNotification({
   return true;
 }
 
+export function browserNotificationDelivery({ serviceWorkerReady } = {}) {
+  return serviceWorkerReady ? "service-worker" : "window";
+}
+
 export function browserNotificationPayload(conversation = {}, message = {}) {
   const title = conversation.title || "新消息";
   const sender = message.senderName ? `${message.senderName}：` : "";

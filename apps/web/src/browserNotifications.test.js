@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  browserNotificationDelivery,
   browserNotificationPayload,
   browserNotificationPermissionView,
   shouldShowBrowserNotification
@@ -46,6 +47,11 @@ test("browser notification can show for selected conversation when app is not ac
 
 test("browser notification still shows mentions for the active open conversation", () => {
   assert.equal(shouldShowBrowserNotification({ ...base, activeConversationOpen: true, mentionedMe: true }), true);
+});
+
+test("mobile-capable browsers prefer the service worker notification path", () => {
+  assert.equal(browserNotificationDelivery({ serviceWorkerReady: true }), "service-worker");
+  assert.equal(browserNotificationDelivery({ serviceWorkerReady: false }), "window");
 });
 
 test("browser notification payload uses conversation and sender text", () => {

@@ -585,6 +585,15 @@ func (pg *PostgresStore) backfillGroupChatIDs(ctx context.Context) error {
 	return nil
 }
 
+func (pg *PostgresStore) backfillGroupOwnerMemberships(ctx context.Context) error {
+	_, err := pg.pool.Exec(ctx, `INSERT INTO group_members(group_id, user_id, role, nickname)
+		SELECT g.id, g.owner_user_id, 'owner', u.nickname
+		FROM groups g
+		JOIN users u ON u.id = g.owner_user_id
+		ON CONFLICT (group_id, user_id) DO NOTHING`)
+	return err
+}
+
 func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
@@ -672,6 +681,9 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		return nil, err
 	}
 	if err := pg.backfillGroupChatIDs(ctx); err != nil {
+		return nil, err
+	}
+	if err := pg.backfillGroupOwnerMemberships(ctx); err != nil {
 		return nil, err
 	}
 
@@ -923,22 +935,25 @@ func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string
 }
 
 func (pg *PostgresStore) loadGroups(ctx context.Context) (map[string]Group, error) {
-	rows, err := pg.pool.Query(ctx, `SELECT id, title, avatar_url, chat_id, qr_code, qr_code_expires_at, announcement, join_mode, disable_member_add_friend, all_muted, rate_limit_enabled, rate_limit_window_seconds, rate_limit_max_messages, auto_mute_new_members, created_at
-		FROM groups ORDER BY created_at`)
+	rows, err := pg.pool.Query(ctx, `SELECT g.id, g.title, g.avatar_url, g.chat_id, g.qr_code, g.qr_code_expires_at, g.announcement, g.join_mode, g.disable_member_add_friend, g.all_muted, g.rate_limit_enabled, g.rate_limit_window_seconds, g.rate_limit_max_messages, g.auto_mute_new_members, g.created_at, g.owner_user_id, u.nickname
+		FROM groups g JOIN users u ON u.id = g.owner_user_id ORDER BY g.created_at`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	groups := map[string]Group{}
+	owners := map[string]Member{}
 	for rows.Next() {
 		var group Group
 		var rateLimit GroupRateLimit
-		if err := rows.Scan(&group.ID, &group.Title, &group.Avatar, &group.ChatID, &group.QRCode, &group.QRCodeExpiresAt, &group.Announcement, &group.JoinMode, &group.DisableMemberAddFriend, &group.AllMuted, &rateLimit.Enabled, &rateLimit.WindowSeconds, &rateLimit.MaxMessages, &group.AutoMuteNewMembers, &group.CreatedAt); err != nil {
+		var owner Member
+		if err := rows.Scan(&group.ID, &group.Title, &group.Avatar, &group.ChatID, &group.QRCode, &group.QRCodeExpiresAt, &group.Announcement, &group.JoinMode, &group.DisableMemberAddFriend, &group.AllMuted, &rateLimit.Enabled, &rateLimit.WindowSeconds, &rateLimit.MaxMessages, &group.AutoMuteNewMembers, &group.CreatedAt, &owner.UserID, &owner.Nickname); err != nil {
 			return nil, err
 		}
 		group.QRCode = defaultString(group.QRCode, group.ChatID)
 		group.RateLimit = normalizeGroupRateLimit(&rateLimit)
 		groups[group.ID] = group
+		owners[group.ID] = Member{UserID: owner.UserID, Nickname: owner.Nickname, Role: "owner"}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -962,7 +977,27 @@ func (pg *PostgresStore) loadGroups(ctx context.Context) (map[string]Group, erro
 		}
 		groups[groupID] = group
 	}
-	return groups, memberRows.Err()
+	if err := memberRows.Err(); err != nil {
+		return nil, err
+	}
+	for groupID, owner := range owners {
+		groups[groupID] = ensureGroupOwnerMember(groups[groupID], owner)
+	}
+	return groups, nil
+}
+
+func ensureGroupOwnerMember(group Group, owner Member) Group {
+	if owner.UserID == "" {
+		return group
+	}
+	for _, member := range group.Members {
+		if member.UserID == owner.UserID {
+			return group
+		}
+	}
+	owner.Role = "owner"
+	group.Members = append([]Member{owner}, group.Members...)
+	return group
 }
 
 func (pg *PostgresStore) loadFriendRequests(ctx context.Context, userID string) ([]FriendRequest, error) {
