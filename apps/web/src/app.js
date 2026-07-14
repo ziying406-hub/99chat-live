@@ -59,7 +59,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260713-group-profile-hydrate";
+const APP_VERSION = "20260714-mobile-profile-center";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -972,6 +972,25 @@ function renderProfileSidebar() {
         </article>
       </div>
     </aside>`;
+}
+
+function renderMobileProfileCenter() {
+  const entries = profileSidebarEntries(state.useMock);
+  return `
+    <section class="profile-mobile-center" aria-label="个人中心">
+      <h3>个人中心</h3>
+      <div class="profile-mobile-center-list">
+        ${entries.map(entry => `
+          <button class="setting-row setting-action-row" type="button" data-sidepage="${escapeAttr(entry.key)}">
+            <span class="profile-mobile-center-label"><i aria-hidden="true">${escapeHTML(entry.icon)}</i>${escapeHTML(entry.title)}</span>
+            <strong>›</strong>
+          </button>`).join("")}
+        <button class="setting-row setting-action-row danger-text-row" type="button" data-action="logout">
+          <span class="profile-mobile-center-label"><i aria-hidden="true">⇠</i>退出登录</span>
+          <strong>›</strong>
+        </button>
+      </div>
+    </section>`;
 }
 
 function renderWorkspace() {
@@ -3060,6 +3079,7 @@ function renderProfilePage() {
         <strong>查看</strong>
       </button>
     </section>
+    ${renderMobileProfileCenter()}
     <section class="section">
       <button class="setting-row setting-action-row danger-text-row" type="button" data-sidepage="account">
         <span>${escapeHTML(accountActionCopy(state.useMock).title)}</span>
