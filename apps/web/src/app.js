@@ -27,6 +27,7 @@ import { messageAvatarContactKey } from "./messageAvatarAction.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, resolveSelectedConversationId, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
 import { writeClipboardText } from "./clipboardCopy.js";
 import { buildCreateGroupPayload, toggleCreateGroupSelection } from "./createGroupPayload.js";
+import { areAllInviteCandidatesSelected, updateInviteSelection, updateInviteSelectionForCandidates } from "./inviteSelection.js";
 import { DRAFT_CACHE_KEY, REPLY_DRAFT_CACHE_KEY, parseDraftMap, updateDraftMap } from "./draftStorage.js";
 import { clearLocalCacheState, LOCAL_CACHE_KEYS, SESSION_CACHE_KEYS } from "./localCache.js";
 import { isOpenableMediaUrl, mediaDisplayName, mediaDisplayUrl } from "./mediaLinks.js";
@@ -65,7 +66,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-invite-feedback";
+const APP_VERSION = "20260714-invite-selection-state";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -114,6 +115,7 @@ const state = {
   sidePage: null,
   modal: null,
   createGroupSelection: [],
+  inviteSelection: new Set(),
   addFriendDraft: createAddFriendDraft(),
   addFriendError: "",
   toast: "",
@@ -2156,19 +2158,22 @@ function renderInviteMembersPane() {
   const memberIds = new Set(group.members.map(member => member.userId));
   const blockedIds = new Set((state.data.groupBlacklists?.[group.id] || []).map(entry => entry.user.id));
   const candidates = state.data.contacts.filter(contact => !memberIds.has(contact.id) && !blockedIds.has(contact.id));
+  const candidateIds = candidates.map(contact => contact.id);
+  const allSelected = areAllInviteCandidatesSelected(state.inviteSelection, candidateIds);
+  const visibleCandidates = candidates.filter(contact => !state.query || `${contact.nickname} ${contact.chatId}`.toLowerCase().includes(state.query.toLowerCase()));
   return `
     <aside class="detail-pane">
       <header class="panel-header"><button class="icon-btn" data-sidepage="members">${icons.back}</button><h3>选择联络人</h3><button class="primary-btn inline" type="button" data-invite-confirm>确認</button></header>
       <div class="search-box"><input data-action="search" value="${escapeAttr(state.query)}" placeholder="搜索"></div>
       <section class="section">
-        <label class="setting-row"><span>全选</span><input type="checkbox" data-invite-toggle-all></label>
+        <label class="setting-row"><span>全选</span><input type="checkbox" data-invite-toggle-all ${allSelected ? "checked" : ""}></label>
       </section>
       <div class="list">
-        ${candidates.filter(contact => !state.query || `${contact.nickname} ${contact.chatId}`.toLowerCase().includes(state.query.toLowerCase())).map(contact => `
+        ${visibleCandidates.map(contact => `
           <label class="list-item invite-member-row">
             <img class="avatar" src="${avatarSrc(contact.avatar)}" alt="">
             <div><div class="item-title">${escapeHTML(contact.nickname)}</div><div class="item-preview">${escapeHTML(contact.chatId)}</div></div>
-            <input type="checkbox" name="inviteMember" value="${escapeAttr(contact.id)}">
+            <input type="checkbox" name="inviteMember" value="${escapeAttr(contact.id)}" data-invite-member="${escapeAttr(contact.id)}" ${state.inviteSelection.has(contact.id) ? "checked" : ""}>
           </label>`).join("") || `<div class="empty-state">没有可邀请的联系人${blockedIds.size ? "，黑名单成员已自动排除" : ""}</div>`}
       </div>
     </aside>`;
@@ -3714,7 +3719,9 @@ async function openSidePage(sidePage) {
     render();
     return;
   }
+  const openingInviteMembers = sidePage === "invite-members" && state.sidePage !== "invite-members";
   state.sidePage = sidePage;
+  if (openingInviteMembers) state.inviteSelection = new Set();
   applySidePageSection(sidePage);
   syncHashForSidePage(sidePage);
   if (state.sidePage === "friend-requests") await loadFriendRequests();
@@ -4042,10 +4049,20 @@ function bindEvents() {
     requestAnimationFrame(() => jumpToQuotedMessage(navigation.highlightedMessageId));
   }));
   document.querySelector("[data-invite-toggle-all]")?.addEventListener("change", e => {
-    document.querySelectorAll('input[name="inviteMember"]').forEach(input => {
-      input.checked = e.target.checked;
-    });
+    const group = currentGroup();
+    if (!group) return;
+    const memberIds = new Set(group.members.map(member => member.userId));
+    const blockedIds = new Set((state.data.groupBlacklists?.[group.id] || []).map(entry => entry.user.id));
+    const candidateIds = state.data.contacts
+      .filter(contact => !memberIds.has(contact.id) && !blockedIds.has(contact.id))
+      .map(contact => contact.id);
+    state.inviteSelection = updateInviteSelectionForCandidates(state.inviteSelection, candidateIds, e.target.checked);
+    render();
   });
+  document.querySelectorAll("[data-invite-member]").forEach(el => el.addEventListener("change", () => {
+    state.inviteSelection = updateInviteSelection(state.inviteSelection, el.dataset.inviteMember, el.checked);
+    render();
+  }));
   document.querySelector("[data-invite-confirm]")?.addEventListener("click", () => inviteSelectedMembers());
   document.querySelectorAll("[data-setting-toggle]").forEach(el => el.addEventListener("click", () => toggleUserSetting(el.dataset.settingToggle)));
   document.querySelector("[data-notification-permission]")?.addEventListener("click", async () => {
@@ -6078,7 +6095,7 @@ async function patchCurrentGroup(patch) {
 async function inviteSelectedMembers() {
   const group = currentGroup();
   if (!group) return;
-  const selected = [...document.querySelectorAll('input[name="inviteMember"]:checked')].map(input => input.value);
+  const selected = [...state.inviteSelection];
   if (!selected.length) {
     toast("请先选择要邀请的成员");
     return;
@@ -6132,6 +6149,7 @@ async function inviteSelectedMembers() {
       upsertGroup(updated);
       state.data.messages[`group-${group.id}`] = messages;
     }
+    state.inviteSelection = new Set();
     state.sidePage = "members";
     toast(groupInviteToast(invitedDirectly, invitedPending));
     render();
