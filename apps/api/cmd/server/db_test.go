@@ -20,3 +20,17 @@ func TestEnsureGroupOwnerMemberPromotesPersistedOwnerRole(t *testing.T) {
 		t.Fatalf("owner nickname = %q, want 旧昵称", updated.Members[0].Nickname)
 	}
 }
+
+func TestStoredGroupOwnerCanManageEvenWhenLegacyMemberRoleIsStale(t *testing.T) {
+	store := &Store{groups: map[string]Group{
+		"group-1": {
+			ID:          "group-1",
+			OwnerUserID: "owner-1",
+			Members:     []Member{{UserID: "owner-1", Role: "member"}},
+		},
+	}}
+
+	if !store.canManageGroup("group-1", "owner-1") {
+		t.Fatal("stored group owner should retain management permission")
+	}
+}

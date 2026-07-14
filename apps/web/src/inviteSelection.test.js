@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   areAllInviteCandidatesSelected,
+  selectedInviteMemberIds,
   updateInviteSelection,
   updateInviteSelectionForCandidates
 } from "./inviteSelection.js";
@@ -22,4 +23,9 @@ test("all-selected status only applies when every available candidate is selecte
   assert.equal(areAllInviteCandidatesSelected(new Set(["u1", "u2"]), ["u1", "u2"]), true);
   assert.equal(areAllInviteCandidatesSelected(new Set(["u1"]), ["u1", "u2"]), false);
   assert.equal(areAllInviteCandidatesSelected(new Set(["u1"]), []), false);
+});
+
+test("invite submission uses browser-restored checks when app state was reloaded", () => {
+  assert.deepEqual(selectedInviteMemberIds(new Set(), ["u2"]), ["u2"]);
+  assert.deepEqual(selectedInviteMemberIds(new Set(["u1"]), ["u2"]), ["u1"]);
 });

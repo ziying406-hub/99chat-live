@@ -24,3 +24,8 @@ export function areAllInviteCandidatesSelected(selectedIds, candidateIds) {
   const candidates = candidateIds || [];
   return candidates.length > 0 && candidates.every(userId => selectedIds?.has(userId));
 }
+
+export function selectedInviteMemberIds(selectedIds, restoredCheckedIds) {
+  const selected = [...(selectedIds || [])];
+  return selected.length ? selected : [...(restoredCheckedIds || [])];
+}

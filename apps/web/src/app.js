@@ -27,7 +27,7 @@ import { messageAvatarContactKey } from "./messageAvatarAction.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, resolveSelectedConversationId, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
 import { writeClipboardText } from "./clipboardCopy.js";
 import { buildCreateGroupPayload, toggleCreateGroupSelection } from "./createGroupPayload.js";
-import { areAllInviteCandidatesSelected, updateInviteSelection, updateInviteSelectionForCandidates } from "./inviteSelection.js";
+import { areAllInviteCandidatesSelected, selectedInviteMemberIds, updateInviteSelection, updateInviteSelectionForCandidates } from "./inviteSelection.js";
 import { DRAFT_CACHE_KEY, REPLY_DRAFT_CACHE_KEY, parseDraftMap, updateDraftMap } from "./draftStorage.js";
 import { clearLocalCacheState, LOCAL_CACHE_KEYS, SESSION_CACHE_KEYS } from "./localCache.js";
 import { isOpenableMediaUrl, mediaDisplayName, mediaDisplayUrl } from "./mediaLinks.js";
@@ -66,7 +66,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-invite-selection-state";
+const APP_VERSION = "20260714-owner-invite-recovery";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -6095,7 +6095,10 @@ async function patchCurrentGroup(patch) {
 async function inviteSelectedMembers() {
   const group = currentGroup();
   if (!group) return;
-  const selected = [...state.inviteSelection];
+  const restoredCheckedIds = [...document.querySelectorAll("[data-invite-member]:checked")]
+    .map(input => input.dataset.inviteMember)
+    .filter(Boolean);
+  const selected = selectedInviteMemberIds(state.inviteSelection, restoredCheckedIds);
   if (!selected.length) {
     toast("请先选择要邀请的成员");
     return;

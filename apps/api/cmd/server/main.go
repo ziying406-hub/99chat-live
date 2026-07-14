@@ -127,6 +127,7 @@ type Attachment struct {
 
 type Group struct {
 	ID                     string          `json:"id"`
+	OwnerUserID            string          `json:"-"`
 	Title                  string          `json:"title"`
 	Avatar                 string          `json:"avatar"`
 	ChatID                 string          `json:"chatId"`
@@ -3056,14 +3057,15 @@ func (s *Store) groupsRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		group := Group{
-			ID:         gid,
-			Title:      defaultString(req.Title, "新的群聊"),
-			Avatar:     avatar("群"),
-			ChatID:     chatID,
-			JoinMode:   "public_qr",
-			MyNickname: current.Nickname,
-			CreatedAt:  time.Now(),
-			Members:    []Member{{UserID: current.ID, Nickname: current.Nickname, Role: "owner"}},
+			ID:          gid,
+			OwnerUserID: current.ID,
+			Title:       defaultString(req.Title, "新的群聊"),
+			Avatar:      avatar("群"),
+			ChatID:      chatID,
+			JoinMode:    "public_qr",
+			MyNickname:  current.Nickname,
+			CreatedAt:   time.Now(),
+			Members:     []Member{{UserID: current.ID, Nickname: current.Nickname, Role: "owner"}},
 		}
 		convID := "group-" + gid
 		s.mu.Lock()
@@ -3900,6 +3902,9 @@ func (s *Store) canManageGroup(groupID, userID string) bool {
 	group, ok := s.groups[groupID]
 	if !ok {
 		return false
+	}
+	if group.OwnerUserID != "" && group.OwnerUserID == userID {
+		return true
 	}
 	return canManageGroupRole(groupRoleFor(group, userID))
 }

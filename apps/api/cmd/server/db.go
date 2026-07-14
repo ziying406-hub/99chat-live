@@ -965,6 +965,7 @@ func (pg *PostgresStore) loadGroups(ctx context.Context) (map[string]Group, erro
 			return nil, err
 		}
 		group.QRCode = defaultString(group.QRCode, group.ChatID)
+		group.OwnerUserID = owner.UserID
 		group.RateLimit = normalizeGroupRateLimit(&rateLimit)
 		groups[group.ID] = group
 		owners[group.ID] = Member{UserID: owner.UserID, Nickname: owner.Nickname, Role: "owner"}
@@ -4603,6 +4604,7 @@ func (s *Store) transferGroupOwner(ctx context.Context, groupID, currentOwnerID,
 		s.mu.Unlock()
 		return Group{}, errInvalidTarget
 	}
+	group.OwnerUserID = newOwnerID
 	s.groups[groupID] = group
 	s.mu.Unlock()
 
