@@ -541,7 +541,15 @@ func main() {
 
 	addr := ":" + defaultString(os.Getenv("PORT"), "8080")
 	log.Printf("chat api listening on http://localhost%s", addr)
-	if err := http.ListenAndServe(addr, withCORS(mux)); err != nil {
+	server := &http.Server{
+		Addr:              addr,
+		Handler:           withCORS(mux),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
@@ -601,7 +609,15 @@ func demoUser() User {
 
 func registerRoutes(mux *http.ServeMux, s *Store) {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "time": time.Now()})
+		if s.pg != nil && s.pg.pool != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+			defer cancel()
+			if err := s.pg.pool.Ping(ctx); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"ok": false, "database": false, "time": time.Now()})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "database": true, "time": time.Now()})
 	})
 	mux.HandleFunc("/api/admin/auth/login", s.adminLogin)
 	mux.HandleFunc("/api/admin/auth/logout", s.requireAdmin(s.adminLogout))

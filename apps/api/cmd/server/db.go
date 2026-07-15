@@ -19,6 +19,8 @@ import (
 
 const demoPasswordHash = "demo:demo123456"
 
+const databaseRequestTimeout = 8 * time.Second
+
 var (
 	errAlreadyExists    = errors.New("already exists")
 	errNotFound         = errors.New("not found")
@@ -34,7 +36,18 @@ type PostgresStore struct {
 }
 
 func openPostgresStore(ctx context.Context, databaseURL string) (*PostgresStore, error) {
-	pool, err := pgxpool.New(ctx, databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		return nil, err
+	}
+	// Recycle idle connections and probe the pool regularly. This keeps a
+	// transient database/network interruption from leaving API requests waiting
+	// forever on an old socket.
+	config.MaxConnIdleTime = 5 * time.Minute
+	config.MaxConnLifetime = 30 * time.Minute
+	config.HealthCheckPeriod = 30 * time.Second
+	config.ConnConfig.ConnectTimeout = 5 * time.Second
+	pool, err := pgxpool.NewWithConfig(ctx, config)
 	if err != nil {
 		return nil, err
 	}
@@ -1315,7 +1328,9 @@ func (s *Store) authenticate(ctx context.Context, country, phone, password strin
 	var user User
 	var passwordHash string
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store, password_hash
+	queryCtx, cancel := context.WithTimeout(ctx, databaseRequestTimeout)
+	defer cancel()
+	err := s.pg.pool.QueryRow(queryCtx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store, password_hash
 		FROM users WHERE country_code = $1 AND phone = $2`,
 		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON, &passwordHash)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -3027,7 +3042,9 @@ func (s *Store) userByPhone(ctx context.Context, country, phone string) (User, b
 	}
 	var user User
 	var settingsJSON, stickerStoreJSON []byte
-	err := s.pg.pool.QueryRow(ctx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
+	queryCtx, cancel := context.WithTimeout(ctx, databaseRequestTimeout)
+	defer cancel()
+	err := s.pg.pool.QueryRow(queryCtx, `SELECT id, phone, country_code, chat_id, nickname, signature, avatar_url, created_at, banned_at, ban_reason, settings, language, display_mode, blocked_contact_ids, sticker_store
 		FROM users WHERE country_code = $1 AND phone = $2`,
 		country, phone).Scan(&user.ID, &user.Phone, &user.Country, &user.ChatID, &user.Nickname, &user.Signature, &user.Avatar, &user.CreatedAt, &user.BannedAt, &user.BanReason, &settingsJSON, &user.Language, &user.DisplayMode, &user.BlockedContactIDs, &stickerStoreJSON)
 	if errors.Is(err, pgx.ErrNoRows) {
