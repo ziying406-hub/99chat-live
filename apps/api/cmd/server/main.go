@@ -2075,7 +2075,7 @@ func (s *Store) syncOwnedGroupAvatarsLocked(ownerID, avatarURL string) []Group {
 	}
 	updated := make([]Group, 0)
 	for groupID, group := range s.groups {
-		if group.OwnerUserID != ownerID && groupMemberRole(group, ownerID) != "owner" {
+		if group.OwnerUserID != ownerID && s.groupMemberRole(group.ID, ownerID) != "owner" {
 			continue
 		}
 		if group.Avatar == avatarURL {
