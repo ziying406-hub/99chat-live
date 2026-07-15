@@ -2252,6 +2252,13 @@ func TestRegisteredFriendAcceptDoesNotExposeDemoData(t *testing.T) {
 	}
 }
 
+func TestDefaultUserSettingsDisableGroupInviteVerification(t *testing.T) {
+	settings := defaultUserSettings()
+	if settings["inviteGroupVerification"] {
+		t.Fatal("new users should not require approval for group invitations by default")
+	}
+}
+
 func TestMePatchPersistsUserSettings(t *testing.T) {
 	store := seedStore()
 	token := store.issueToken(store.user.ID)
@@ -2540,6 +2547,8 @@ func TestCreateGroupCreatesPendingInvitesWhenMembersRequireVerification(t *testi
 	registerRoutes(mux, store)
 
 	target := registerTestUser(t, mux, "+60", "66070111", "Chat66Test2", "测试账号2")
+	target.User.Settings = mergeUserSettings(target.User.Settings, map[string]bool{"inviteGroupVerification": true})
+	store.users[target.User.ID] = target.User
 
 	req := httptest.NewRequest(http.MethodPost, "/api/groups", bytes.NewBufferString(`{"title":"验证群","memberIds":["`+target.User.ID+`"]}`))
 	rec := httptest.NewRecorder()
@@ -4807,6 +4816,8 @@ func TestInviteMemberCreatesPendingRequestWhenTargetRequiresVerification(t *test
 	registerRoutes(mux, store)
 
 	target := registerTestUser(t, mux, "+60", "66070112", "Chat66Test2", "测试账号2")
+	target.User.Settings = mergeUserSettings(target.User.Settings, map[string]bool{"inviteGroupVerification": true})
+	store.users[target.User.ID] = target.User
 
 	body := bytes.NewBufferString(`{"userId":"` + target.User.ID + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/groups/21444/members", body)
@@ -4838,6 +4849,8 @@ func TestGroupInviteAppearsInRecipientInboxAndCanBeAccepted(t *testing.T) {
 	registerRoutes(mux, store)
 
 	target := registerTestUser(t, mux, "+60", "66070113", "Chat66Test2", "测试账号2")
+	target.User.Settings = mergeUserSettings(target.User.Settings, map[string]bool{"inviteGroupVerification": true})
+	store.users[target.User.ID] = target.User
 
 	body := bytes.NewBufferString(`{"userId":"` + target.User.ID + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/groups/21444/members", body)

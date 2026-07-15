@@ -1844,7 +1844,7 @@ func defaultUserSettings() map[string]bool {
 		"autoPlayVoice":            false,
 		"collapseToolsAfterSend":   true,
 		"friendVerification":       true,
-		"inviteGroupVerification":  true,
+		"inviteGroupVerification":  false,
 		"discoverByChatId":         true,
 		"discoverByPhone":          false,
 		"showSignatureToStrangers": false,

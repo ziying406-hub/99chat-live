@@ -71,7 +71,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260714-owner-invite-recovery";
+const APP_VERSION = "20260715-default-group-invite-verification-off";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -6765,7 +6765,7 @@ function findUserByChatId(chatId) {
 function getUserPrivacy(user) {
   return {
     friendVerification: user?.privacy?.friendVerification ?? true,
-    inviteGroupVerification: user?.privacy?.inviteGroupVerification ?? true
+    inviteGroupVerification: user?.privacy?.inviteGroupVerification ?? false
   };
 }
 
@@ -7240,7 +7240,7 @@ function ensureUserSettings() {
     autoPlayVoice: false,
     collapseToolsAfterSend: true,
     friendVerification: true,
-    inviteGroupVerification: true,
+    inviteGroupVerification: false,
     discoverByChatId: true,
     discoverByPhone: false,
     showSignatureToStrangers: false,
