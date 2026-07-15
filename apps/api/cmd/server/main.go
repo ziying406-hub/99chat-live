@@ -2055,10 +2055,42 @@ func (s *Store) meForUser(w http.ResponseWriter, r *http.Request, current User) 
 		if s.users != nil {
 			s.users[current.ID] = current
 		}
+		if patch.Avatar != nil {
+			for _, group := range s.syncOwnedGroupAvatarsLocked(current.ID, current.Avatar) {
+				if err := s.persistGroupFor(r.Context(), current.ID, group, "group-"+group.ID); err != nil {
+					writeError(w, http.StatusInternalServerError, "group avatar update failed")
+					return
+				}
+			}
+		}
 		writeJSON(w, http.StatusOK, publicUserResponse(current))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (s *Store) syncOwnedGroupAvatarsLocked(ownerID, avatarURL string) []Group {
+	if strings.TrimSpace(ownerID) == "" || strings.TrimSpace(avatarURL) == "" {
+		return nil
+	}
+	updated := make([]Group, 0)
+	for groupID, group := range s.groups {
+		if group.OwnerUserID != ownerID && groupMemberRole(group, ownerID) != "owner" {
+			continue
+		}
+		if group.Avatar == avatarURL {
+			continue
+		}
+		group.Avatar = avatarURL
+		s.groups[groupID] = group
+		for i := range s.conversations {
+			if s.conversations[i].ID == "group-"+group.ID {
+				s.conversations[i].Avatar = avatarURL
+			}
+		}
+		updated = append(updated, group)
+	}
+	return updated
 }
 
 func (s *Store) changePassword(w http.ResponseWriter, r *http.Request) {

@@ -2293,6 +2293,28 @@ func TestMePatchPersistsProfileFields(t *testing.T) {
 	}
 }
 
+func TestMePatchUpdatesOwnedGroupAvatar(t *testing.T) {
+	store := seedStore()
+	token := store.issueToken(store.user.ID)
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/me", bytes.NewBufferString(`{"avatar":"https://example.com/owner-avatar.png"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected profile patch 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := store.groups["21444"].Avatar; got != "https://example.com/owner-avatar.png" {
+		t.Fatalf("group avatar = %q", got)
+	}
+	if got := conversationByID(store.conversations, "group-21444").Avatar; got != "https://example.com/owner-avatar.png" {
+		t.Fatalf("conversation avatar = %q", got)
+	}
+}
+
 func TestReadConversationMessagesUsesLatestSenderAvatar(t *testing.T) {
 	store := seedStore()
 	store.users["388786"] = User{ID: "388786", Nickname: "^魚. 𝙯ᙆ", Avatar: "https://example.com/latest-avatar.png"}
