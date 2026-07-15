@@ -2109,7 +2109,9 @@ func (s *Store) syncOwnedGroupAvatarsLocked(ownerID, avatarURL string) []Group {
 	}
 	updated := make([]Group, 0)
 	for groupID, group := range s.groups {
-		if group.OwnerUserID != ownerID && s.groupMemberRole(group.ID, ownerID) != "owner" {
+		// The caller holds s.mu. Calling groupMemberRole here would try to take
+		// the same lock again and block the profile update forever.
+		if group.OwnerUserID != ownerID && groupRoleFor(group, ownerID) != "owner" {
 			continue
 		}
 		if group.Avatar == avatarURL {

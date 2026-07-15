@@ -36,6 +36,41 @@ func TestSignFileRejectsInvalidSizes(t *testing.T) {
 	}
 }
 
+func TestProfileAvatarUpdateForGroupOwnerDoesNotBlock(t *testing.T) {
+	store := seedStore()
+	store.groups["avatar-sync"] = Group{
+		ID:          "avatar-sync",
+		OwnerUserID: store.user.ID,
+		Title:       "头像同步群",
+		Avatar:      avatar("群"),
+		Members: []Member{{
+			UserID:   store.user.ID,
+			Nickname: store.user.Nickname,
+			Role:     "owner",
+		}},
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/me", bytes.NewBufferString(`{"avatar":"/uploads/avatar.png"}`))
+	rec := httptest.NewRecorder()
+	finished := make(chan struct{})
+	go func() {
+		store.meForUser(rec, req, store.user)
+		close(finished)
+	}()
+
+	select {
+	case <-finished:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("profile avatar update blocked while syncing owned groups")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected avatar update 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := store.groups["avatar-sync"].Avatar; got != "/uploads/avatar.png" {
+		t.Fatalf("expected group avatar to sync, got %q", got)
+	}
+}
+
 func TestAdminLoginReturnsTokenAndProfile(t *testing.T) {
 	store := seedStore()
 	mux := store.routes("")
