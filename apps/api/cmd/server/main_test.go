@@ -2113,6 +2113,31 @@ func TestRegisterRejectsDuplicatePhoneInMemoryStore(t *testing.T) {
 	}
 }
 
+func TestAuthNormalizesCountryAndPhoneFormatting(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", bytes.NewBufferString(`{"country":" 60 ","phone":" 174-319 676 ","password":"demo123456"}`))
+	loginRec := httptest.NewRecorder()
+	mux.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("expected formatted login 200, got %d: %s", loginRec.Code, loginRec.Body.String())
+	}
+
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/auth/register", bytes.NewBufferString(`{"country":"60","phone":" 174 319 699 ","password":"Chat66Test1","nickname":"格式化账号"}`))
+	registerRec := httptest.NewRecorder()
+	mux.ServeHTTP(registerRec, registerReq)
+	if registerRec.Code != http.StatusCreated {
+		t.Fatalf("expected formatted registration 201, got %d: %s", registerRec.Code, registerRec.Body.String())
+	}
+
+	stored, ok, err := store.userByPhone(context.Background(), "+60", "174319699")
+	if err != nil || !ok || stored.Nickname != "格式化账号" {
+		t.Fatalf("formatted registration did not store the canonical phone: user=%+v ok=%v err=%v", stored, ok, err)
+	}
+}
+
 func TestRegisteredFriendAcceptDoesNotExposeDemoData(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()

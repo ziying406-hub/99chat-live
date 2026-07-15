@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/crypto/bcrypt"
 )
@@ -705,6 +706,8 @@ func (s *Store) login(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
+	req.Country, req.Phone = normalizeAuthIdentity(req.Country, req.Phone)
+	req.Password = strings.TrimSpace(req.Password)
 	user, ok, err := s.authenticate(r.Context(), req.Country, req.Phone, req.Password)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "login failed")
@@ -1952,8 +1955,7 @@ func (s *Store) register(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid json")
 		return
 	}
-	req.Country = defaultString(req.Country, "+60")
-	req.Phone = strings.TrimSpace(req.Phone)
+	req.Country, req.Phone = normalizeAuthIdentity(req.Country, req.Phone)
 	req.Password = strings.TrimSpace(req.Password)
 	req.Nickname = defaultString(req.Nickname, "新用户"+req.Phone)
 	if req.Phone == "" || len(req.Password) < 6 {
@@ -1972,6 +1974,22 @@ func (s *Store) register(w http.ResponseWriter, r *http.Request) {
 	}
 	token := s.issueToken(user.ID)
 	writeJSON(w, http.StatusCreated, map[string]any{"token": token, "user": publicUserResponse(user)})
+}
+
+func normalizeAuthIdentity(country, phone string) (string, string) {
+	country = strings.TrimSpace(country)
+	if country == "" {
+		country = "+60"
+	} else if !strings.HasPrefix(country, "+") {
+		country = "+" + country
+	}
+	phone = strings.Map(func(r rune) rune {
+		if unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, phone)
+	return country, phone
 }
 
 func (s *Store) me(w http.ResponseWriter, r *http.Request) {
