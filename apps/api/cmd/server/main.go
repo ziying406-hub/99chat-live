@@ -97,6 +97,7 @@ type Message struct {
 	ConversationID string      `json:"conversationId"`
 	SenderID       string      `json:"senderId"`
 	SenderName     string      `json:"senderName"`
+	SenderAvatar   string      `json:"senderAvatar,omitempty"`
 	Type           string      `json:"type"`
 	Body           string      `json:"body"`
 	Attachment     *Attachment `json:"attachment,omitempty"`
@@ -2322,6 +2323,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			ConversationID: conversationID,
 			SenderID:       current.ID,
 			SenderName:     current.Nickname,
+			SenderAvatar:   current.Avatar,
 			Type:           req.Type,
 			Body:           strings.TrimSpace(req.Body),
 			Attachment:     req.Attachment,
@@ -2533,6 +2535,10 @@ func (s *Store) readConversationMessages(ctx context.Context, conversationID, us
 	}
 	s.messageReads[conversationID][userID] = now
 	for i := range messages {
+		if sender, ok := s.users[messages[i].SenderID]; ok {
+			messages[i].SenderName = sender.Nickname
+			messages[i].SenderAvatar = sender.Avatar
+		}
 		messages[i] = s.withReadStatsLocked(messages[i])
 	}
 	s.mu.Unlock()

@@ -905,7 +905,7 @@ func (pg *PostgresStore) loadVisibleConversations(ctx context.Context, userID st
 }
 
 func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string) ([]Message, error) {
-	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, m.type, m.body, m.mentions, m.burn_after_read, m.created_at,
+	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, u.avatar_url, m.type, m.body, m.mentions, m.burn_after_read, m.created_at,
 			m.quote_message_id, m.quote_conversation_id, m.quote_sender_name, m.quote_preview, m.quote_type, m.quote_type_label,
 			a.id, a.name, a.object_key, a.mime_type, a.size_bytes
 		FROM messages m
@@ -925,7 +925,7 @@ func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string
 		var size *int64
 		var mentions []string
 		var quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel string
-		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.Type, &msg.Body, &mentions, &msg.BurnAfterRead, &msg.CreatedAt,
+		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.SenderAvatar, &msg.Type, &msg.Body, &mentions, &msg.BurnAfterRead, &msg.CreatedAt,
 			&quoteMessageID, &quoteConversationID, &quoteSenderName, &quotePreview, &quoteType, &quoteTypeLabel,
 			&attachmentID, &name, &objectKey, &mimeType, &size); err != nil {
 			return nil, err

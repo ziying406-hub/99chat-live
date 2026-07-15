@@ -1155,7 +1155,8 @@ function renderMessage(message) {
   const highlighted = state.highlightedMessageId === message.id;
   const group = isGroup ? state.data.groups.find(item => `group-${item.id}` === conversation.id) : null;
   const avatarContactKey = messageAvatarContactKey(message, conversation, state.user.id, groupRoleForCurrentUser(group));
-  const avatarMarkup = `<img class="avatar" src="${avatarSrc(mine ? state.user.avatar : avatar(message.senderName[0] || "友"))}" alt="">`;
+  const senderAvatar = mine ? state.user.avatar : message.senderAvatar;
+  const avatarMarkup = `<img class="avatar" src="${avatarSrc(senderAvatar || avatar(message.senderName[0] || "友"))}" alt="">`;
   return `
     <article class="message ${mine ? "me" : "other"} ${isGroup ? "group" : "private"} ${multiSelectActive ? "selecting" : ""} ${selected ? "selected" : ""} ${highlighted ? "highlighted" : ""}" data-message-id="${escapeAttr(message.id)}">
       ${avatarContactKey ? `<button class="message-avatar-button" type="button" data-open-contact="${escapeAttr(avatarContactKey)}" aria-label="查看 ${escapeAttr(message.senderName || "联系人")} 的资料">${avatarMarkup}</button>` : avatarMarkup}

@@ -2293,6 +2293,23 @@ func TestMePatchPersistsProfileFields(t *testing.T) {
 	}
 }
 
+func TestReadConversationMessagesUsesLatestSenderAvatar(t *testing.T) {
+	store := seedStore()
+	store.users["388786"] = User{ID: "388786", Nickname: "^魚. 𝙯ᙆ", Avatar: "https://example.com/latest-avatar.png"}
+
+	messages := store.readConversationMessages(context.Background(), "group-21444", store.user.ID)
+	for _, message := range messages {
+		if message.ID != "m1" {
+			continue
+		}
+		if message.SenderAvatar != "https://example.com/latest-avatar.png" {
+			t.Fatalf("sender avatar = %q", message.SenderAvatar)
+		}
+		return
+	}
+	t.Fatal("expected seeded group message")
+}
+
 func TestMePatchPersistsStickerStore(t *testing.T) {
 	store := seedStore()
 	token := store.issueToken(store.user.ID)
