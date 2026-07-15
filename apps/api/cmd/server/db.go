@@ -603,6 +603,26 @@ func (pg *PostgresStore) backfillGroupOwnerMemberships(ctx context.Context) erro
 	return err
 }
 
+// syncGroupAvatarsWithOwners repairs groups created before profile-avatar
+// synchronization was introduced, and keeps their conversation rows aligned.
+func (pg *PostgresStore) syncGroupAvatarsWithOwners(ctx context.Context) error {
+	if _, err := pg.pool.Exec(ctx, `UPDATE groups AS g
+		SET avatar_url = u.avatar_url
+		FROM users AS u
+		WHERE u.id = g.owner_user_id
+			AND BTRIM(u.avatar_url) <> ''
+			AND g.avatar_url IS DISTINCT FROM u.avatar_url`); err != nil {
+		return err
+	}
+	_, err := pg.pool.Exec(ctx, `UPDATE conversations AS c
+		SET avatar_url = g.avatar_url
+		FROM groups AS g
+		WHERE c.kind = 'group'
+			AND c.group_id = g.id
+			AND c.avatar_url IS DISTINCT FROM g.avatar_url`)
+	return err
+}
+
 func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 	tx, err := pg.pool.Begin(ctx)
 	if err != nil {
@@ -693,6 +713,9 @@ func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
 		return nil, err
 	}
 	if err := pg.backfillGroupOwnerMemberships(ctx); err != nil {
+		return nil, err
+	}
+	if err := pg.syncGroupAvatarsWithOwners(ctx); err != nil {
 		return nil, err
 	}
 
