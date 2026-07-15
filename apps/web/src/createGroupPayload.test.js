@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCreateGroupPayload, toggleCreateGroupSelection } from "./createGroupPayload.js";
+import {
+  buildCreateGroupPayload,
+  createDefaultCreateGroupDraft,
+  toggleCreateGroupSelection,
+  updateCreateGroupDraft
+} from "./createGroupPayload.js";
 
 const contacts = [
   { id: "u1", nickname: "阿一" },
@@ -27,4 +32,14 @@ test("create group selection supports single toggle and select all", () => {
   assert.deepEqual(toggleCreateGroupSelection(["u1", "u2"], "u1", contacts), ["u2"]);
   assert.deepEqual(toggleCreateGroupSelection(["u1"], "all", contacts), ["u1", "u2", "u3"]);
   assert.deepEqual(toggleCreateGroupSelection(["u1", "u2", "u3"], "all", contacts), []);
+});
+
+test("create group title draft survives member selection changes", () => {
+  let draft = createDefaultCreateGroupDraft();
+  draft = updateCreateGroupDraft(draft, { title: "周末项目群" });
+
+  const selected = toggleCreateGroupSelection([], "u1", contacts);
+
+  assert.equal(draft.title, "周末项目群");
+  assert.deepEqual(selected, ["u1"]);
 });

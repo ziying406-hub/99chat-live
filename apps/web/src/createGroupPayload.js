@@ -11,6 +11,18 @@ export function buildCreateGroupPayload(title, selectedIds, contacts = []) {
   };
 }
 
+export function createDefaultCreateGroupDraft() {
+  return { title: "新的群聊" };
+}
+
+export function updateCreateGroupDraft(draft, patch = {}) {
+  return {
+    ...createDefaultCreateGroupDraft(),
+    ...(draft || {}),
+    ...(patch || {})
+  };
+}
+
 export function toggleCreateGroupSelection(selectedIds, targetId, contacts = []) {
   const selected = new Set(selectedIds || []);
   const contactIds = (contacts || []).map(contact => contact.id).filter(Boolean);

@@ -26,7 +26,12 @@ import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, resolveSelectedConversationId, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
 import { writeClipboardText } from "./clipboardCopy.js";
-import { buildCreateGroupPayload, toggleCreateGroupSelection } from "./createGroupPayload.js";
+import {
+  buildCreateGroupPayload,
+  createDefaultCreateGroupDraft,
+  toggleCreateGroupSelection,
+  updateCreateGroupDraft
+} from "./createGroupPayload.js";
 import { areAllInviteCandidatesSelected, selectedInviteMemberIds, updateInviteSelection, updateInviteSelectionForCandidates } from "./inviteSelection.js";
 import { DRAFT_CACHE_KEY, REPLY_DRAFT_CACHE_KEY, parseDraftMap, updateDraftMap } from "./draftStorage.js";
 import { clearLocalCacheState, LOCAL_CACHE_KEYS, SESSION_CACHE_KEYS } from "./localCache.js";
@@ -115,6 +120,7 @@ const state = {
   sidePage: null,
   modal: null,
   createGroupSelection: [],
+  createGroupDraft: createDefaultCreateGroupDraft(),
   inviteSelection: new Set(),
   addFriendDraft: createAddFriendDraft(),
   addFriendError: "",
@@ -3546,6 +3552,7 @@ function renderCreateGroupBody() {
   const contacts = state.data.contacts || [];
   const selected = new Set(state.createGroupSelection || []);
   const allSelected = contacts.length > 0 && contacts.every(contact => selected.has(contact.id));
+  const draft = state.createGroupDraft || createDefaultCreateGroupDraft();
   return `
     <div class="create-group-panel">
       <div class="create-group-hero">
@@ -3557,12 +3564,12 @@ function renderCreateGroupBody() {
       </div>
       <label class="security-field">
         <span>群组名称</span>
-        <input class="input" id="groupTitle" placeholder="群组名称" value="新的群聊">
+        <input class="input" id="groupTitle" placeholder="群组名称" value="${escapeAttr(draft.title)}">
       </label>
       <div class="create-group-toolbar">
         <div>
           <strong>选择联系人</strong>
-          <span>已选择 ${selected.size} 位联系人</span>
+          <span data-create-group-selection-summary>已选择 ${selected.size} 位联系人</span>
         </div>
         <label class="create-group-all">
           <span>全选</span>
@@ -3962,7 +3969,10 @@ function bindEvents() {
   document.querySelectorAll("[data-modal]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     state.modal = el.dataset.modal;
-    if (state.modal === "create-group") state.createGroupSelection = [];
+    if (state.modal === "create-group") {
+      state.createGroupSelection = [];
+      state.createGroupDraft = createDefaultCreateGroupDraft();
+    }
     if (state.modal === "add-friend") {
       state.addFriendDraft = createAddFriendDraft();
       state.addFriendError = "";
@@ -3974,6 +3984,7 @@ function bindEvents() {
     state.modal = null;
     state.preview = null;
     state.createGroupSelection = [];
+    state.createGroupDraft = createDefaultCreateGroupDraft();
     state.addFriendDraft = createAddFriendDraft();
     state.addFriendError = "";
     state.forwardPayload = null;
@@ -3991,6 +4002,10 @@ function bindEvents() {
   });
   friendGreetingInput?.addEventListener("input", () => {
     state.addFriendDraft = updateAddFriendDraft(state.addFriendDraft, { greeting: friendGreetingInput.value });
+  });
+  const groupTitleInput = document.querySelector("#groupTitle");
+  groupTitleInput?.addEventListener("input", () => {
+    state.createGroupDraft = updateCreateGroupDraft(state.createGroupDraft, { title: groupTitleInput.value });
   });
   document.querySelectorAll("[data-toast]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
@@ -5003,8 +5018,22 @@ async function submitReport(reason) {
 }
 
 function toggleCreateGroupMember(targetId) {
-  state.createGroupSelection = toggleCreateGroupSelection(state.createGroupSelection, targetId, state.data.contacts || []);
-  render();
+  const contacts = state.data.contacts || [];
+  state.createGroupSelection = toggleCreateGroupSelection(state.createGroupSelection, targetId, contacts);
+  refreshCreateGroupSelection(contacts);
+}
+
+function refreshCreateGroupSelection(contacts = []) {
+  const selected = new Set(state.createGroupSelection || []);
+  const allSelected = contacts.length > 0 && contacts.every(contact => selected.has(contact.id));
+  const summary = document.querySelector("[data-create-group-selection-summary]");
+  if (summary) summary.textContent = `已选择 ${selected.size} 位联系人`;
+  document.querySelectorAll("[data-create-group-member]").forEach(input => {
+    const isAll = input.dataset.createGroupMember === "all";
+    const checked = isAll ? allSelected : selected.has(input.dataset.createGroupMember);
+    input.checked = checked;
+    input.closest(".create-group-member")?.classList.toggle("selected", checked);
+  });
 }
 
 async function confirmModal(kind) {
@@ -5080,7 +5109,7 @@ async function confirmModal(kind) {
     return;
   }
   if (kind === "create-group") {
-    const payload = buildCreateGroupPayload(document.querySelector("#groupTitle").value, state.createGroupSelection, state.data.contacts || []);
+    const payload = buildCreateGroupPayload(state.createGroupDraft?.title, state.createGroupSelection, state.data.contacts || []);
     const group = state.useMock ? createLocalGroup(payload.title, payload.memberIds) : await api("/api/groups", { method: "POST", body: JSON.stringify(payload) });
     state.data.groups.push(group);
     const conv = { id: `group-${group.id}`, kind: "group", title: group.title, avatar: group.avatar, unread: 0, lastText: "群聊已创建", lastAt: new Date().toISOString() };
@@ -5089,6 +5118,7 @@ async function confirmModal(kind) {
     state.data.messages[conv.id] = [];
     state.section = "messages";
     state.createGroupSelection = [];
+    state.createGroupDraft = createDefaultCreateGroupDraft();
     persistCurrentRegisteredMockSession();
   }
   if (kind === "edit-profile") {
