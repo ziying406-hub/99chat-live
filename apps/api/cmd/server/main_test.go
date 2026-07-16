@@ -2254,8 +2254,55 @@ func TestRegisteredFriendAcceptDoesNotExposeDemoData(t *testing.T) {
 
 func TestDefaultUserSettingsDisableGroupInviteVerification(t *testing.T) {
 	settings := defaultUserSettings()
+	if settings["friendVerification"] {
+		t.Fatal("new users should not require approval for friend requests by default")
+	}
 	if settings["inviteGroupVerification"] {
 		t.Fatal("new users should not require approval for group invitations by default")
+	}
+}
+
+func TestFriendRequestAutomaticallyAcceptsWhenTargetVerificationIsDisabled(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	first := registerTestUser(t, mux, "+60", "66070101", "Chat66Test1", "自动通过发送方")
+	second := registerTestUser(t, mux, "+60", "66070102", "Chat66Test2", "自动通过接收方")
+	setFriendVerification(t, mux, second.Token, false)
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/friend-requests", bytes.NewBufferString(`{"chatId":"`+second.User.ChatID+`","greeting":"你好"}`))
+	createReq.Header.Set("Authorization", "Bearer "+first.Token)
+	createRec := httptest.NewRecorder()
+	mux.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected automatic friend add 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created FriendRequest
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode automatic friend add response: %v", err)
+	}
+	if created.Status != "accepted" {
+		t.Fatalf("automatic friend add status = %q", created.Status)
+	}
+
+	contactsReq := httptest.NewRequest(http.MethodGet, "/api/contacts", nil)
+	contactsReq.Header.Set("Authorization", "Bearer "+second.Token)
+	contactsRec := httptest.NewRecorder()
+	mux.ServeHTTP(contactsRec, contactsReq)
+	if contactsRec.Code != http.StatusOK {
+		t.Fatalf("expected contacts 200, got %d: %s", contactsRec.Code, contactsRec.Body.String())
+	}
+	var contacts []Contact
+	if err := json.NewDecoder(contactsRec.Body).Decode(&contacts); err != nil {
+		t.Fatalf("decode automatic friend contacts: %v", err)
+	}
+	if len(contacts) != 1 || contacts[0].ID != first.User.ID {
+		t.Fatalf("automatic friend add contacts = %+v", contacts)
+	}
+	requests := listFriendRequestsForToken(t, mux, second.Token)
+	if len(requests) != 1 || requests[0].Status != "accepted" {
+		t.Fatalf("automatic friend add should record an accepted result: %+v", requests)
 	}
 }
 
@@ -3302,7 +3349,7 @@ func TestRegisteredPrivateMessageIsVisibleToReceiver(t *testing.T) {
 
 func TestFriendRequestsListIncludesIncomingAndOutgoingDirections(t *testing.T) {
 	store := seedStore()
-	store.users["new-target"] = User{ID: "new-target", ChatID: "new66", Nickname: "新朋友", Avatar: avatar("新")}
+	store.users["new-target"] = User{ID: "new-target", ChatID: "new66", Nickname: "新朋友", Avatar: avatar("新"), Settings: map[string]bool{"friendVerification": true}}
 	mux := http.NewServeMux()
 	registerRoutes(mux, store)
 
@@ -3341,7 +3388,7 @@ func TestFriendRequestsListIncludesIncomingAndOutgoingDirections(t *testing.T) {
 
 func TestFriendRequestCreateRejectsSelfExistingAndDuplicatePending(t *testing.T) {
 	store := seedStore()
-	store.users["new-target"] = User{ID: "new-target", ChatID: "new66", Nickname: "新朋友", Avatar: avatar("新")}
+	store.users["new-target"] = User{ID: "new-target", ChatID: "new66", Nickname: "新朋友", Avatar: avatar("新"), Settings: map[string]bool{"friendVerification": true}}
 	mux := http.NewServeMux()
 	registerRoutes(mux, store)
 
@@ -5655,7 +5702,20 @@ func registerTestUser(t *testing.T, mux *http.ServeMux, country, phone, password
 	if response.Token == "" {
 		t.Fatal("register response token is empty")
 	}
+	setFriendVerification(t, mux, response.Token, true)
 	return response
+}
+
+func setFriendVerification(t *testing.T, mux *http.ServeMux, token string, enabled bool) {
+	t.Helper()
+	body := bytes.NewBufferString(fmt.Sprintf(`{"settings":{"friendVerification":%t}}`, enabled))
+	req := httptest.NewRequest(http.MethodPatch, "/api/me", body)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected friend verification patch 200, got %d: %s", rec.Code, rec.Body.String())
+	}
 }
 
 func listFriendRequestsForToken(t *testing.T, mux *http.ServeMux, token string) []FriendRequest {

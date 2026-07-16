@@ -5087,9 +5087,9 @@ async function confirmModal(kind) {
       }
     } else {
       try {
-        await api("/api/friend-requests", { method: "POST", body: JSON.stringify({ chatId, greeting }) });
-        await loadFriendRequests();
-        successToast = "好友申请已发送";
+        const created = await api("/api/friend-requests", { method: "POST", body: JSON.stringify({ chatId, greeting }) });
+        await refreshFriendRealtimeState();
+        successToast = created?.status === "accepted" ? "已直接添加为好友" : "好友申请已发送";
       } catch (error) {
         state.addFriendError = friendRequestErrorMessage(error);
         toast(state.addFriendError);
@@ -6775,7 +6775,7 @@ function findUserByChatId(chatId) {
 
 function getUserPrivacy(user) {
   return {
-    friendVerification: user?.privacy?.friendVerification ?? true,
+    friendVerification: user?.privacy?.friendVerification ?? false,
     inviteGroupVerification: user?.privacy?.inviteGroupVerification ?? false
   };
 }
@@ -7250,7 +7250,7 @@ function ensureUserSettings() {
     messagePreview: true,
     autoPlayVoice: false,
     collapseToolsAfterSend: true,
-    friendVerification: true,
+    friendVerification: false,
     inviteGroupVerification: false,
     discoverByChatId: true,
     discoverByPhone: false,

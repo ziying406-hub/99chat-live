@@ -1843,7 +1843,7 @@ func defaultUserSettings() map[string]bool {
 		"messagePreview":           true,
 		"autoPlayVoice":            false,
 		"collapseToolsAfterSend":   true,
-		"friendVerification":       true,
+		"friendVerification":       false,
 		"inviteGroupVerification":  false,
 		"discoverByChatId":         true,
 		"discoverByPhone":          false,
@@ -2922,6 +2922,16 @@ func (s *Store) friendRequestsRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "user not found")
 			return
 		}
+		targetUser, found, err := s.userByID(r.Context(), target.ID)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "friend settings lookup failed")
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "user not found")
+			return
+		}
+		targetUser = normalizeUserPreferences(targetUser)
 		blocked, err := s.userBlocksContact(r.Context(), target.ID, current.ID)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "blacklist check failed")
@@ -2953,6 +2963,27 @@ func (s *Store) friendRequestsRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusConflict, "friend request already pending")
 			return
 		}
+		if !targetUser.Settings["friendVerification"] {
+			accepted := FriendRequest{
+				ID:         newID("fr"),
+				User:       current.AsContact(),
+				Greeting:   defaultString(req.Greeting, "你好，我想加你为好友"),
+				Status:     "accepted",
+				Direction:  "incoming",
+				CreatedAt:  time.Now(),
+				FromUserID: current.ID,
+				ToUserID:   target.ID,
+			}
+			if err := s.createAutomaticFriendship(r.Context(), current, targetUser, accepted); err != nil {
+				writeError(w, http.StatusInternalServerError, "friendship creation failed")
+				return
+			}
+			s.hub.Broadcast(friendRequestRealtimeEvent("friend.accepted", accepted, contactPointer(targetUser.AsContact())))
+			accepted.User = targetUser.AsContact()
+			accepted.Direction = "outgoing"
+			writeJSON(w, http.StatusCreated, accepted)
+			return
+		}
 		incoming := FriendRequest{
 			ID:         newID("fr"),
 			User:       current.AsContact(),
@@ -2978,6 +3009,49 @@ func (s *Store) friendRequestsRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func contactPointer(contact Contact) *Contact {
+	return &contact
+}
+
+func (s *Store) createAutomaticFriendship(ctx context.Context, from, target User, accepted FriendRequest) error {
+	if s.pg == nil {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		outgoing := accepted
+		outgoing.User = target.AsContact()
+		outgoing.Direction = "outgoing"
+		s.requests = append([]FriendRequest{outgoing, accepted}, s.requests...)
+		if !contactExists(s.contacts, target.ID) {
+			s.contacts = append(s.contacts, target.AsContact())
+		}
+		if !contactExists(s.contacts, from.ID) {
+			s.contacts = append(s.contacts, from.AsContact())
+		}
+		s.ensureAcceptedFriendConversationLocked(from.ID, target.AsContact())
+		return nil
+	}
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if err := upsertFriendRequest(ctx, tx, target.ID, accepted); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO contacts(owner_user_id, contact_user_id) VALUES ($1, $2), ($2, $1) ON CONFLICT DO NOTHING`, from.ID, target.ID); err != nil {
+		return err
+	}
+	conversationID := canonicalPrivateConversationID(from.ID, target.ID)
+	if conversationID != "" {
+		if _, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, title, avatar_url, unread, last_text, last_at)
+			VALUES ($1, 'session', $2, $3, 0, '你们已是好友，可以开始聊天了!', now())
+			ON CONFLICT (id) DO NOTHING`, conversationID, target.Nickname, target.Avatar); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) friendRequestRoute(w http.ResponseWriter, r *http.Request) {
