@@ -63,6 +63,17 @@ The API includes a local object-store compatible flow for first-version attachme
 
 The web app's photo and file buttons now use this flow when the API is running, and fall back to local preview URLs in demo mode.
 
+### Production Docker uploads
+
+For the live VPS, use the versioned deployment file and keep uploads in the host directory:
+
+```sh
+mkdir -p /opt/99chat-live-data/uploads
+docker compose -f deploy/docker-compose.live.yml up -d --build
+```
+
+This preserves profile photos and attachments across image rebuilds. Do not run `docker compose down -v` for the production project: it removes Docker-managed data volumes.
+
 ## Demo Account
 
 - Country code: `+60`

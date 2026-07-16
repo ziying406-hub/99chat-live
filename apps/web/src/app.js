@@ -646,12 +646,23 @@ function render() {
   syncSidePageFromHash();
   const app = document.querySelector("#app");
   app.innerHTML = state.showSplash ? renderSplash() : state.authed ? renderApp() : renderAuth();
+  bindAvatarFallbacks();
   bindEvents();
   flushScrollToBottom();
   restoreMessageScrollPosition();
   restoreTransientFocus();
   syncHighlightedMessage();
   hydrateQrCodes();
+}
+
+function bindAvatarFallbacks() {
+  document.querySelectorAll("img.avatar, img.chat-header-avatar").forEach(image => {
+    image.addEventListener("error", () => {
+      if (image.dataset.avatarFallbackApplied === "true") return;
+      image.dataset.avatarFallbackApplied = "true";
+      image.src = avatar("友");
+    }, { once: true });
+  });
 }
 
 function renderSplash() {

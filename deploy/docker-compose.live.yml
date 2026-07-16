@@ -1,0 +1,43 @@
+name: 99chat-live
+
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      PORT: 8080
+      WEB_DIR: /app/web
+      UPLOAD_DIR: /app/uploads
+      DATABASE_URL: postgresql://bluechat:bluechat@postgres:5432/bluechat?sslmode=disable
+    depends_on:
+      - postgres
+    # Keep uploads outside Docker-managed volumes so image rebuilds and
+    # compose cleanup cannot discard profile photos or file attachments.
+    volumes:
+      - /opt/99chat-live-data/uploads:/app/uploads
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.99chat-live.rule=Host(`99.99chat99.com`)"
+      - "traefik.http.routers.99chat-live.entrypoints=websecure"
+      - "traefik.http.routers.99chat-live.tls.certresolver=letsencrypt"
+      - "traefik.http.services.99chat-live.loadbalancer.server.port=8080"
+      - "traefik.http.routers.99chat-live-admin.rule=Host(`ad.99chat99.com`)"
+      - "traefik.http.routers.99chat-live-admin.entrypoints=websecure"
+      - "traefik.http.routers.99chat-live-admin.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.99chat-live-admin.service=99chat-live"
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bluechat
+      POSTGRES_PASSWORD: bluechat
+      POSTGRES_DB: bluechat
+    volumes:
+      - postgres:/var/lib/postgresql/data
+
+volumes:
+  postgres:
+    name: 99chat-live_postgres
