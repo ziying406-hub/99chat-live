@@ -54,6 +54,7 @@ import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoin
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
 import { canManageMember, memberStatusText } from "./groupMemberPermissions.js";
 import { adminGroupSettingKeys, canManageGroupSettings, canOpenGroupSidePage, regularGroupMemberSettingKeys } from "./groupSettingsPermissions.js";
+import { isKnownSidePage } from "./sidePageRegistry.js";
 import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.js";
 import { canLeaveGroup } from "./groupMembership.js";
 import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferHint } from "./groupOwnerTransfer.js";
@@ -267,18 +268,6 @@ async function openConversationFromHash(value) {
   ]);
   scheduleScrollToBottom();
   render();
-}
-
-function isKnownSidePage(sidePage) {
-  return [
-    "friend-requests", "tags", "groups",
-    "profile", "profile-avatar", "profile-nickname", "profile-signature", "qrcode", "account",
-    "collections", "notifications", "messaging", "messaging-batch", "messaging-batch-history", "messaging-batch-draft", "messaging-batch-targets",
-    "stickers", "stickers-manage", "privacy", "blacklist", "blacklist-add", "security", "security-devices", "security-password-step2",
-    "general", "general-language", "general-display", "general-feedback", "feedback-history", "general-about", "general-about-version", "general-debug", "switch-user",
-    "members", "settings", "join-mode", "applications", "admin", "rename", "announcement", "qrcode", "nickname", "media", "search", "report",
-    "group-blacklist", "invite-members", "audit-logs", "group-bots"
-  ].includes(sidePage);
 }
 
 async function loadData() {
