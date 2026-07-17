@@ -110,6 +110,24 @@ type Message struct {
 	ReadTotal      int         `json:"readTotal"`
 }
 
+type MessageReadReceiptUpdate struct {
+	MessageID string `json:"messageId"`
+	ReadCount int    `json:"readCount"`
+	ReadTotal int    `json:"readTotal"`
+}
+
+type MessageReadReceiptEvent struct {
+	Type           string                    `json:"type"`
+	ConversationID string                    `json:"conversationId"`
+	Payload        MessageReadReceiptPayload `json:"payload"`
+}
+
+type MessageReadReceiptPayload struct {
+	UserID   string                     `json:"userId"`
+	ReadAt   time.Time                  `json:"readAt"`
+	Messages []MessageReadReceiptUpdate `json:"messages"`
+}
+
 type Quote struct {
 	MessageID      string `json:"messageId"`
 	ConversationID string `json:"conversationId"`
@@ -2350,8 +2368,11 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		current := s.currentUser(r)
 		conversationID = s.canonicalConversationIDForUser(r.Context(), conversationID, current.ID)
-		messages := s.readConversationMessages(r.Context(), conversationID, current.ID)
+		messages, readAt := s.readConversationMessages(r.Context(), conversationID, current.ID)
 		writeJSON(w, http.StatusOK, messages)
+		if event := messageReadReceiptEvent(conversationID, current.ID, readAt, messages); len(event.Payload.Messages) > 0 {
+			s.hub.Broadcast(event)
+		}
 	case http.MethodPost:
 		current := s.currentUser(r)
 		conversationID = s.canonicalConversationIDForUser(r.Context(), conversationID, current.ID)
@@ -2573,7 +2594,7 @@ func (s *Store) messageReadDetail(conversationID, messageID, currentUserID strin
 	return detail, nil
 }
 
-func (s *Store) readConversationMessages(ctx context.Context, conversationID, userID string) []Message {
+func (s *Store) readConversationMessages(ctx context.Context, conversationID, userID string) ([]Message, time.Time) {
 	now := time.Now()
 	s.mu.Lock()
 	if s.messageReads == nil {
@@ -2617,7 +2638,30 @@ func (s *Store) readConversationMessages(ctx context.Context, conversationID, us
 	}
 	s.mu.Unlock()
 	_ = s.persistConversationRead(ctx, conversationID, userID, now)
-	return messages
+	return messages, now
+}
+
+func messageReadReceiptEvent(conversationID, userID string, readAt time.Time, messages []Message) MessageReadReceiptEvent {
+	updates := make([]MessageReadReceiptUpdate, 0, len(messages))
+	for _, message := range messages {
+		if message.SenderID == userID {
+			continue
+		}
+		updates = append(updates, MessageReadReceiptUpdate{
+			MessageID: message.ID,
+			ReadCount: message.ReadCount,
+			ReadTotal: message.ReadTotal,
+		})
+	}
+	return MessageReadReceiptEvent{
+		Type:           "message.read",
+		ConversationID: conversationID,
+		Payload: MessageReadReceiptPayload{
+			UserID:   userID,
+			ReadAt:   readAt,
+			Messages: updates,
+		},
+	}
 }
 
 func (s *Store) conversationSettingsRoute(w http.ResponseWriter, r *http.Request, conversationID string) {

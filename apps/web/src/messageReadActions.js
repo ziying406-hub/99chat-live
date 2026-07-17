@@ -19,3 +19,23 @@ export function readStateControl(message, user, conversation) {
     label
   };
 }
+
+export function applyMessageReadReceipt(messages, payload) {
+  if (!Array.isArray(messages) || !Array.isArray(payload?.messages)) return messages;
+  const updates = new Map(payload.messages
+    .filter(update => update?.messageId)
+    .map(update => [update.messageId, update]));
+  if (!updates.size) return messages;
+
+  let changed = false;
+  const nextMessages = messages.map(message => {
+    const update = updates.get(message.id);
+    if (!update) return message;
+    const readCount = Number(update.readCount || 0);
+    const readTotal = Number(update.readTotal || 0);
+    if (message.readCount === readCount && message.readTotal === readTotal) return message;
+    changed = true;
+    return { ...message, readCount, readTotal };
+  });
+  return changed ? nextMessages : messages;
+}

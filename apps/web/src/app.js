@@ -59,7 +59,7 @@ import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.
 import { canLeaveGroup } from "./groupMembership.js";
 import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferErrorMessage, ownerTransferHint } from "./groupOwnerTransfer.js";
 import { sendErrorMessage } from "./messageSendErrors.js";
-import { canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
+import { applyMessageReadReceipt, canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
 import { selectBatchConversationIds } from "./batchTargets.js";
 import { passwordActionTarget, validateForgotPasswordReset, validatePasswordChange } from "./passwordChange.js";
 import { chatReturnPath, profileCenterPath } from "./profileNavigation.js";
@@ -74,7 +74,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260717-fix-default-contact-blacklist";
+const APP_VERSION = "20260717-realtime-read-receipts";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -353,13 +353,14 @@ function isNetworkFailure(error) {
 }
 
 async function loadMessages(conversationId) {
-  if (!state.data.messages[conversationId]) {
-    if (state.useMock) {
+  if (state.useMock) {
+    if (!state.data.messages[conversationId]) {
       state.data.messages[conversationId] = mock.messages[conversationId] || [];
-    } else {
-      state.data.messages[conversationId] = await api(`/api/conversations/${conversationId}/messages`);
     }
+    return;
   }
+  // Reading a conversation must always reach the server so the sender receives a read receipt.
+  state.data.messages[conversationId] = await api(`/api/conversations/${conversationId}/messages`);
 }
 
 async function loadFriendRequests() {
@@ -478,6 +479,13 @@ function connectRealtime() {
         showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
         if (id === state.selectedConversationId) scheduleScrollToBottom();
         render();
+      }
+      if (envelope.type === "message.read") {
+        const id = envelope.conversationId;
+        if (id && state.data.messages[id]) {
+          state.data.messages[id] = applyMessageReadReceipt(state.data.messages[id], envelope.payload);
+          render();
+        }
       }
       if (envelope.type === "group.join.requested") {
         const request = envelope.payload;

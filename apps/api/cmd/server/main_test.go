@@ -2459,7 +2459,7 @@ func TestReadConversationMessagesUsesLatestSenderAvatar(t *testing.T) {
 	store := seedStore()
 	store.users["388786"] = User{ID: "388786", Nickname: "^魚. 𝙯ᙆ", Avatar: "https://example.com/latest-avatar.png"}
 
-	messages := store.readConversationMessages(context.Background(), "group-21444", store.user.ID)
+	messages, _ := store.readConversationMessages(context.Background(), "group-21444", store.user.ID)
 	for _, message := range messages {
 		if message.ID != "m1" {
 			continue
@@ -3936,6 +3936,23 @@ func TestReadingConversationAddsReadReceiptCounts(t *testing.T) {
 	}
 	if ownerMessage.ReadTotal != 4 {
 		t.Fatalf("readTotal = %d, want 4", ownerMessage.ReadTotal)
+	}
+}
+
+func TestMessageReadReceiptEventUsesServerReadCounts(t *testing.T) {
+	event := messageReadReceiptEvent("session-u1-u2", "u2", time.Now(), []Message{
+		{ID: "own", SenderID: "u2", ReadCount: 0, ReadTotal: 1},
+		{ID: "received", SenderID: "u1", ReadCount: 1, ReadTotal: 1},
+	})
+
+	if event.Type != "message.read" || event.ConversationID != "session-u1-u2" {
+		t.Fatalf("unexpected event: %+v", event)
+	}
+	if event.Payload.UserID != "u2" || len(event.Payload.Messages) != 1 {
+		t.Fatalf("unexpected payload: %+v", event.Payload)
+	}
+	if update := event.Payload.Messages[0]; update.MessageID != "received" || update.ReadCount != 1 || update.ReadTotal != 1 {
+		t.Fatalf("unexpected read update: %+v", update)
 	}
 }
 

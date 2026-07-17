@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
+import { applyMessageReadReceipt, canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
 
 test("own group messages can open read detail from action menu", () => {
   assert.equal(
@@ -42,5 +42,22 @@ test("own session read state is not clickable", () => {
   assert.deepEqual(
     readStateControl({ senderId: "u1", readCount: 1 }, { id: "u1" }, { kind: "session" }),
     { clickable: false, label: "已读" }
+  );
+});
+
+test("read receipt uses server counts for matching cached messages", () => {
+  const messages = [
+    { id: "m1", readCount: 0, readTotal: 1 },
+    { id: "m2", readCount: 0, readTotal: 3 }
+  ];
+
+  assert.deepEqual(
+    applyMessageReadReceipt(messages, {
+      messages: [{ messageId: "m1", readCount: 1, readTotal: 1 }]
+    }),
+    [
+      { id: "m1", readCount: 1, readTotal: 1 },
+      { id: "m2", readCount: 0, readTotal: 3 }
+    ]
   );
 });
