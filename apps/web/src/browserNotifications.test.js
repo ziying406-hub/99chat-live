@@ -65,7 +65,7 @@ test("browser notification payload uses conversation and sender text", () => {
   );
 });
 
-test("mentions use a fresh notification tag and request another browser alert", () => {
+test("every incoming message uses a fresh tag and requests another browser alert", () => {
   const payload = browserNotificationPayload(
     { id: "group-1", title: "测试群" },
     { id: "message-7", senderName: "测试账号2", body: "@你 你好" }
@@ -77,7 +77,7 @@ test("mentions use a fresh notification tag and request another browser alert", 
   );
   assert.deepEqual(
     browserNotificationOptions(payload, { id: "message-7" }),
-    { tag: "group-1" }
+    { tag: "group-1:message:message-7", renotify: true }
   );
 });
 

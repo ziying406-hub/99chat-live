@@ -10,7 +10,7 @@ import {
   browserNotificationDelivery,
   browserNotificationPermissionView,
   shouldShowBrowserNotification
-} from "./browserNotifications.js?v=20260714-persistence-notify";
+} from "./browserNotifications.js?v=20260717-notification-tags-v2";
 import { DEMO_LOGIN_CODE, codeLoginFailureAction, sendCodeFailureMessage, validateDemoLoginCode } from "./authModes.js";
 import { createAddFriendDraft, updateAddFriendDraft } from "./addFriendDraft.js";
 import { generateRandomChatId, shouldReplaceChatId, userQrText } from "./chatIdentity.js";
