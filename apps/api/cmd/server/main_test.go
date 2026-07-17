@@ -5003,6 +5003,36 @@ func TestMemberCanLeaveGroupAndCreatesAuditLog(t *testing.T) {
 		t.Fatalf("member was not removed: %+v", group.Members)
 	}
 
+	groupsReq := httptest.NewRequest(http.MethodGet, "/api/groups", nil)
+	groupsReq.Header.Set("Authorization", "Bearer member-token")
+	groupsRec := httptest.NewRecorder()
+	mux.ServeHTTP(groupsRec, groupsReq)
+	if groupsRec.Code != http.StatusOK {
+		t.Fatalf("expected groups 200, got %d: %s", groupsRec.Code, groupsRec.Body.String())
+	}
+	var groups []Group
+	if err := json.NewDecoder(groupsRec.Body).Decode(&groups); err != nil {
+		t.Fatalf("decode groups: %v", err)
+	}
+	if groupByID(groups, "21444").ID != "" {
+		t.Fatalf("left group returned after reload: %+v", groups)
+	}
+
+	conversationsReq := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
+	conversationsReq.Header.Set("Authorization", "Bearer member-token")
+	conversationsRec := httptest.NewRecorder()
+	mux.ServeHTTP(conversationsRec, conversationsReq)
+	if conversationsRec.Code != http.StatusOK {
+		t.Fatalf("expected conversations 200, got %d: %s", conversationsRec.Code, conversationsRec.Body.String())
+	}
+	var conversations []Conversation
+	if err := json.NewDecoder(conversationsRec.Body).Decode(&conversations); err != nil {
+		t.Fatalf("decode conversations: %v", err)
+	}
+	if conversationByID(conversations, "group-21444").ID != "" {
+		t.Fatalf("left group conversation returned after reload: %+v", conversations)
+	}
+
 	logReq := httptest.NewRequest(http.MethodGet, "/api/groups/21444/audit-logs", nil)
 	logRec := httptest.NewRecorder()
 	mux.ServeHTTP(logRec, logReq)

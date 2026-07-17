@@ -4689,12 +4689,16 @@ func (s *Store) removeGroupMember(ctx context.Context, groupID, userID string) e
 			if member.Role == "owner" {
 				return errors.New("cannot remove owner")
 			}
-			group.Members = append(group.Members[:i], group.Members[i+1:]...)
-			s.groups[groupID] = group
 			if s.pg != nil {
 				_, err := s.pg.pool.Exec(ctx, `DELETE FROM group_members WHERE group_id = $1 AND user_id = $2`, groupID, userID)
-				return err
+				if err != nil {
+					return err
+				}
 			}
+			// Do not make the in-memory state disagree with PostgreSQL. A failed
+			// delete used to look successful until the next page reload restored it.
+			group.Members = append(group.Members[:i], group.Members[i+1:]...)
+			s.groups[groupID] = group
 			return nil
 		}
 	}

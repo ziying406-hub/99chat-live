@@ -505,8 +505,13 @@ function connectRealtime() {
           const payload = envelope.payload;
           if (payload?.members) {
             upsertGroup(payload);
+          } else if (payload?.removed) {
+            removeGroupMemberFromState(groupId, payload.removed);
           } else if (payload?.userId) {
             upsertGroupMember(groupId, payload);
+            if (payload.userId === state.user?.id) {
+              refreshGroupsAndConversations().then(render).catch(() => {});
+            }
           }
           render();
         }
@@ -4719,12 +4724,11 @@ async function leaveCurrentGroup() {
   try {
     if (!state.useMock) {
       await api(`/api/groups/${group.id}/members/${member.userId}`, { method: "DELETE" });
+      // Read the server's current membership view so a stale event cannot
+      // restore the group after this account has left it.
+      await refreshGroupsAndConversations().catch(() => {});
     }
-    state.data.groups = state.data.groups.filter(item => item.id !== group.id);
-    state.data.conversations = state.data.conversations.filter(item => item.id !== conversationId);
-    delete state.data.messages[conversationId];
-    state.selectedConversationId = state.data.conversations[0]?.id || "";
-    state.sidePage = null;
+    removeGroupMemberFromState(group.id, member.userId);
     toast("已退出群聊");
     render();
   } catch (error) {
@@ -6594,7 +6598,9 @@ function upsertGroup(group) {
   if (index >= 0) {
     groups[index] = { ...groups[index], ...group };
   } else {
-    groups.push(group);
+    // Group broadcasts are delivered to all connected clients. Only a
+    // membership refresh may add a group to the current account's list.
+    return;
   }
   state.data.groups = groups;
   state.data.directoryGroups = (state.data.directoryGroups || []).map(item => item.id === group.id ? { ...item, ...group } : item);
@@ -6602,6 +6608,25 @@ function upsertGroup(group) {
   if (conversation) {
     conversation.title = group.title || conversation.title;
     conversation.avatar = group.avatar || conversation.avatar;
+  }
+}
+
+function removeGroupMemberFromState(groupId, userId) {
+  if (!groupId || !userId || !state.data) return;
+  const group = (state.data.groups || []).find(item => item.id === groupId);
+  if (userId === state.user?.id) {
+    const conversationId = `group-${groupId}`;
+    state.data.groups = (state.data.groups || []).filter(item => item.id !== groupId);
+    state.data.conversations = (state.data.conversations || []).filter(item => item.id !== conversationId);
+    delete state.data.messages?.[conversationId];
+    if (state.selectedConversationId === conversationId) {
+      state.selectedConversationId = state.data.conversations[0]?.id || "";
+    }
+    state.sidePage = null;
+    return;
+  }
+  if (group) {
+    group.members = (group.members || []).filter(member => member.userId !== userId);
   }
 }
 
