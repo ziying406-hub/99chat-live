@@ -32,15 +32,18 @@ export function browserNotificationPayload(conversation = {}, message = {}) {
 }
 
 export function browserNotificationOptions(payload = {}, message = {}, { mentionedMe } = {}) {
-  const tag = mentionedMe && message?.id
-    ? `${payload.tag || "chat-message"}:mention:${message.id}`
-    : payload.tag || "chat-message";
+  const tag = payload.tag || "chat-message";
+  if (!mentionedMe || !message?.id) {
+    // Keep ordinary private and group notifications on Chrome's simplest,
+    // long-standing path. Mention-specific options must not affect them.
+    return { tag };
+  }
 
+  // Chrome silently replaces notifications with an existing tag. Mentions must
+  // remain visibly alerting even when the group already has a notification.
   return {
-    tag,
-    // Chrome silently replaces notifications with an existing tag. Mentions must
-    // remain visibly alerting even when the group already has a notification.
-    renotify: Boolean(mentionedMe)
+    tag: `${tag}:mention:${message.id}`,
+    renotify: true
   };
 }
 

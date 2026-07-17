@@ -77,7 +77,7 @@ test("mentions use a fresh notification tag and request another browser alert", 
   );
   assert.deepEqual(
     browserNotificationOptions(payload, { id: "message-7" }),
-    { tag: "group-1", renotify: false }
+    { tag: "group-1" }
   );
 });
 
