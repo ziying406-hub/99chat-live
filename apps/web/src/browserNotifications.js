@@ -31,6 +31,19 @@ export function browserNotificationPayload(conversation = {}, message = {}) {
   };
 }
 
+export function browserNotificationOptions(payload = {}, message = {}, { mentionedMe } = {}) {
+  const tag = mentionedMe && message?.id
+    ? `${payload.tag || "chat-message"}:mention:${message.id}`
+    : payload.tag || "chat-message";
+
+  return {
+    tag,
+    // Chrome silently replaces notifications with an existing tag. Mentions must
+    // remain visibly alerting even when the group already has a notification.
+    renotify: Boolean(mentionedMe)
+  };
+}
+
 export function browserNotificationPermissionView({ supported, permission } = {}) {
   if (!supported) {
     return {

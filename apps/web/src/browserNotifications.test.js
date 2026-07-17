@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   browserNotificationDelivery,
+  browserNotificationOptions,
   browserNotificationPayload,
   browserNotificationPermissionView,
   shouldShowBrowserNotification
@@ -61,6 +62,22 @@ test("browser notification payload uses conversation and sender text", () => {
       { senderName: "测试账号2", body: "你好" }
     ),
     { title: "测试账号2", body: "测试账号2：你好", tag: "session-b" }
+  );
+});
+
+test("mentions use a fresh notification tag and request another browser alert", () => {
+  const payload = browserNotificationPayload(
+    { id: "group-1", title: "测试群" },
+    { id: "message-7", senderName: "测试账号2", body: "@你 你好" }
+  );
+
+  assert.deepEqual(
+    browserNotificationOptions(payload, { id: "message-7" }, { mentionedMe: true }),
+    { tag: "group-1:mention:message-7", renotify: true }
+  );
+  assert.deepEqual(
+    browserNotificationOptions(payload, { id: "message-7" }),
+    { tag: "group-1", renotify: false }
   );
 });
 

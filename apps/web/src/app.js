@@ -5,6 +5,7 @@ import { readAuthDefaults, saveAuthDefaults } from "./authDefaults.js";
 import { buildAttachmentDescriptor, buildAttachmentMessagePayload, uploadMimeType } from "./attachmentPayload.js";
 import { auditLogSentence, sortAuditLogs } from "./auditLogDisplay.js";
 import {
+  browserNotificationOptions,
   browserNotificationPayload,
   browserNotificationDelivery,
   browserNotificationPermissionView,
@@ -619,9 +620,10 @@ async function showBrowserMessageNotification(conversation, message, { incoming,
     supported
   })) return;
   const payload = browserNotificationPayload(conversation, message);
+  const notificationIdentity = browserNotificationOptions(payload, message, { mentionedMe });
   const options = {
     body: payload.body,
-    tag: payload.tag,
+    ...notificationIdentity,
     icon: "/public/icon.svg",
     silent: !settings.notificationSound,
     data: { conversationId: conversation?.id || message?.conversationId || "" }

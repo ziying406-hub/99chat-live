@@ -4822,7 +4822,7 @@ func (s *Store) normalizedMentionsForMessage(conversationID, senderID, body stri
 			clean = append(clean, member.UserID)
 		}
 	}
-	return clean, nil
+	return uniqueStrings(clean), nil
 }
 
 func (s *Store) broadcastMessageCreated(msg Message) {
