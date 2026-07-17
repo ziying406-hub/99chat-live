@@ -4574,6 +4574,7 @@ async function sendMessage(payload) {
   setCurrentReplyDraft(null);
   scheduleScrollToBottom();
   render();
+  focusComposerEditor({ preserveScroll: true, retries: 3 });
 
   try {
     const message = await persistOutgoingMessage(conversationId, finalPayload);
@@ -4587,6 +4588,7 @@ async function sendMessage(payload) {
   }
   scheduleScrollToBottom();
   render();
+  focusComposerEditor({ preserveScroll: true, retries: 3 });
 }
 
 async function retryMessage(messageId) {
