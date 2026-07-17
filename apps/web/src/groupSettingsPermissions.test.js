@@ -13,11 +13,11 @@ test("regular members cannot open group management pages", () => {
   assert.equal(canOpenGroupSidePage("rename", member), false);
 });
 
-test("regular members cannot open group profile or management pages", () => {
+test("regular members can read announcements but cannot open protected group pages", () => {
   const member = { userId: "u4", role: "member" };
 
   assert.equal(canOpenGroupSidePage("members", member), false);
-  assert.equal(canOpenGroupSidePage("announcement", member), false);
+  assert.equal(canOpenGroupSidePage("announcement", member), true);
   assert.equal(canOpenGroupSidePage("qrcode", member), false);
   assert.equal(canOpenGroupSidePage("nickname", member), false);
   assert.equal(canOpenGroupSidePage("media", member), true);

@@ -1969,6 +1969,16 @@ function renderGroupAnnouncementPane() {
   const canManage = canManageGroup(group);
   const value = group.announcement || "";
   const preview = value || "还没有公告。可以写下欢迎语、群规则或最近要提醒大家的事情。";
+  if (!canManage) {
+    return `
+      <aside class="detail-pane">
+        <header class="panel-header"><button class="icon-btn" data-sidepage="settings">${icons.back}</button><h3>群公告</h3></header>
+        <section class="section announcement-reader ${value ? "" : "empty"}">
+          <span class="announcement-kicker">群公告</span>
+          <p>${escapeHTML(preview)}</p>
+        </section>
+      </aside>`;
+  }
   return `
     <aside class="detail-pane">
       <header class="panel-header"><button class="icon-btn" data-sidepage="settings">${icons.back}</button><h3>群公告</h3></header>

@@ -15,7 +15,6 @@ const MANAGER_GROUP_SIDE_PAGES = new Set([
 
 const MEMBER_BLOCKED_GROUP_SIDE_PAGES = new Set([
   "members",
-  "announcement",
   "qrcode",
   "nickname",
   "collections"
