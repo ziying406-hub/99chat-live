@@ -5,6 +5,7 @@ import {
   applyOwnerTransfer,
   canTransferOwner,
   ownerTransferConfirmText,
+  ownerTransferErrorMessage,
   ownerTransferHint
 } from "./groupOwnerTransfer.js";
 
@@ -42,4 +43,9 @@ test("owner transfer copy names the consequence", () => {
     "确定将群主转让给 新群主？转让后你将变为管理员，新群主将拥有全部群管理权限。"
   );
   assert.equal(ownerTransferHint(), "转让后，你将自动变为管理员，新群主将拥有全部群管理权限。");
+});
+
+test("owner transfer turns server failures into actionable copy", () => {
+  assert.equal(ownerTransferErrorMessage(new Error("owner permission required")), "只有当前群主可以转让群主身份");
+  assert.equal(ownerTransferErrorMessage(new Error("invalid transfer target")), "该成员已不在群内，无法转让");
 });

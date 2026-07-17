@@ -57,7 +57,7 @@ import { adminGroupSettingKeys, canManageGroupSettings, canOpenGroupSidePage, re
 import { isKnownSidePage } from "./sidePageRegistry.js";
 import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.js";
 import { canLeaveGroup } from "./groupMembership.js";
-import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferHint } from "./groupOwnerTransfer.js";
+import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferErrorMessage, ownerTransferHint } from "./groupOwnerTransfer.js";
 import { sendErrorMessage } from "./messageSendErrors.js";
 import { canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
 import { selectBatchConversationIds } from "./batchTargets.js";
@@ -3401,6 +3401,32 @@ function renderModal() {
   if (state.modal === "forward-message") {
     return renderForwardModal();
   }
+  if (state.modal === "confirm-owner-transfer" && state.preview) {
+    const target = state.preview;
+    return `
+      <div class="modal-backdrop">
+        <div class="modal contact-modal" role="dialog" aria-modal="true" aria-labelledby="ownerTransferTitle">
+          <header class="modal-header">
+            <strong id="ownerTransferTitle">确认转让群主</strong>
+            <button class="icon-btn" data-close-modal title="关闭" aria-label="关闭">×</button>
+          </header>
+          <div class="modal-body">
+            <div class="contact-summary">
+              <img class="avatar contact-avatar" src="${avatarSrc(target.avatar || avatar(target.nickname?.[0] || "成"))}" alt="">
+              <div>
+                <h3>${escapeHTML(target.nickname || "该成员")}</h3>
+                <div class="item-meta">将成为新的群主</div>
+              </div>
+            </div>
+            <p class="item-meta">${escapeHTML(ownerTransferConfirmText(target))}</p>
+          </div>
+          <footer class="modal-footer">
+            <button class="ghost-btn inline" data-close-modal>取消</button>
+            <button class="danger-btn inline" type="button" data-confirm-owner-transfer="${escapeAttr(target.userId)}">确认转让</button>
+          </footer>
+        </div>
+      </div>`;
+  }
   if (state.modal === "group-invite-review" && state.preview) {
     const request = state.preview;
     const group = request.groupData || {};
@@ -4107,7 +4133,8 @@ function bindEvents() {
   document.querySelectorAll("[data-join-mode]").forEach(el => el.addEventListener("click", () => updateGroupJoinMode(el.dataset.joinMode)));
   document.querySelectorAll("[data-rate-limit]").forEach(el => el.addEventListener("click", () => updateGroupRateLimit(el.dataset.rateLimit)));
   document.querySelectorAll("[data-review-join]").forEach(el => el.addEventListener("click", () => reviewGroupJoinRequest(el.dataset.reviewJoin, el.dataset.status)));
-  document.querySelectorAll("[data-transfer-owner]").forEach(el => el.addEventListener("click", () => transferGroupOwner(el.dataset.transferOwner)));
+  document.querySelectorAll("[data-transfer-owner]").forEach(el => el.addEventListener("click", () => requestGroupOwnerTransfer(el.dataset.transferOwner)));
+  document.querySelectorAll("[data-confirm-owner-transfer]").forEach(el => el.addEventListener("click", () => transferGroupOwner(el.dataset.confirmOwnerTransfer)));
   document.querySelectorAll("[data-member-role]").forEach(el => el.addEventListener("click", () => updateGroupMemberRole(el.dataset.memberRole, el.dataset.role)));
   document.querySelectorAll("[data-blacklist-member]").forEach(el => el.addEventListener("click", () => blacklistGroupMember(el.dataset.blacklistMember)));
   document.querySelectorAll("[data-unblacklist-member]").forEach(el => el.addEventListener("click", () => unblacklistGroupMember(el.dataset.unblacklistMember)));
@@ -5477,6 +5504,22 @@ async function updateGroupMemberRole(userId, role) {
   render();
 }
 
+function requestGroupOwnerTransfer(userId) {
+  const group = currentGroup();
+  if (!group || !isCurrentUserOwner(group)) {
+    toast("只有群主可以转让群主身份");
+    return;
+  }
+  const target = group.members.find(member => member.userId === userId);
+  if (!target || target.userId === state.user?.id) {
+    toast("请选择有效的群成员");
+    return;
+  }
+  state.preview = target;
+  state.modal = "confirm-owner-transfer";
+  render();
+}
+
 async function transferGroupOwner(userId) {
   const group = currentGroup();
   if (!group || !isCurrentUserOwner(group)) {
@@ -5488,16 +5531,22 @@ async function transferGroupOwner(userId) {
     toast("请选择有效的群成员");
     return;
   }
-  if (!confirm(ownerTransferConfirmText(target))) return;
   if (state.useMock) {
     Object.assign(group, applyOwnerTransfer(group, state.user?.id, userId));
   } else {
-    const updated = await api(`/api/groups/${group.id}/transfer-owner`, {
-      method: "POST",
-      body: JSON.stringify({ userId })
-    });
-    Object.assign(group, updated);
+    try {
+      const updated = await api(`/api/groups/${group.id}/transfer-owner`, {
+        method: "POST",
+        body: JSON.stringify({ userId })
+      });
+      Object.assign(group, updated);
+    } catch (error) {
+      toast(ownerTransferErrorMessage(error));
+      return;
+    }
   }
+  state.modal = null;
+  state.preview = null;
   state.sidePage = "group-admins";
   toast("群主已转让");
   render();
