@@ -644,6 +644,7 @@ function isConversationOpenForNotification(conversation) {
 }
 
 function render() {
+  const shouldScrollToBottom = state.scrollToBottom;
   rememberMessageScrollPosition();
   rememberTransientFocus();
   syncSidePageFromHash();
@@ -652,7 +653,7 @@ function render() {
   bindAvatarFallbacks();
   bindEvents();
   flushScrollToBottom();
-  restoreMessageScrollPosition();
+  restoreMessageScrollPosition({ skip: shouldScrollToBottom });
   restoreTransientFocus();
   syncHighlightedMessage();
   hydrateQrCodes();
@@ -8072,8 +8073,8 @@ function restoreTransientFocus() {
   });
 }
 
-function restoreMessageScrollPosition() {
-  if (!state.authed || state.scrollToBottom) return;
+function restoreMessageScrollPosition({ skip = false } = {}) {
+  if (!state.authed || skip || state.scrollToBottom) return;
   const conversationId = state.selectedConversationId;
   if (!conversationId) return;
   const pending = state.pendingMessageScrollRestore?.conversationId === conversationId
