@@ -3421,6 +3421,22 @@ func (s *Store) groupRoute(w http.ResponseWriter, r *http.Request) {
 		if patch.AutoMuteNewMembers != nil {
 			_ = s.appendAuditLog(r.Context(), s.newAuditLog(group.ID, current, "auto_mute_new_members_updated", group.ID, group.Title, autoMuteNewMembersAuditDetail(group.AutoMuteNewMembers)))
 		}
+		if managementPatch {
+			s.hub.Broadcast(map[string]any{
+				"type":           "group.updated",
+				"conversationId": "group-" + group.ID,
+				"payload": map[string]any{
+					"id":                     group.ID,
+					"title":                  group.Title,
+					"announcement":           group.Announcement,
+					"joinMode":               group.JoinMode,
+					"disableMemberAddFriend": group.DisableMemberAddFriend,
+					"allMuted":               group.AllMuted,
+					"rateLimit":              group.RateLimit,
+					"autoMuteNewMembers":     group.AutoMuteNewMembers,
+				},
+			})
+		}
 		writeJSON(w, http.StatusOK, group)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

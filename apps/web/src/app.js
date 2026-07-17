@@ -65,6 +65,7 @@ import { persistentProfileAvatarUrl } from "./profileAvatarUpload.js";
 import { prepareSearchResultNavigation } from "./searchNavigation.js";
 import { currentDeviceInfo, loginDeviceDisplay } from "./securityDevices.js";
 import { groupQrExpiryLabel, isGroupQrExpired } from "./groupQrStatus.js";
+import { groupAnnouncementText } from "./groupAnnouncement.js";
 import { applyGroupBlacklistEvent, groupBlacklistEntrySummary } from "./groupBlacklistState.js";
 import { groupRateLimitExceeded, groupRateLimitKey, groupRateLimitLabel } from "./groupRateLimit.js";
 import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
@@ -517,6 +518,13 @@ function connectRealtime() {
           } else if (payload?.userId) {
             upsertGroupMember(groupId, payload);
           }
+          render();
+        }
+      }
+      if (envelope.type === "group.updated") {
+        const group = envelope.payload;
+        if (group?.id) {
+          upsertGroup(group);
           render();
         }
       }
@@ -1044,6 +1052,7 @@ function renderChatPane(conv) {
   const messages = state.data.messages[conv.id] || [];
   const multiSelectActive = state.multiSelect?.conversationId === conv.id;
   const blockedReason = getComposerBlockedReason(conv);
+  const groupAnnouncement = conv.kind === "group" ? groupAnnouncementText(groupForConversation(conv)) : "";
   return `
     <section class="chat-pane">
       <header class="chat-header">
@@ -1063,6 +1072,12 @@ function renderChatPane(conv) {
           <button class="icon-btn" data-sidepage="settings" title="设置">${icons.settings}</button>
         </div>
       </header>
+      ${groupAnnouncement ? `
+        <button class="chat-group-announcement" type="button" data-sidepage="announcement" aria-label="查看群公告">
+          <span class="chat-group-announcement-icon" aria-hidden="true">公告</span>
+          <span class="chat-group-announcement-copy">${escapeHTML(groupAnnouncement)}</span>
+          <span class="chat-group-announcement-action">查看</span>
+        </button>` : ""}
       <div class="messages ${multiSelectActive ? "multi-select-active" : ""}">
         ${messages.length ? `
           <div class="day-divider">昨日下午 4:48</div>
