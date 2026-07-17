@@ -2,6 +2,7 @@ const sendErrorLabels = [
   ["group rate limit exceeded", "发言太频繁，请稍后再试"],
   ["group is all muted", "本群已开启全员禁言"],
   ["member is muted", "你已被禁言，暂时无法在本群发送消息"],
+  ["only group owners or administrators can mention everyone", "只有群主或管理员可以 @所有人"],
   ["target blocked messages", "对方已开启黑名单限制，消息无法送达"]
 ];
 

@@ -2386,6 +2386,12 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 		if req.Type == "" {
 			req.Type = "text"
 		}
+		body := strings.TrimSpace(req.Body)
+		mentions, err := s.normalizedMentionsForMessage(conversationID, current.ID, body, req.Mentions)
+		if err != nil {
+			writeError(w, http.StatusForbidden, err.Error())
+			return
+		}
 		msg := Message{
 			ID:             newID("msg"),
 			ConversationID: conversationID,
@@ -2393,10 +2399,10 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			SenderName:     current.Nickname,
 			SenderAvatar:   current.Avatar,
 			Type:           req.Type,
-			Body:           strings.TrimSpace(req.Body),
+			Body:           body,
 			Attachment:     req.Attachment,
 			Quote:          sanitizeQuote(req.Quote),
-			Mentions:       uniqueStrings(req.Mentions),
+			Mentions:       mentions,
 			CreatedAt:      time.Now(),
 		}
 		privateContact, ensurePrivateConversation, err := s.privateConversationContact(r.Context(), conversationID, current.ID)
@@ -4723,6 +4729,45 @@ func groupRoleFor(group Group, userID string) string {
 		}
 	}
 	return ""
+}
+
+func (s *Store) normalizedMentionsForMessage(conversationID, senderID, body string, mentions []string) ([]string, error) {
+	if !strings.HasPrefix(conversationID, "group-") {
+		return uniqueStrings(mentions), nil
+	}
+
+	groupID := strings.TrimPrefix(conversationID, "group-")
+	s.mu.RLock()
+	group, ok := s.groups[groupID]
+	s.mu.RUnlock()
+	if !ok {
+		return nil, errors.New("group not found")
+	}
+
+	if strings.Contains(body, "@所有人") {
+		if !canManageGroupRole(groupRoleFor(group, senderID)) {
+			return nil, errors.New("only group owners or administrators can mention everyone")
+		}
+		memberIDs := make([]string, 0, len(group.Members))
+		for _, member := range group.Members {
+			if member.UserID != "" && member.UserID != senderID {
+				memberIDs = append(memberIDs, member.UserID)
+			}
+		}
+		return uniqueStrings(memberIDs), nil
+	}
+
+	allowed := make(map[string]bool, len(group.Members))
+	for _, member := range group.Members {
+		allowed[member.UserID] = true
+	}
+	clean := make([]string, 0, len(mentions))
+	for _, userID := range uniqueStrings(mentions) {
+		if userID != senderID && allowed[userID] {
+			clean = append(clean, userID)
+		}
+	}
+	return clean, nil
 }
 
 func groupHasUser(group Group, userID string) bool {

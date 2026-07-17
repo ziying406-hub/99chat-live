@@ -6,6 +6,7 @@ test("send errors translate group restrictions", () => {
   assert.equal(sendErrorMessage(new Error("group rate limit exceeded")), "发言太频繁，请稍后再试");
   assert.equal(sendErrorMessage(new Error("group is all muted")), "本群已开启全员禁言");
   assert.equal(sendErrorMessage(new Error("member is muted")), "你已被禁言，暂时无法在本群发送消息");
+  assert.equal(sendErrorMessage(new Error("only group owners or administrators can mention everyone")), "只有群主或管理员可以 @所有人");
 });
 
 test("send errors translate personal blacklist restrictions", () => {

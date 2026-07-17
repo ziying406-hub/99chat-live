@@ -1960,6 +1960,32 @@ func TestConversationListClearsMentionAfterRead(t *testing.T) {
 	}
 }
 
+func TestNormalizedMentionsForAllMembersRequiresGroupManager(t *testing.T) {
+	store := &Store{groups: map[string]Group{
+		"all-mention": {
+			ID: "all-mention",
+			Members: []Member{
+				{UserID: "owner", Role: "owner"},
+				{UserID: "admin", Role: "admin"},
+				{UserID: "member", Role: "member"},
+			},
+		},
+	}}
+
+	mentions, err := store.normalizedMentionsForMessage("group-all-mention", "owner", "@所有人 请注意", nil)
+	if err != nil {
+		t.Fatalf("owner all-members mention: %v", err)
+	}
+	if len(mentions) != 2 || mentions[0] != "admin" || mentions[1] != "member" {
+		t.Fatalf("owner all-members mentions = %#v", mentions)
+	}
+
+	_, err = store.normalizedMentionsForMessage("group-all-mention", "member", "@所有人 请注意", nil)
+	if err == nil || err.Error() != "only group owners or administrators can mention everyone" {
+		t.Fatalf("member all-members mention error = %v", err)
+	}
+}
+
 func TestStaticWebRouteServesIndexFallback(t *testing.T) {
 	webDir := t.TempDir()
 	index := []byte("<!doctype html><title>99Chat</title>")

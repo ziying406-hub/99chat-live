@@ -41,7 +41,8 @@ import { formatMessageForCopy } from "./messageCopy.js";
 import { canDeleteMessage, deleteBlockedSummary, findUndeletableMessages } from "./messageDeletePermissions.js";
 import { messagePreviewText, messageTypeLabel, quotePreviewText, searchPreviewText } from "./messagePreview.js";
 import { messageMatchesQuery } from "./messageSearch.js";
-import { collectMentionIdsFromText, findMentionTargetById, findMentionTargetByName, mentionCandidatesFromGroup } from "./mentionTargets.js?v=20260708-mention-menu-click";
+import { collectMentionIdsFromText, findMentionTargetByName, mentionCandidatesFromGroup } from "./mentionTargets.js?v=20260708-mention-menu-click";
+import { ALL_MEMBERS_MENTION_ID, groupAllMentionCandidate, groupAllMentionIds } from "./groupMentionAll.js";
 import { buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
@@ -6752,7 +6753,11 @@ function getMentionCandidates(query = "") {
   const group = currentGroup();
   if (!group) return [];
   const search = String(query || "").toLowerCase();
-  const members = mentionCandidatesFromGroup(group, state.data.contacts, state.user?.id)
+  const allMembers = groupAllMentionCandidate(canManageGroup(group));
+  const members = [
+    ...(allMembers ? [allMembers] : []),
+    ...mentionCandidatesFromGroup(group, state.data.contacts, state.user?.id)
+  ]
     .map(member => ({
       ...member,
       avatar: member.avatar || avatar((member.nickname || "成").slice(0, 1))
@@ -7697,17 +7702,8 @@ function openMentionPicker() {
   }
   const editor = document.querySelector("#editor");
   if (!editor) return;
-  const caret = editor.selectionStart ?? editor.value.length;
   state.toolMenu = null;
-  state.mention = {
-    open: true,
-    query: "",
-    replaceStart: caret,
-    replaceEnd: caret,
-    activeIndex: 0
-  };
-  syncMentionMenu();
-  editor.focus();
+  insertIntoEditor("@");
 }
 
 function updateMentionSuggestions() {
@@ -7774,7 +7770,8 @@ function handleEditorKeydown(event) {
 }
 
 function insertMentionById(contactId) {
-  const target = findMentionTargetById(contactId, mentionContext());
+  const target = getMentionCandidates(state.mention?.query)
+    .find(item => item.id === contactId);
   if (!target) return;
   insertMention(target);
 }
@@ -7782,7 +7779,8 @@ function insertMentionById(contactId) {
 function insertMention(contact) {
   const editor = document.querySelector("#editor");
   if (!editor) return;
-  const mentionText = `@${contact.nickname} `;
+  const isAllMembers = contact.id === ALL_MEMBERS_MENTION_ID;
+  const mentionText = isAllMembers ? "@所有人 " : `@${contact.nickname} `;
   const value = editor.value;
   const start = Math.max(0, state.mention?.replaceStart ?? editor.selectionStart ?? value.length);
   const end = Math.max(start, state.mention?.replaceEnd ?? editor.selectionEnd ?? value.length);
@@ -7790,7 +7788,10 @@ function insertMention(contact) {
   const caret = start + mentionText.length;
   editor.focus();
   editor.setSelectionRange(caret, caret);
-  state.mentionIds = uniqueMentionIds([...state.mentionIds, contact.id]);
+  const mentionIDs = isAllMembers
+    ? groupAllMentionIds(currentGroup(), state.user?.id)
+    : [contact.id];
+  state.mentionIds = uniqueMentionIds([...state.mentionIds, ...mentionIDs]);
   state.mention = null;
   syncMentionMenu();
 }
