@@ -39,3 +39,7 @@ export function applyMessageReadReceipt(messages, payload) {
   });
   return changed ? nextMessages : messages;
 }
+
+export function shouldAcknowledgeRealtimeMessage({ conversationId, selectedConversationId, incoming }) {
+  return Boolean(incoming && conversationId && conversationId === selectedConversationId);
+}

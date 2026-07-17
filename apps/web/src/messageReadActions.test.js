@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { applyMessageReadReceipt, canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
+import {
+  applyMessageReadReceipt,
+  canShowReadDetailAction,
+  readStateControl,
+  shouldAcknowledgeRealtimeMessage
+} from "./messageReadActions.js";
 
 test("own group messages can open read detail from action menu", () => {
   assert.equal(
@@ -59,5 +64,35 @@ test("read receipt uses server counts for matching cached messages", () => {
       { id: "m1", readCount: 1, readTotal: 1 },
       { id: "m2", readCount: 0, readTotal: 3 }
     ]
+  );
+});
+
+test("an incoming message in the open conversation is acknowledged immediately", () => {
+  assert.equal(
+    shouldAcknowledgeRealtimeMessage({
+      conversationId: "session-u1--u2",
+      selectedConversationId: "session-u1--u2",
+      incoming: true
+    }),
+    true
+  );
+});
+
+test("outgoing or background realtime messages are not acknowledged again", () => {
+  assert.equal(
+    shouldAcknowledgeRealtimeMessage({
+      conversationId: "session-u1--u2",
+      selectedConversationId: "session-u1--u2",
+      incoming: false
+    }),
+    false
+  );
+  assert.equal(
+    shouldAcknowledgeRealtimeMessage({
+      conversationId: "session-u1--u2",
+      selectedConversationId: "group-1",
+      incoming: true
+    }),
+    false
   );
 });

@@ -60,7 +60,7 @@ import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.
 import { canLeaveGroup } from "./groupMembership.js";
 import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferErrorMessage, ownerTransferHint } from "./groupOwnerTransfer.js";
 import { sendErrorMessage } from "./messageSendErrors.js";
-import { applyMessageReadReceipt, canShowReadDetailAction, readStateControl } from "./messageReadActions.js";
+import { applyMessageReadReceipt, canShowReadDetailAction, readStateControl, shouldAcknowledgeRealtimeMessage } from "./messageReadActions.js";
 import { selectBatchConversationIds } from "./batchTargets.js";
 import { passwordActionTarget, validateForgotPasswordReset, validatePasswordChange } from "./passwordChange.js";
 import { chatReturnPath, profileCenterPath } from "./profileNavigation.js";
@@ -75,7 +75,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260717-realtime-read-receipts";
+const APP_VERSION = "20260717-live-read-receipts-v2";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -137,6 +137,7 @@ const state = {
   wsReconnectTimer: null,
   friendSyncTimer: null,
   friendSyncSnapshot: [],
+  readReceiptSyncTimers: {},
   scrollToBottom: false,
   preview: null,
   mention: null,
@@ -365,6 +366,27 @@ async function loadMessages(conversationId) {
   state.data.messages[conversationId] = await api(`/api/conversations/${conversationId}/messages`);
 }
 
+function scheduleRealtimeReadReceipt(conversationId, incoming) {
+  if (!shouldAcknowledgeRealtimeMessage({
+    conversationId,
+    selectedConversationId: state.selectedConversationId,
+    incoming
+  })) return;
+  if (state.readReceiptSyncTimers[conversationId]) return;
+
+  state.readReceiptSyncTimers[conversationId] = window.setTimeout(async () => {
+    delete state.readReceiptSyncTimers[conversationId];
+    if (state.selectedConversationId !== conversationId) return;
+    try {
+      await loadMessages(conversationId);
+      if (state.selectedConversationId === conversationId) {
+        scheduleScrollToBottom();
+        render();
+      }
+    } catch (_) {}
+  }, 80);
+}
+
 async function loadFriendRequests() {
   if (state.useMock) return;
   state.data.requests = await api("/api/friend-requests");
@@ -480,6 +502,7 @@ function connectRealtime() {
           toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
         }
         showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
+        scheduleRealtimeReadReceipt(id, incoming);
         if (id === state.selectedConversationId) scheduleScrollToBottom();
         render();
       }
