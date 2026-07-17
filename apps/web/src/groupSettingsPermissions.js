@@ -13,6 +13,33 @@ const MANAGER_GROUP_SIDE_PAGES = new Set([
   "audit-logs"
 ]);
 
+const ADMIN_GROUP_SIDE_PAGES = new Set([
+  "admin",
+  "applications",
+  "join-mode",
+  "group-admins",
+  "invite-members",
+  "announcement",
+  "qrcode",
+  "nickname",
+  "members"
+]);
+
+const ADMIN_GROUP_SETTING_KEYS = [
+  "admin",
+  "applications",
+  "join-mode",
+  "announcement",
+  "qrcode",
+  "nickname",
+  "media",
+  "search",
+  "clear-chat",
+  "mute",
+  "pin",
+  "report"
+];
+
 const MEMBER_BLOCKED_GROUP_SIDE_PAGES = new Set([
   "members",
   "qrcode",
@@ -35,8 +62,13 @@ export function canManageGroupSettings(member) {
 }
 
 export function canOpenGroupSidePage(sidePage, member) {
-  if (canManageGroupSettings(member)) return true;
+  if (member?.role === "owner") return true;
+  if (member?.role === "admin") return ADMIN_GROUP_SIDE_PAGES.has(sidePage);
   return !MANAGER_GROUP_SIDE_PAGES.has(sidePage) && !MEMBER_BLOCKED_GROUP_SIDE_PAGES.has(sidePage);
+}
+
+export function adminGroupSettingKeys() {
+  return [...ADMIN_GROUP_SETTING_KEYS];
 }
 
 export function regularGroupMemberSettingKeys() {

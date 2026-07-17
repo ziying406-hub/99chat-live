@@ -53,7 +53,7 @@ import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
 import { canManageMember, memberStatusText } from "./groupMemberPermissions.js";
-import { canManageGroupSettings, canOpenGroupSidePage, regularGroupMemberSettingKeys } from "./groupSettingsPermissions.js";
+import { adminGroupSettingKeys, canManageGroupSettings, canOpenGroupSidePage, regularGroupMemberSettingKeys } from "./groupSettingsPermissions.js";
 import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.js";
 import { canLeaveGroup } from "./groupMembership.js";
 import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferHint } from "./groupOwnerTransfer.js";
@@ -1457,6 +1457,7 @@ function renderSettingsPane(conv) {
   const group = currentGroup();
   const canManage = canManageGroup(group);
   if (group && !canManage) return renderRegularGroupMemberSettingsPane(conv);
+  if (group && currentGroupMember(group)?.role === "admin") return renderAdminGroupSettingsPane(conv, group);
   const pendingApplications = pendingGroupJoinRequestCount(state.data.groupJoinRequests?.[group?.id]);
   return `
     <aside class="detail-pane">
@@ -1512,6 +1513,50 @@ function renderSettingsPane(conv) {
         ${group && canLeaveGroup(currentGroupMember(group)) ? settingButton("leave-group", "退出群聊", "danger-btn inline") : ""}
         ${group && isCurrentUserOwner(group) ? settingButton("dissolve-group", "解散群", "danger-btn inline") : ""}
         ${settingLink("report", "检举", "提交违规原因")}
+      </section>
+    </aside>`;
+}
+
+function renderAdminGroupSettingsPane(conv, group) {
+  const settingKeys = new Set(adminGroupSettingKeys());
+  const pendingApplications = pendingGroupJoinRequestCount(state.data.groupJoinRequests?.[group.id]);
+  return `
+    <aside class="detail-pane">
+      <header class="panel-header"><button class="icon-btn detail-mobile-back" data-mobile-close title="返回聊天" aria-label="返回聊天">${icons.back}</button><h3>聊天设置</h3></header>
+      <section class="section conversation-profile-card">
+        <div class="conversation-profile-head">
+          <img class="avatar" src="${avatarSrc(conv.avatar)}" alt="">
+          <div class="conversation-profile-copy">
+            <div class="item-title">${escapeHTML(conv.title)}</div>
+            <div class="item-preview">${escapeHTML(getConversationHeaderMeta(conv))}</div>
+            <div class="conversation-profile-code">群号 ${escapeHTML(group.chatId)}</div>
+          </div>
+        </div>
+        <div class="conversation-profile-stats">
+          <span>${group.members.length} 人</span>
+          <span>${conv.unread ? `${conv.unread > 99 ? "99+" : conv.unread} 未读` : "已读"}</span>
+          <span>${conv.muted ? "免打扰" : "通知开启"}</span>
+        </div>
+      </section>
+      <section class="section">
+        <h3>群组</h3>
+        ${settingKeys.has("admin") ? settingLink("admin", "群组管理", "管理员与权限") : ""}
+        ${settingKeys.has("applications") ? settingLink("applications", "入群申请", pendingApplications ? `${pendingApplications} 条待处理` : "近期请求") : ""}
+        ${settingKeys.has("join-mode") ? settingLink("join-mode", "入群方式", joinModeLabel(group.joinMode)) : ""}
+        ${settingKeys.has("announcement") ? settingLink("announcement", "群公告", group.announcement || "未设置") : ""}
+        ${settingKeys.has("qrcode") ? settingLink("qrcode", "群二维码", `群号 ${group.chatId}`) : ""}
+        ${settingKeys.has("nickname") ? settingLink("nickname", "我在本群的昵称", groupNicknameForConversation(conv)) : ""}
+      </section>
+      <section class="section">
+        <h3>内容</h3>
+        ${settingKeys.has("media") ? settingLink("media", "图片与视频", "全部 / 图片 / 视频 / 档案") : ""}
+        ${settingKeys.has("search") ? settingLink("search", "搜索聊天记录", "关键词查找") : ""}
+      </section>
+      <section class="section">
+        ${settingKeys.has("clear-chat") ? settingButton("clear-chat", "清除聊天记录", "danger-btn inline") : ""}
+        ${settingKeys.has("mute") ? `<button class="setting-row setting-toggle-row" type="button" data-conversation-quick="mute"><span>消息免打扰</span><span class="switch ${conv.muted ? "on" : "off"}"></span></button>` : ""}
+        ${settingKeys.has("pin") ? `<button class="setting-row setting-toggle-row" type="button" data-conversation-quick="pin"><span>置顶聊天</span><span class="switch ${conv.pinned ? "on" : "off"}"></span></button>` : ""}
+        ${settingKeys.has("report") ? settingLink("report", "检举", "提交违规原因") : ""}
       </section>
     </aside>`;
 }
