@@ -74,7 +74,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260715-default-group-invite-verification-off";
+const APP_VERSION = "20260717-fix-default-contact-blacklist";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -7404,7 +7404,9 @@ function ensureUserSettings() {
   };
   state.user.language ||= "简体中文";
   state.user.displayMode ||= "桌面版";
-  state.user.blockedContactIds ||= state.data?.contacts?.slice(0, 1).map(contact => contact.id) || [];
+  // A missing blacklist means no contacts are blocked. Never infer a blocked
+  // contact from the contact list: doing so can silently disable private chats.
+  state.user.blockedContactIds ||= [];
   return state.user.settings;
 }
 
