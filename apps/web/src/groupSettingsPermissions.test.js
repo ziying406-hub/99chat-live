@@ -37,6 +37,7 @@ test("admins can use their listed group controls but not owner-only pages", () =
   assert.equal(canOpenGroupSidePage("admin", { role: "admin" }), true);
   assert.equal(canOpenGroupSidePage("applications", { role: "admin" }), true);
   assert.equal(canOpenGroupSidePage("qrcode", { role: "admin" }), true);
+  assert.equal(canOpenGroupSidePage("admin-add", { role: "admin" }), false);
   assert.equal(canOpenGroupSidePage("group-bots", { role: "admin" }), false);
   assert.equal(canOpenGroupSidePage("rate-limit", { role: "admin" }), false);
   assert.equal(canOpenGroupSidePage("transfer-owner", { role: "admin" }), false);

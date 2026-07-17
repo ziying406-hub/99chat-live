@@ -2852,6 +2852,25 @@ func TestGroupMemberPatchCanSetAdminRoleAndMute(t *testing.T) {
 	}
 }
 
+func TestAdminCannotChangeGroupMemberRole(t *testing.T) {
+	store := seedStore()
+	store.sessions["admin-token"] = "388769"
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/21444/members/388754", bytes.NewBufferString(`{"role":"admin"}`))
+	req.Header.Set("Authorization", "Bearer admin-token")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if member := groupMemberByID(store.groups["21444"], "388754"); member.Role != "member" {
+		t.Fatalf("member role = %q, want member", member.Role)
+	}
+}
+
 func TestAdminCannotMuteAnotherAdmin(t *testing.T) {
 	store := seedStore()
 	store.sessions["admin-token"] = "388769"
