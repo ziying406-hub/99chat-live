@@ -2466,7 +2466,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "message persistence failed")
 			return
 		}
-		s.hub.Broadcast(map[string]any{"type": "message.created", "conversationId": conversationID, "payload": msg})
+		s.broadcastMessageCreated(msg)
 		_ = s.sendKeywordBotReplies(r.Context(), msg)
 		writeJSON(w, http.StatusCreated, msg)
 	default:
@@ -4805,13 +4805,41 @@ func (s *Store) normalizedMentionsForMessage(conversationID, senderID, body stri
 	for _, member := range group.Members {
 		allowed[member.UserID] = true
 	}
-	clean := make([]string, 0, len(mentions))
+	clean := make([]string, 0, len(mentions)+len(group.Members))
 	for _, userID := range uniqueStrings(mentions) {
 		if userID != senderID && allowed[userID] {
 			clean = append(clean, userID)
 		}
 	}
+	// Keep @ notifications reliable even when a client typed a member name instead
+	// of selecting it from the mention picker.
+	for _, member := range group.Members {
+		name := strings.TrimSpace(member.Nickname)
+		if member.UserID == "" || member.UserID == senderID || name == "" {
+			continue
+		}
+		if strings.Contains(body, "@"+name) {
+			clean = append(clean, member.UserID)
+		}
+	}
 	return clean, nil
+}
+
+func (s *Store) broadcastMessageCreated(msg Message) {
+	s.hub.Broadcast(map[string]any{"type": "message.created", "conversationId": msg.ConversationID, "payload": msg})
+	for _, recipientID := range uniqueStrings(msg.Mentions) {
+		if recipientID == "" || recipientID == msg.SenderID {
+			continue
+		}
+		s.hub.Broadcast(map[string]any{
+			"type":           "message.mentioned",
+			"conversationId": msg.ConversationID,
+			"payload": map[string]any{
+				"recipientId": recipientID,
+				"message":     msg,
+			},
+		})
+	}
 }
 
 func groupHasUser(group Group, userID string) bool {

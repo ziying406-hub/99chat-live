@@ -140,6 +140,7 @@ const state = {
   preview: null,
   mention: null,
   mentionIds: [],
+  notifiedMentionMessageIds: new Set(),
   messageScrollTopByConversation: {},
   pendingMessageScrollRestore: null,
   draftTextByConversation: parseDraftMap(localStorage.getItem(DRAFT_CACHE_KEY)),
@@ -474,11 +475,23 @@ function connectRealtime() {
           mentionMe: mentionedMe
         });
         if (mentionedMe) {
+          rememberMentionNotification(message.id);
           toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
         }
         showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
         if (id === state.selectedConversationId) scheduleScrollToBottom();
         render();
+      }
+      if (envelope.type === "message.mentioned") {
+        const id = envelope.conversationId;
+        const recipientId = String(envelope.payload?.recipientId || "");
+        const message = envelope.payload?.message;
+        if (!message || recipientId !== String(state.user?.id || "") || message.senderId === state.user?.id) return;
+        if (hasMentionNotification(message.id)) return;
+        const conv = getConversation(id) || ensureRealtimeConversation(id, message);
+        rememberMentionNotification(message.id);
+        toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
+        showBrowserMessageNotification(conv, message, { incoming: true, mentionedMe: true });
       }
       if (envelope.type === "message.read") {
         const id = envelope.conversationId;
@@ -6866,6 +6879,18 @@ function messageMentionsCurrentUser(message = {}) {
   const body = String(message.body || "");
   const nickname = String(state.user?.nickname || "").trim();
   return Boolean(nickname && body.includes(`@${nickname}`));
+}
+
+function hasMentionNotification(messageId) {
+  return Boolean(messageId && state.notifiedMentionMessageIds.has(messageId));
+}
+
+function rememberMentionNotification(messageId) {
+  if (!messageId) return;
+  state.notifiedMentionMessageIds.add(messageId);
+  if (state.notifiedMentionMessageIds.size > 200) {
+    state.notifiedMentionMessageIds.delete(state.notifiedMentionMessageIds.values().next().value);
+  }
 }
 
 function getMentionCandidates(query = "") {

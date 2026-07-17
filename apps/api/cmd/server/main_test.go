@@ -1986,6 +1986,27 @@ func TestNormalizedMentionsForAllMembersRequiresGroupManager(t *testing.T) {
 	}
 }
 
+func TestNormalizedMentionsAlsoDetectsTypedGroupMemberName(t *testing.T) {
+	store := seedStore()
+	store.mu.Lock()
+	store.groups["typed-mention"] = Group{
+		ID: "typed-mention",
+		Members: []Member{
+			{UserID: "owner", Nickname: "群主", Role: "owner"},
+			{UserID: "member", Nickname: "小王", Role: "member"},
+		},
+	}
+	store.mu.Unlock()
+
+	mentions, err := store.normalizedMentionsForMessage("group-typed-mention", "owner", "@小王 请查看", nil)
+	if err != nil {
+		t.Fatalf("typed member mention: %v", err)
+	}
+	if len(mentions) != 1 || mentions[0] != "member" {
+		t.Fatalf("typed member mentions = %#v", mentions)
+	}
+}
+
 func TestStaticWebRouteServesIndexFallback(t *testing.T) {
 	webDir := t.TempDir()
 	index := []byte("<!doctype html><title>99Chat</title>")
