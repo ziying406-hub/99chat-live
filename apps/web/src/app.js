@@ -76,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-group-composer-focus-v1";
+const APP_VERSION = "20260718-group-composer-focus-v2";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -4666,7 +4666,7 @@ async function sendMessage(payload) {
   setCurrentReplyDraft(null);
   scheduleScrollToBottom();
   render();
-  focusComposerEditor({ retries: 8 });
+  focusComposerEditor();
 
   try {
     const message = await persistOutgoingMessage(conversationId, finalPayload);
@@ -4680,7 +4680,7 @@ async function sendMessage(payload) {
   }
   scheduleScrollToBottom();
   render();
-  focusComposerEditor({ retries: 8 });
+  focusComposerEditor();
 }
 
 async function retryMessage(messageId) {
@@ -8131,6 +8131,14 @@ function pinCurrentMessageScrollPosition() {
 function rememberTransientFocus() {
   const active = document.activeElement;
   if (!(active instanceof HTMLInputElement) && !(active instanceof HTMLTextAreaElement)) return;
+  if (active.id === "editor") {
+    state.transientFocus = {
+      selector: "#editor",
+      start: active.selectionStart ?? active.value.length,
+      end: active.selectionEnd ?? active.value.length
+    };
+    return;
+  }
   if (state.section === "messages" && state.sidePage === "search" && active.matches('[data-action="search"]')) {
     state.transientFocus = {
       selector: 'aside.detail-pane [data-action="search"]',
@@ -8330,43 +8338,36 @@ function quoteMessage(message) {
     state.voiceMode = false;
     state.pendingEditorAutofocus = true;
     render();
-    focusComposerEditor({ preserveScroll: true, retries: 3 });
+    focusComposerEditor({ preserveScroll: true });
     return;
   }
   state.messageMenu = null;
   refreshReplyBarHost();
   document.querySelector("[data-message-menu]")?.remove();
-  focusComposerEditor({ preserveScroll: true, retries: 5 });
+  focusComposerEditor({ preserveScroll: true });
 }
 
-function focusComposerEditor({ preserveScroll = false, retries = 0 } = {}) {
+function focusComposerEditor({ preserveScroll = false } = {}) {
   const requestId = ++state.composerFocusRequestId;
   state.pendingEditorAutofocus = true;
-  const tryFocus = remaining => {
+  requestAnimationFrame(() => {
     if (requestId !== state.composerFocusRequestId) return;
     const editor = document.querySelector("#editor");
-    if (editor instanceof HTMLTextAreaElement) {
-      if (preserveScroll) pinCurrentMessageScrollPosition();
-      try {
-        editor.focus({ preventScroll: true });
-      } catch (_) {
-        editor.focus();
-      }
-      const caret = editor.value.length;
-      editor.setSelectionRange(caret, caret);
-      if (preserveScroll) {
-        pinCurrentMessageScrollPosition();
-        restoreMessageScrollPosition();
-      }
+    if (!(editor instanceof HTMLTextAreaElement)) return;
+    if (preserveScroll) pinCurrentMessageScrollPosition();
+    try {
+      editor.focus({ preventScroll: true });
+    } catch (_) {
+      editor.focus();
     }
-    if (remaining <= 0) {
-      if (requestId === state.composerFocusRequestId) state.pendingEditorAutofocus = false;
-      return;
+    const caret = editor.value.length;
+    editor.setSelectionRange(caret, caret);
+    state.pendingEditorAutofocus = false;
+    if (preserveScroll) {
+      pinCurrentMessageScrollPosition();
+      restoreMessageScrollPosition();
     }
-    // Group realtime events can trigger a second render after the editor was focused.
-    setTimeout(() => tryFocus(remaining - 1), 70);
-  };
-  tryFocus(retries);
+  });
 }
 
 function refreshReplyBarHost() {
