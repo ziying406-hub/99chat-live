@@ -76,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-emoji-panel-v1";
+const APP_VERSION = "20260718-emoji-caret-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -132,6 +132,7 @@ const state = {
   toast: "",
   toolMenu: null,
   emojiCategory: "frequent",
+  editorSelection: null,
   voiceMode: false,
   useMock: false,
   data: null,
@@ -4154,16 +4155,29 @@ function bindEvents() {
   });
   const editor = document.querySelector("#editor");
   if (editor) {
+    const captureEditorSelection = () => rememberEditorSelection(editor);
     editor.addEventListener("input", () => {
       setCurrentDraftText(editor.value);
     });
     editor.addEventListener("input", updateMentionSuggestions);
-    editor.addEventListener("keyup", updateMentionSuggestions);
-    editor.addEventListener("click", updateMentionSuggestions);
-    editor.addEventListener("focus", updateMentionSuggestions);
+    editor.addEventListener("input", captureEditorSelection);
+    editor.addEventListener("keyup", () => {
+      captureEditorSelection();
+      updateMentionSuggestions();
+    });
+    editor.addEventListener("click", () => {
+      captureEditorSelection();
+      updateMentionSuggestions();
+    });
+    editor.addEventListener("select", captureEditorSelection);
+    editor.addEventListener("focus", () => {
+      captureEditorSelection();
+      updateMentionSuggestions();
+    });
     editor.addEventListener("keydown", handleEditorKeydown);
   }
   document.querySelectorAll("[data-tool]").forEach(el => el.addEventListener("click", () => {
+    if (el.dataset.tool === "emoji") rememberEditorSelection();
     state.toolMenu = state.toolMenu === el.dataset.tool ? null : el.dataset.tool;
     if (state.toolMenu === "emoji") state.emojiCategory = "frequent";
     state.mention = null;
@@ -8044,13 +8058,24 @@ function insertIntoEditor(text) {
   const editor = document.querySelector("#editor");
   if (!editor) return;
   const value = editor.value;
-  const start = editor.selectionStart ?? value.length;
-  const end = editor.selectionEnd ?? value.length;
+  const selection = state.editorSelection || {};
+  const start = Math.max(0, Math.min(value.length, selection.start ?? editor.selectionStart ?? value.length));
+  const end = Math.max(start, Math.min(value.length, selection.end ?? editor.selectionEnd ?? value.length));
   editor.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
   const caret = start + text.length;
   editor.focus();
   editor.setSelectionRange(caret, caret);
+  state.editorSelection = { start: caret, end: caret };
+  setCurrentDraftText(editor.value);
   updateMentionSuggestions();
+}
+
+function rememberEditorSelection(editor = document.querySelector("#editor")) {
+  if (!(editor instanceof HTMLTextAreaElement)) return;
+  const length = editor.value.length;
+  const start = Math.max(0, Math.min(length, editor.selectionStart ?? length));
+  const end = Math.max(start, Math.min(length, editor.selectionEnd ?? length));
+  state.editorSelection = { start, end };
 }
 
 function syncMentionMenu() {
