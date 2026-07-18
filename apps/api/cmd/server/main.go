@@ -529,8 +529,9 @@ type Hub struct {
 }
 
 type WSConn struct {
-	conn net.Conn
-	rw   *bufio.ReadWriter
+	conn    net.Conn
+	rw      *bufio.ReadWriter
+	writeMu sync.Mutex
 }
 
 func main() {
@@ -5324,7 +5325,13 @@ func (s *Store) websocket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var envelope map[string]any
-		if json.Unmarshal([]byte(msg), &envelope) == nil && envelope["type"] == "typing" {
+		if json.Unmarshal([]byte(msg), &envelope) != nil {
+			continue
+		}
+		switch envelope["type"] {
+		case "heartbeat":
+			_ = c.WriteJSON(map[string]any{"type": "heartbeat", "payload": map[string]any{"serverTime": time.Now()}})
+		case "typing":
 			s.hub.Broadcast(envelope)
 		}
 	}
@@ -5487,10 +5494,27 @@ func (h *Hub) Remove(c *WSConn) {
 
 func (h *Hub) Broadcast(v any) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	clients := make([]*WSConn, 0, len(h.clients))
 	for c := range h.clients {
-		_ = c.WriteJSON(v)
+		clients = append(clients, c)
 	}
+	h.mu.Unlock()
+
+	var failed []*WSConn
+	for _, c := range clients {
+		if err := c.WriteJSON(v); err != nil {
+			failed = append(failed, c)
+		}
+	}
+	if len(failed) == 0 {
+		return
+	}
+	h.mu.Lock()
+	for _, c := range failed {
+		delete(h.clients, c)
+		_ = c.conn.Close()
+	}
+	h.mu.Unlock()
 }
 
 func acceptWebSocket(w http.ResponseWriter, r *http.Request) (*WSConn, error) {
@@ -5568,6 +5592,8 @@ func (c *WSConn) ReadText() (string, error) {
 }
 
 func (c *WSConn) WriteJSON(v any) error {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
 	b, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -5582,6 +5608,10 @@ func (c *WSConn) WriteJSON(v any) error {
 		frame = append(frame, 127, 0, 0, 0, 0, byte(n>>24), byte(n>>16), byte(n>>8), byte(n))
 	}
 	frame = append(frame, b...)
+	if err := c.conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		return err
+	}
+	defer c.conn.SetWriteDeadline(time.Time{})
 	if _, err := c.rw.Write(frame); err != nil {
 		return err
 	}

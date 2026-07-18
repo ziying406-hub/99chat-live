@@ -1,4 +1,4 @@
-const CACHE_NAME = "99chat-shell-v30";
+const CACHE_NAME = "99chat-shell-v31";
 const SHELL = [
   "/",
   "/index.html",

@@ -50,6 +50,7 @@ import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
+import { shouldReconnectRealtimeHeartbeat, shouldRefreshRealtimeSnapshotOnOpen } from "./realtimeConnection.js";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
@@ -75,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260717-live-read-receipts-v2";
+const APP_VERSION = "20260718-realtime-delivery-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -135,6 +136,9 @@ const state = {
   data: null,
   ws: null,
   wsReconnectTimer: null,
+  wsHeartbeatTimer: null,
+  wsLastHeartbeatAt: 0,
+  wsConnectedOnce: false,
   friendSyncTimer: null,
   friendSyncSnapshot: [],
   readReceiptSyncTimers: {},
@@ -467,12 +471,46 @@ function scheduleRealtimeReconnect() {
   }, 1000);
 }
 
+function stopRealtimeHeartbeat() {
+  if (!state.wsHeartbeatTimer) return;
+  window.clearInterval(state.wsHeartbeatTimer);
+  state.wsHeartbeatTimer = null;
+}
+
+function startRealtimeHeartbeat(ws) {
+  stopRealtimeHeartbeat();
+  state.wsLastHeartbeatAt = Date.now();
+  state.wsHeartbeatTimer = window.setInterval(() => {
+    if (state.ws !== ws) {
+      stopRealtimeHeartbeat();
+      return;
+    }
+    if (shouldReconnectRealtimeHeartbeat({
+      lastHeartbeatAt: state.wsLastHeartbeatAt,
+      now: Date.now()
+    })) {
+      ws.close();
+      return;
+    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "heartbeat" }));
+  }, 15000);
+}
+
+async function syncRealtimeSnapshot() {
+  if (state.useMock || !state.data) return;
+  await refreshGroupsAndConversations();
+  if (state.selectedConversationId) await loadMessages(state.selectedConversationId);
+  scheduleScrollToBottom();
+  render();
+}
+
 function connectRealtime() {
   if (state.useMock || state.ws) return;
   try {
     const ws = new WebSocket(`${WS_BASE}/ws`);
     ws.onmessage = async event => {
       const envelope = JSON.parse(event.data);
+      state.wsLastHeartbeatAt = Date.now();
       const friendUpdate = friendRealtimeUpdate(envelope, state.user?.id);
       if (friendUpdate.refresh) {
         await refreshFriendRealtimeState().catch(() => {});
@@ -598,14 +636,20 @@ function connectRealtime() {
     };
     ws.onclose = () => {
       if (state.ws === ws) state.ws = null;
+      stopRealtimeHeartbeat();
       startFriendRealtimeSync();
       scheduleRealtimeReconnect();
     };
     ws.onerror = () => {
       // onclose clears the stale handle and schedules a reconnect.
     };
-    ws.onopen = () => {
-      if (state.ws === ws) stopFriendRealtimeSync();
+    ws.onopen = async () => {
+      if (state.ws !== ws) return;
+      stopFriendRealtimeSync();
+      startRealtimeHeartbeat(ws);
+      const shouldRefresh = shouldRefreshRealtimeSnapshotOnOpen({ previousConnection: state.wsConnectedOnce });
+      state.wsConnectedOnce = true;
+      if (shouldRefresh) await syncRealtimeSnapshot().catch(() => {});
     };
     state.ws = ws;
   } catch (_) {}
