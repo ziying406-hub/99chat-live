@@ -44,7 +44,7 @@ import { messagePreviewText, messageTypeLabel, quotePreviewText, searchPreviewTe
 import { messageMatchesQuery } from "./messageSearch.js";
 import { collectMentionIdsFromText, findMentionTargetByName, mentionCandidatesFromGroup } from "./mentionTargets.js?v=20260708-mention-menu-click";
 import { ALL_MEMBERS_MENTION_ID, groupAllMentionCandidate, groupAllMentionIds } from "./groupMentionAll.js";
-import { buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
+import { appendMessageOnce, buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
@@ -76,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-emoji-dismiss-v1";
+const APP_VERSION = "20260718-message-realtime-dedup-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -531,7 +531,7 @@ function connectRealtime() {
         })) return;
         const incoming = message.senderId !== state.user?.id;
         const conv = ensureRealtimeConversation(id, message) || getConversation(id);
-        state.data.messages[id] = [...(state.data.messages[id] || []), envelope.payload];
+        state.data.messages[id] = appendMessageOnce(state.data.messages[id], message);
         const mentionedMe = incoming && messageMentionsCurrentUser(message);
         const shouldNotify = shouldNotifyConversation(conv) || mentionedMe;
         upsertConversationPreview(id, message, {

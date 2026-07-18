@@ -51,6 +51,14 @@ export function replacePendingMessage(messages, pendingId, savedMessage) {
   }, []);
 }
 
+export function appendMessageOnce(messages, message) {
+  const items = Array.isArray(messages) ? messages : [];
+  const messageId = String(message?.id || "").trim();
+  if (!messageId) return [...items, message];
+  if (items.some(item => String(item?.id || "") === messageId)) return items;
+  return [...items, message];
+}
+
 function structuredCloneSafe(value) {
   if (typeof structuredClone === "function") return structuredClone(value);
   return JSON.parse(JSON.stringify(value));

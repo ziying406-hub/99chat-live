@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
+import { appendMessageOnce, buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 
 test("pending message starts with sending status", () => {
   const message = buildPendingMessage({
@@ -55,4 +55,17 @@ test("successful send removes websocket duplicate when replacing pending message
   const messages = [{ id: "old" }, pending, saved];
 
   assert.deepEqual(replacePendingMessage(messages, pending.id, saved), [{ id: "old" }, saved]);
+});
+
+test("realtime delivery after the send response does not duplicate a saved message", () => {
+  const saved = { id: "m1", conversationId: "group-1", type: "text", body: "hello" };
+
+  assert.deepEqual(appendMessageOnce([{ id: "old" }, saved], saved), [{ id: "old" }, saved]);
+});
+
+test("realtime delivery keeps a saved message while its optimistic placeholder is pending", () => {
+  const pending = { id: "pending-1", conversationId: "group-1", sendStatus: "sending" };
+  const saved = { id: "m1", conversationId: "group-1", type: "text", body: "hello" };
+
+  assert.deepEqual(appendMessageOnce([pending], saved), [pending, saved]);
 });
