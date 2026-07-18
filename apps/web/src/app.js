@@ -26,7 +26,7 @@ import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
-import { conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-conversation-paths-v1";
+import { canonicalConversationIdForRoute, conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-group-chat-id-routes-v1";
 import { writeClipboardText } from "./clipboardCopy.js";
 import {
   buildCreateGroupPayload,
@@ -255,8 +255,15 @@ async function handleSidePageHash() {
   await openSidePage(sidePage);
 }
 
+function conversationIdFromCurrentRoute() {
+  return canonicalConversationIdForRoute(
+    conversationIdFromLocation(window.location),
+    state.data?.groups || []
+  );
+}
+
 async function handleConversationRouteChange() {
-  const conversationId = conversationIdFromLocation(window.location);
+  const conversationId = conversationIdFromCurrentRoute();
   if (conversationId && getConversation(conversationId)) {
     await openConversationFromHash(conversationId);
     return;
@@ -269,7 +276,7 @@ async function handleConversationRouteChange() {
 }
 
 function syncConversationPath(conversationId, { push = false } = {}) {
-  const nextPath = conversationPathFor(conversationId);
+  const nextPath = conversationPathFor(conversationId, state.data?.groups || []);
   const nextUrl = `${nextPath}${window.location.search}`;
   const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (currentUrl === nextUrl) return;
@@ -289,7 +296,7 @@ function isKnownConversationHash(value) {
 }
 
 async function openConversationFromHash(value) {
-  const conversationId = decodeURIComponent(value || "");
+  const conversationId = canonicalConversationIdForRoute(decodeURIComponent(value || ""), state.data?.groups || []);
   if (!getConversation(conversationId)) return;
   state.section = "messages";
   state.selectedConversationId = conversationId;
@@ -331,12 +338,13 @@ async function loadData() {
       loginDevices: [],
       messages: {}
     };
-    const routedConversationId = conversationIdFromLocation(window.location);
-    state.selectedConversationId = routedConversationId && getConversation(routedConversationId)
-      ? routedConversationId
+    const routeConversationId = conversationIdFromCurrentRoute();
+    state.selectedConversationId = routeConversationId && getConversation(routeConversationId)
+      ? routeConversationId
       : null;
-    if (routedConversationId && !state.selectedConversationId) syncConversationPath(null);
+    if (routeConversationId && !state.selectedConversationId) syncConversationPath(null);
     if (state.selectedConversationId) {
+      syncConversationPath(state.selectedConversationId);
       markConversationRead(state.selectedConversationId);
       await Promise.all([
         loadMessages(state.selectedConversationId),
@@ -7685,9 +7693,9 @@ function hydrateMockSessionFromStorage(session = null) {
     state.user = structuredClone(registeredSession.user);
     ensureUserSettings();
     state.data = structuredClone(registeredSession.data);
-    const routedConversationId = conversationIdFromLocation(window.location);
-    state.selectedConversationId = routedConversationId && getConversation(routedConversationId)
-      ? routedConversationId
+    const routeConversationId = conversationIdFromCurrentRoute();
+    state.selectedConversationId = routeConversationId && getConversation(routeConversationId)
+      ? routeConversationId
       : null;
     state.sidePage = null;
     return;
@@ -7698,9 +7706,9 @@ function hydrateMockSessionFromStorage(session = null) {
   state.data = structuredClone(mock);
   applyStoredMockGroupTitles();
   applyStoredMockGroupNicknames();
-  const routedConversationId = conversationIdFromLocation(window.location);
-  state.selectedConversationId = routedConversationId && getConversation(routedConversationId)
-    ? routedConversationId
+  const routeConversationId = conversationIdFromCurrentRoute();
+  state.selectedConversationId = routeConversationId && getConversation(routeConversationId)
+    ? routeConversationId
     : null;
 }
 
