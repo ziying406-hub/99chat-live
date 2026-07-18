@@ -122,6 +122,10 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 				owner_user_id TEXT NOT NULL REFERENCES users(id),
 				created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 			)`,
+		`CREATE TABLE IF NOT EXISTS group_chat_id_sequence (
+			singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
+			next_value BIGINT NOT NULL
+		)`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS qr_code TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS disable_member_add_friend BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS all_muted BOOLEAN NOT NULL DEFAULT false`,
@@ -557,7 +561,23 @@ func (pg *PostgresStore) backfillAcceptedFriendships(ctx context.Context) error 
 }
 
 func (pg *PostgresStore) backfillGroupChatIDs(ctx context.Context) error {
-	rows, err := pg.pool.Query(ctx, `SELECT id, chat_id FROM groups`)
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var nextValue int64
+	err = tx.QueryRow(ctx, `SELECT next_value FROM group_chat_id_sequence WHERE singleton = 1 FOR UPDATE`).Scan(&nextValue)
+	sequenceExists := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if nextValue < firstPublicGroupChatID {
+		nextValue = firstPublicGroupChatID
+	}
+
+	rows, err := tx.Query(ctx, `SELECT id, chat_id FROM groups ORDER BY created_at, id`)
 	if err != nil {
 		return err
 	}
@@ -566,7 +586,6 @@ func (pg *PostgresStore) backfillGroupChatIDs(ctx context.Context) error {
 		chatID string
 	}
 	var groups []groupChatID
-	used := map[string]bool{}
 	for rows.Next() {
 		var group groupChatID
 		if err := rows.Scan(&group.id, &group.chatID); err != nil {
@@ -574,9 +593,6 @@ func (pg *PostgresStore) backfillGroupChatIDs(ctx context.Context) error {
 			return err
 		}
 		groups = append(groups, group)
-		if isNumericGroupChatID(group.chatID) {
-			used[group.chatID] = true
-		}
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -584,27 +600,49 @@ func (pg *PostgresStore) backfillGroupChatIDs(ctx context.Context) error {
 	}
 	rows.Close()
 
-	for _, group := range groups {
-		if isNumericGroupChatID(group.chatID) {
-			continue
-		}
-		chatID := ""
-		for i := 0; i < 20; i++ {
-			candidate := newGroupChatID()
-			if !used[candidate] {
-				chatID = candidate
-				used[candidate] = true
+	needsMigration := !sequenceExists
+	if !needsMigration {
+		for _, group := range groups {
+			if !isPublicGroupChatID(group.chatID) {
+				needsMigration = true
 				break
 			}
 		}
-		if chatID == "" {
-			return errors.New("could not backfill group chat id")
+	}
+	if needsMigration {
+		// Move every existing value aside before assigning contiguous public numbers.
+		// This avoids unique-key collisions while replacing legacy random/internal IDs.
+		for _, group := range groups {
+			if _, err := tx.Exec(ctx, `UPDATE groups SET chat_id = $2 WHERE id = $1`, group.id, "migrating-"+group.id); err != nil {
+				return err
+			}
 		}
-		if _, err := pg.pool.Exec(ctx, `UPDATE groups SET chat_id = $2 WHERE id = $1`, group.id, chatID); err != nil {
-			return err
+		nextValue = firstPublicGroupChatID
+		for _, group := range groups {
+			if _, err := tx.Exec(ctx, `UPDATE groups SET chat_id = $2 WHERE id = $1`, group.id, fmt.Sprintf("%06d", nextValue)); err != nil {
+				return err
+			}
+			nextValue++
 		}
 	}
-	return nil
+	if _, err := tx.Exec(ctx, `INSERT INTO group_chat_id_sequence(singleton, next_value)
+		VALUES (1, $1)
+		ON CONFLICT (singleton) DO UPDATE SET next_value = EXCLUDED.next_value`, nextValue); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func (pg *PostgresStore) nextPublicGroupChatID(ctx context.Context) (string, error) {
+	var value int64
+	err := pg.pool.QueryRow(ctx, `UPDATE group_chat_id_sequence
+		SET next_value = next_value + 1
+		WHERE singleton = 1
+		RETURNING next_value - 1`).Scan(&value)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", value), nil
 }
 
 func (pg *PostgresStore) backfillGroupOwnerMemberships(ctx context.Context) error {

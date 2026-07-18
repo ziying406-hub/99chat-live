@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,11 +32,12 @@ import (
 )
 
 const (
-	demoLoginCode            = "123456"
-	maxUploadSizeBytes int64 = 64 << 20
-	chatIDLetters            = "abcdefghijklmnopqrstuvwxyz"
-	chatIDDigits             = "0123456789"
-	chatIDAlphabet           = chatIDLetters + chatIDDigits
+	demoLoginCode                = "123456"
+	maxUploadSizeBytes     int64 = 64 << 20
+	chatIDLetters                = "abcdefghijklmnopqrstuvwxyz"
+	chatIDDigits                 = "0123456789"
+	chatIDAlphabet               = chatIDLetters + chatIDDigits
+	firstPublicGroupChatID       = 130001
 )
 
 var adminLoginDummyPasswordHash = func() string {
@@ -501,6 +503,7 @@ type Store struct {
 	messageClears     map[string]map[string]time.Time
 	conversationHides map[string]map[string]bool
 	groups            map[string]Group
+	nextGroupChatID   int
 	discoverGroups    []Group
 	requests          []FriendRequest
 	joinRequests      []GroupJoinRequest
@@ -4951,17 +4954,27 @@ func newQRCode() string {
 }
 
 func (s *Store) uniqueGroupChatID(ctx context.Context) (string, error) {
-	for i := 0; i < 20; i++ {
-		chatID := newGroupChatID()
-		exists, err := s.groupChatIDExists(ctx, chatID)
-		if err != nil {
-			return "", err
-		}
-		if !exists {
-			return chatID, nil
+	if s.pg != nil {
+		return s.pg.nextPublicGroupChatID(ctx)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.nextGroupChatID < firstPublicGroupChatID {
+		s.nextGroupChatID = firstPublicGroupChatID
+		for _, group := range s.groups {
+			if !isPublicGroupChatID(group.ChatID) {
+				continue
+			}
+			value, err := strconv.Atoi(group.ChatID)
+			if err == nil && value >= s.nextGroupChatID {
+				s.nextGroupChatID = value + 1
+			}
 		}
 	}
-	return "", errors.New("could not generate unique group chat id")
+	chatID := fmt.Sprintf("%06d", s.nextGroupChatID)
+	s.nextGroupChatID++
+	return chatID, nil
 }
 
 func (s *Store) groupChatIDExists(ctx context.Context, chatID string) (bool, error) {
@@ -4981,10 +4994,6 @@ func (s *Store) groupChatIDExists(ctx context.Context, chatID string) (bool, err
 	return exists, err
 }
 
-func newGroupChatID() string {
-	return fmt.Sprintf("%06d", rand.Intn(900000)+100000)
-}
-
 func isNumericGroupChatID(chatID string) bool {
 	if len(chatID) != 6 {
 		return false
@@ -4995,6 +5004,14 @@ func isNumericGroupChatID(chatID string) bool {
 		}
 	}
 	return true
+}
+
+func isPublicGroupChatID(chatID string) bool {
+	if !isNumericGroupChatID(chatID) {
+		return false
+	}
+	value, err := strconv.Atoi(chatID)
+	return err == nil && value >= firstPublicGroupChatID
 }
 
 func newChatID() string {

@@ -36,6 +36,24 @@ func TestSignFileRejectsInvalidSizes(t *testing.T) {
 	}
 }
 
+func TestUniqueGroupChatIDStartsAtSequentialPublicNumber(t *testing.T) {
+	store := &Store{groups: map[string]Group{}}
+	first, err := store.uniqueGroupChatID(context.Background())
+	if err != nil {
+		t.Fatalf("allocate first group chat ID: %v", err)
+	}
+	if first != "130001" {
+		t.Fatalf("expected first public group number 130001, got %q", first)
+	}
+	second, err := store.uniqueGroupChatID(context.Background())
+	if err != nil {
+		t.Fatalf("allocate second group chat ID: %v", err)
+	}
+	if second != "130002" {
+		t.Fatalf("expected second public group number 130002, got %q", second)
+	}
+}
+
 func TestProfileAvatarUpdateForGroupOwnerDoesNotBlock(t *testing.T) {
 	store := seedStore()
 	store.groups["avatar-sync"] = Group{
