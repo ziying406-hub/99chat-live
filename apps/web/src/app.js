@@ -77,7 +77,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260719-conversation-selection-v1";
+const APP_VERSION = "20260719-avatar-fallback-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -931,7 +931,7 @@ function bindAvatarFallbacks() {
     image.addEventListener("error", () => {
       if (image.dataset.avatarFallbackApplied === "true") return;
       image.dataset.avatarFallbackApplied = "true";
-      image.src = avatar("友");
+      image.src = image.dataset.avatarFallback || avatar("友");
     }, { once: true });
   });
 }
@@ -1183,7 +1183,7 @@ function renderConversationListItem(c) {
   return `
     <article class="${rowClass}" data-conversation="${c.id}">
       <span class="conversation-avatar-wrap">
-        <img class="avatar" src="${avatarSrc(c.avatar)}" alt="">
+        ${renderEntityAvatar(c, c.kind === "group" ? "群" : "友")}
       </span>
       <div class="conversation-copy">
         <div class="conversation-topline">
@@ -9392,6 +9392,15 @@ function avatarFor(entity, fallback = "我") {
     return avatarSrc(rawAvatar);
   }
   return avatarSrc(avatar(firstAvatarGlyph(entity?.nickname || entity?.title || entity?.name || fallback)));
+}
+
+function avatarFallbackFor(entity, fallback = "我") {
+  const label = firstAvatarGlyph(entity?.nickname || entity?.title || entity?.name || fallback);
+  return avatarSrc(avatar(label));
+}
+
+function renderEntityAvatar(entity, fallback = "我", className = "avatar") {
+  return `<img class="${className}" src="${avatarFor(entity, fallback)}" data-avatar-fallback="${avatarFallbackFor(entity, fallback)}" alt="">`;
 }
 
 function firstAvatarGlyph(value) {
