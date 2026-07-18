@@ -1953,12 +1953,12 @@ func TestConversationListClearsMentionAfterRead(t *testing.T) {
 		t.Fatalf("expected message 201, got %d: %s", messageRec.Code, messageRec.Body.String())
 	}
 
-	readReq := httptest.NewRequest(http.MethodGet, "/api/conversations/"+conversationID+"/messages", nil)
+	readReq := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conversationID+"/messages/read", nil)
 	readReq.Header.Set("Authorization", "Bearer "+second.Token)
 	readRec := httptest.NewRecorder()
 	mux.ServeHTTP(readRec, readReq)
 	if readRec.Code != http.StatusOK {
-		t.Fatalf("expected messages 200, got %d: %s", readRec.Code, readRec.Body.String())
+		t.Fatalf("expected read acknowledgement 200, got %d: %s", readRec.Code, readRec.Body.String())
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/conversations", nil)
@@ -3182,6 +3182,14 @@ func TestBurnAfterReadMessageIsVisibleOnceToRecipient(t *testing.T) {
 		t.Fatalf("recipient should receive burn message once: %+v", firstRead)
 	}
 
+	ackReadReq := httptest.NewRequest(http.MethodPost, "/api/conversations/session-"+first.User.ID+"/messages/read", nil)
+	ackReadReq.Header.Set("Authorization", "Bearer "+second.Token)
+	ackReadRec := httptest.NewRecorder()
+	mux.ServeHTTP(ackReadRec, ackReadReq)
+	if ackReadRec.Code != http.StatusOK {
+		t.Fatalf("expected burn read acknowledgement 200, got %d: %s", ackReadRec.Code, ackReadRec.Body.String())
+	}
+
 	readAgainReq := httptest.NewRequest(http.MethodGet, "/api/conversations/session-"+first.User.ID+"/messages", nil)
 	readAgainReq.Header.Set("Authorization", "Bearer "+second.Token)
 	readAgainRec := httptest.NewRecorder()
@@ -3951,7 +3959,7 @@ func TestReadingConversationAddsReadReceiptCounts(t *testing.T) {
 	mux := http.NewServeMux()
 	registerRoutes(mux, store)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/conversations/group-21444/messages", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations/group-21444/messages/read", nil)
 	req.Header.Set("Authorization", "Bearer member-token")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -4006,6 +4014,9 @@ func TestReadingConversationReturnsPreviousReadAtHeader(t *testing.T) {
 	}
 	if got, want := rec.Header().Get("X-Chat-Previous-Read-At"), previousReadAt.Format(time.RFC3339Nano); got != want {
 		t.Fatalf("previous read header = %q, want %q", got, want)
+	}
+	if got := store.messageReads["group-21444"]["388754"]; !got.Equal(previousReadAt) {
+		t.Fatalf("GET marked the conversation as read at %s, want %s", got, previousReadAt)
 	}
 }
 

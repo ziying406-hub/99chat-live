@@ -211,8 +211,11 @@ async function init() {
   }
   window.addEventListener("hashchange", handleSidePageHash);
   window.addEventListener("popstate", handleConversationRouteChange);
+  window.addEventListener("focus", acknowledgeVisibleConversationRead);
+  document.addEventListener("visibilitychange", acknowledgeVisibleConversationRead);
   render();
   await handleSidePageHash();
+  acknowledgeVisibleConversationRead();
   if (state.showSplash) {
     setTimeout(() => {
       sessionStorage.setItem("chatlite-splash-seen", "1");
@@ -304,12 +307,12 @@ async function openConversationFromHash(value) {
   state.selectedConversationId = conversationId;
   state.sidePage = null;
   syncConversationPath(conversationId);
-  markConversationRead(conversationId);
   await Promise.all([
     loadMessages(conversationId, { restoreUnreadBoundary: true }),
     loadConversationGroup(conversationId)
   ]);
   render();
+  void acknowledgeConversationRead(conversationId);
 }
 
 async function loadData() {
@@ -346,7 +349,6 @@ async function loadData() {
     if (routeConversationId && !state.selectedConversationId) syncConversationPath(null);
     if (state.selectedConversationId) {
       syncConversationPath(state.selectedConversationId);
-      markConversationRead(state.selectedConversationId);
       await Promise.all([
         loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
         loadConversationGroup(state.selectedConversationId)
@@ -445,7 +447,7 @@ async function loadMessages(conversationId, { restoreUnreadBoundary = false } = 
     }
     return;
   }
-  // Reading a conversation must always reach the server so the sender receives a read receipt.
+  // Loading messages is read-only. A separate request confirms that the visible conversation was read.
   const { data: messages, response } = await api(`/api/conversations/${conversationId}/messages`, { withResponseMeta: true });
   state.data.messages[conversationId] = messages;
   if (restoreUnreadBoundary) {
@@ -470,14 +472,12 @@ function scheduleRealtimeReadReceipt(conversationId, incoming) {
 
   state.readReceiptSyncTimers[conversationId] = window.setTimeout(async () => {
     delete state.readReceiptSyncTimers[conversationId];
-    if (state.section !== "messages" || state.selectedConversationId !== conversationId) return;
-    try {
-      await loadMessages(conversationId);
-      if (state.section === "messages" && state.selectedConversationId === conversationId) {
-        scheduleScrollToBottom();
-        render();
-      }
-    } catch (_) {}
+    if (!canAcknowledgeConversationRead(conversationId)) return;
+    await acknowledgeConversationRead(conversationId);
+    if (canAcknowledgeConversationRead(conversationId)) {
+      scheduleScrollToBottom();
+      render();
+    }
   }, 80);
 }
 
@@ -622,7 +622,7 @@ function connectRealtime() {
         const mentionedMe = incoming && messageMentionsCurrentUser(message);
         const shouldNotify = shouldNotifyConversation(conv) || mentionedMe;
         upsertConversationPreview(id, message, {
-          bumpUnread: shouldNotify && incoming && id !== state.selectedConversationId,
+          bumpUnread: shouldNotify && incoming && !canAcknowledgeConversationRead(id),
           mentionMe: mentionedMe
         });
         if (mentionedMe) {
@@ -649,6 +649,10 @@ function connectRealtime() {
         const id = envelope.conversationId;
         if (id && state.data.messages[id]) {
           state.data.messages[id] = applyMessageReadReceipt(state.data.messages[id], envelope.payload);
+          if (String(envelope.payload?.userId || "") === String(state.user?.id || "")) {
+            markConversationRead(id);
+            delete state.unreadBoundaryByConversation[id];
+          }
           render();
         }
       }
@@ -4126,12 +4130,12 @@ function bindEvents() {
     state.mention = null;
     state.mentionIds = [];
     state.conversationMenu = null;
-    markConversationRead(state.selectedConversationId);
     await Promise.all([
       loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
       loadConversationGroup(state.selectedConversationId)
     ]);
     render();
+    void acknowledgeConversationRead(state.selectedConversationId);
   }));
   document.querySelector(".sidebar .list")?.addEventListener("contextmenu", e => {
     const item = e.target.closest("[data-conversation]");
@@ -5640,6 +5644,7 @@ async function updateFriendRequest(requestId, status, options = {}) {
     scheduleScrollToBottom();
   }
   render();
+  if (status === "accepted" && acceptedConversationId) void acknowledgeConversationRead(acceptedConversationId);
 }
 
 async function confirmIncomingGroupInvite(requestId) {
@@ -6317,6 +6322,7 @@ async function openJoinedGroup(group) {
   await loadMessages(state.selectedConversationId);
   scheduleScrollToBottom();
   render();
+  void acknowledgeConversationRead(state.selectedConversationId);
 }
 
 async function simulateScanCurrentGroup() {
@@ -8302,8 +8308,8 @@ function openChatFromContactKey(key) {
   state.preview = null;
   state.mention = null;
   state.mentionIds = [];
-  markConversationRead(sessionId);
   render();
+  void acknowledgeConversationRead(sessionId);
 }
 
 function rememberMessageScrollPosition() {
@@ -8922,9 +8928,9 @@ async function submitForwardSelection() {
       state.selectedConversationId = firstConversationId;
       syncConversationPath(firstConversationId, { push: true });
       state.sidePage = null;
-      markConversationRead(firstConversationId);
       await loadMessages(firstConversationId);
       scheduleScrollToBottom();
+      void acknowledgeConversationRead(firstConversationId);
     }
     toast(`已转发到 ${targets.length} 个聊天`);
     render();
@@ -9112,6 +9118,39 @@ function markConversationRead(conversationId) {
     conv.unread = 0;
     conv.mentionedMe = false;
   }
+}
+
+function canAcknowledgeConversationRead(conversationId) {
+  return Boolean(
+    conversationId &&
+    state.section === "messages" &&
+    state.selectedConversationId === conversationId &&
+    !state.sidePage &&
+    document.visibilityState === "visible" &&
+    (typeof document.hasFocus !== "function" || document.hasFocus())
+  );
+}
+
+async function acknowledgeConversationRead(conversationId) {
+  if (!canAcknowledgeConversationRead(conversationId)) return false;
+  markConversationRead(conversationId);
+  delete state.unreadBoundaryByConversation[conversationId];
+  if (state.useMock) return true;
+  try {
+    await api(`/api/conversations/${conversationId}/messages/read`, { method: "POST" });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function acknowledgeVisibleConversationRead() {
+  if (document.visibilityState !== "visible") return;
+  const conversationId = state.selectedConversationId;
+  if (!canAcknowledgeConversationRead(conversationId)) return;
+  void acknowledgeConversationRead(conversationId).then((acknowledged) => {
+    if (acknowledged && canAcknowledgeConversationRead(conversationId)) render();
+  });
 }
 
 function conversationNeedsAttention(conversation) {
