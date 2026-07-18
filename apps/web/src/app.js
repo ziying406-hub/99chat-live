@@ -77,7 +77,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-conversation-paths-v1";
+const APP_VERSION = "20260719-in-app-notification-sound-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -629,6 +629,7 @@ function connectRealtime() {
           rememberMentionNotification(message.id);
           toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
         }
+        playInAppNotificationSound({ incoming, shouldNotify, mentionedMe });
         showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
         scheduleRealtimeReadReceipt(id, incoming);
         if (id === state.selectedConversationId) scheduleScrollToBottom();
@@ -765,6 +766,52 @@ async function requestBrowserNotificationPermission() {
     return false;
   }
   return true;
+}
+
+let notificationAudioContext = null;
+let notificationSoundUnlockInstalled = false;
+
+function notificationAudioContextForPlayback() {
+  const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
+  if (!AudioContextCtor) return null;
+  if (!notificationAudioContext) notificationAudioContext = new AudioContextCtor();
+  return notificationAudioContext;
+}
+
+function unlockNotificationSound() {
+  const context = notificationAudioContextForPlayback();
+  if (context?.state === "suspended") void context.resume().catch(() => {});
+}
+
+function installNotificationSoundUnlock() {
+  if (notificationSoundUnlockInstalled) return;
+  notificationSoundUnlockInstalled = true;
+  document.addEventListener("pointerdown", unlockNotificationSound, { capture: true, passive: true });
+  document.addEventListener("keydown", unlockNotificationSound, { capture: true });
+}
+
+function playNotificationTone(context, frequency, startAt, duration = 0.16) {
+  const oscillator = context.createOscillator();
+  const gain = context.createGain();
+  oscillator.type = "sine";
+  oscillator.frequency.setValueAtTime(frequency, startAt);
+  gain.gain.setValueAtTime(0.0001, startAt);
+  gain.gain.exponentialRampToValueAtTime(0.085, startAt + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
+  oscillator.connect(gain);
+  gain.connect(context.destination);
+  oscillator.start(startAt);
+  oscillator.stop(startAt + duration + 0.01);
+}
+
+function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}) {
+  const settings = ensureUserSettings();
+  if (!incoming || !shouldNotify || !settings.notificationsEnabled || !settings.notificationSound) return;
+  const context = notificationAudioContextForPlayback();
+  if (!context || context.state !== "running") return;
+  const startAt = context.currentTime + 0.02;
+  playNotificationTone(context, mentionedMe ? 880 : 660, startAt);
+  if (mentionedMe) playNotificationTone(context, 1175, startAt + 0.19);
 }
 
 async function showBrowserMessageNotification(conversation, message, { incoming, mentionedMe } = {}) {
@@ -4109,6 +4156,7 @@ function bindForwardModalEvents() {
 }
 
 function bindEvents() {
+  installNotificationSoundUnlock();
   document.querySelectorAll("[data-section]").forEach(el => el.addEventListener("click", async e => {
     e.preventDefault();
     clearKnownSidePageHash();
