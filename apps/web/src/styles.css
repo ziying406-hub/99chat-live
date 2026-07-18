@@ -1382,6 +1382,32 @@ a {
   font-weight: 650;
 }
 
+.unread-message-boundary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 18px 0;
+  color: #1d4ed8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.unread-message-boundary::before,
+.unread-message-boundary::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: #bfdbfe;
+}
+
+.unread-message-boundary span {
+  white-space: nowrap;
+  padding: 4px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+}
+
 .message {
   display: flex;
   gap: 8px;

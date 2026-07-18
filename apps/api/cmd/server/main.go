@@ -2372,7 +2372,10 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		current := s.currentUser(r)
 		conversationID = s.canonicalConversationIDForUser(r.Context(), conversationID, current.ID)
-		messages, readAt := s.readConversationMessages(r.Context(), conversationID, current.ID)
+		messages, previousReadAt, readAt := s.readConversationMessages(r.Context(), conversationID, current.ID)
+		if !previousReadAt.IsZero() {
+			w.Header().Set("X-Chat-Previous-Read-At", previousReadAt.UTC().Format(time.RFC3339Nano))
+		}
 		writeJSON(w, http.StatusOK, messages)
 		if event := messageReadReceiptEvent(conversationID, current.ID, readAt, messages); len(event.Payload.Messages) > 0 {
 			s.hub.Broadcast(event)
@@ -2598,7 +2601,7 @@ func (s *Store) messageReadDetail(conversationID, messageID, currentUserID strin
 	return detail, nil
 }
 
-func (s *Store) readConversationMessages(ctx context.Context, conversationID, userID string) ([]Message, time.Time) {
+func (s *Store) readConversationMessages(ctx context.Context, conversationID, userID string) ([]Message, time.Time, time.Time) {
 	now := time.Now()
 	s.mu.Lock()
 	if s.messageReads == nil {
@@ -2642,7 +2645,7 @@ func (s *Store) readConversationMessages(ctx context.Context, conversationID, us
 	}
 	s.mu.Unlock()
 	_ = s.persistConversationRead(ctx, conversationID, userID, now)
-	return messages, now
+	return messages, previousReadAt, now
 }
 
 func messageReadReceiptEvent(conversationID, userID string, readAt time.Time, messages []Message) MessageReadReceiptEvent {

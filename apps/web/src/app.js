@@ -152,6 +152,8 @@ const state = {
   notifiedMentionMessageIds: new Set(),
   messageScrollTopByConversation: {},
   pendingMessageScrollRestore: null,
+  unreadBoundaryByConversation: {},
+  unreadBoundaryFocusConversationId: null,
   draftTextByConversation: parseDraftMap(localStorage.getItem(DRAFT_CACHE_KEY)),
   replyDraftByConversation: parseDraftMap(localStorage.getItem(REPLY_DRAFT_CACHE_KEY)),
   pendingEditorAutofocus: false,
@@ -304,10 +306,9 @@ async function openConversationFromHash(value) {
   syncConversationPath(conversationId);
   markConversationRead(conversationId);
   await Promise.all([
-    loadMessages(conversationId),
+    loadMessages(conversationId, { restoreUnreadBoundary: true }),
     loadConversationGroup(conversationId)
   ]);
-  scheduleScrollToBottom();
   render();
 }
 
@@ -347,10 +348,9 @@ async function loadData() {
       syncConversationPath(state.selectedConversationId);
       markConversationRead(state.selectedConversationId);
       await Promise.all([
-        loadMessages(state.selectedConversationId),
+        loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
         loadConversationGroup(state.selectedConversationId)
       ]);
-      scheduleScrollToBottom();
     }
   } catch (error) {
     if (isNetworkFailure(error)) {
@@ -372,13 +372,14 @@ async function loadData() {
 }
 
 async function api(path, options = {}) {
+  const { withResponseMeta = false, ...fetchOptions } = options;
   const token = localStorage.getItem("chatlite-token");
   const res = await fetch(API_BASE + path, {
-    ...options,
+    ...fetchOptions,
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
-      ...(options.headers || {})
+      ...(fetchOptions.headers || {})
     }
   });
   if (!res.ok) {
@@ -386,7 +387,8 @@ async function api(path, options = {}) {
     error.status = res.status;
     throw error;
   }
-  return res.json();
+  const data = await res.json();
+  return withResponseMeta ? { data, response: res } : data;
 }
 
 function listOrEmpty(value) {
@@ -398,15 +400,63 @@ function isNetworkFailure(error) {
   return error instanceof TypeError || message.includes("Failed to fetch") || message.includes("NetworkError") || message.includes("Load failed");
 }
 
-async function loadMessages(conversationId) {
+function updateUnreadBoundary(conversationId, messages, previousReadAt, shouldFocus) {
+  const previousReadAtMs = Date.parse(previousReadAt || "");
+  if (!Number.isFinite(previousReadAtMs)) {
+    delete state.unreadBoundaryByConversation[conversationId];
+    return false;
+  }
+  const unreadMessages = (messages || []).filter(message => {
+    const createdAtMs = Date.parse(message.createdAt || "");
+    return message.senderId !== state.user?.id && Number.isFinite(createdAtMs) && createdAtMs > previousReadAtMs;
+  });
+  if (!unreadMessages.length) {
+    delete state.unreadBoundaryByConversation[conversationId];
+    return false;
+  }
+  state.unreadBoundaryByConversation[conversationId] = {
+    firstMessageId: unreadMessages[0].id,
+    count: unreadMessages.length
+  };
+  if (shouldFocus && state.selectedConversationId === conversationId) {
+    state.unreadBoundaryFocusConversationId = conversationId;
+  }
+  return true;
+}
+
+function renderConversationMessages(messages, conversationId) {
+  const boundary = state.unreadBoundaryByConversation[conversationId];
+  return (messages || []).map(message => {
+    const divider = boundary?.firstMessageId === message.id
+      ? `<div class="unread-message-boundary" role="status"><span>${boundary.count}则未读消息</span></div>`
+      : "";
+    return `${divider}${renderMessage(message)}`;
+  }).join("");
+}
+
+async function loadMessages(conversationId, { restoreUnreadBoundary = false } = {}) {
   if (state.useMock) {
     if (!state.data.messages[conversationId]) {
       state.data.messages[conversationId] = mock.messages[conversationId] || [];
     }
+    if (restoreUnreadBoundary) {
+      delete state.unreadBoundaryByConversation[conversationId];
+      scheduleScrollToBottom();
+    }
     return;
   }
   // Reading a conversation must always reach the server so the sender receives a read receipt.
-  state.data.messages[conversationId] = await api(`/api/conversations/${conversationId}/messages`);
+  const { data: messages, response } = await api(`/api/conversations/${conversationId}/messages`, { withResponseMeta: true });
+  state.data.messages[conversationId] = messages;
+  if (restoreUnreadBoundary) {
+    const hasUnreadBoundary = updateUnreadBoundary(
+      conversationId,
+      messages,
+      response.headers.get("X-Chat-Previous-Read-At"),
+      true
+    );
+    if (!hasUnreadBoundary) scheduleScrollToBottom();
+  }
 }
 
 function scheduleRealtimeReadReceipt(conversationId, incoming) {
@@ -776,6 +826,8 @@ function isConversationOpenForNotification(conversation) {
 
 function render() {
   const shouldScrollToBottom = state.scrollToBottom;
+  const shouldFocusUnreadBoundary = state.unreadBoundaryFocusConversationId === state.selectedConversationId;
+  if (shouldFocusUnreadBoundary) state.scrollToBottom = false;
   rememberMessageScrollPosition();
   rememberTransientFocus();
   syncSidePageFromHash();
@@ -784,7 +836,8 @@ function render() {
   bindAvatarFallbacks();
   bindEvents();
   flushScrollToBottom();
-  restoreMessageScrollPosition({ skip: shouldScrollToBottom });
+  flushUnreadBoundaryFocus();
+  restoreMessageScrollPosition({ skip: shouldScrollToBottom || shouldFocusUnreadBoundary });
   restoreTransientFocus();
   syncHighlightedMessage();
   hydrateQrCodes();
@@ -1208,7 +1261,7 @@ function renderChatPane(conv) {
       <div class="messages ${multiSelectActive ? "multi-select-active" : ""}">
         ${messages.length ? `
           <div class="day-divider">昨日下午 4:48</div>
-          ${messages.map(renderMessage).join("")}
+          ${renderConversationMessages(messages, conv.id)}
         ` : renderChatEmptyState(conv)}
       </div>
       <div class="composer-shell">
@@ -4075,10 +4128,9 @@ function bindEvents() {
     state.conversationMenu = null;
     markConversationRead(state.selectedConversationId);
     await Promise.all([
-      loadMessages(state.selectedConversationId),
+      loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
       loadConversationGroup(state.selectedConversationId)
     ]);
-    scheduleScrollToBottom();
     render();
   }));
   document.querySelector(".sidebar .list")?.addEventListener("contextmenu", e => {
@@ -9327,6 +9379,19 @@ function flushScrollToBottom() {
     scroll();
     requestAnimationFrame(scroll);
     setTimeout(scroll, 120);
+  });
+}
+
+function flushUnreadBoundaryFocus() {
+  const conversationId = state.unreadBoundaryFocusConversationId;
+  if (!conversationId || conversationId !== state.selectedConversationId) return;
+  state.unreadBoundaryFocusConversationId = null;
+  const focusBoundary = () => {
+    document.querySelector(".unread-message-boundary")?.scrollIntoView({ block: "center", behavior: "auto" });
+  };
+  requestAnimationFrame(() => {
+    focusBoundary();
+    requestAnimationFrame(focusBoundary);
   });
 }
 
