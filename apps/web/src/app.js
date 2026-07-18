@@ -4156,6 +4156,14 @@ function bindEvents() {
   const editor = document.querySelector("#editor");
   if (editor) {
     const captureEditorSelection = () => rememberEditorSelection(editor);
+    editor.addEventListener("pointerdown", () => {
+      if (state.toolMenu !== "emoji") return;
+      // Let the browser place the caret first, then close the picker in place.
+      requestAnimationFrame(() => {
+        rememberEditorSelection(editor);
+        dismissEmojiPicker();
+      });
+    });
     editor.addEventListener("input", () => {
       setCurrentDraftText(editor.value);
     });
@@ -4168,11 +4176,6 @@ function bindEvents() {
     editor.addEventListener("click", () => {
       captureEditorSelection();
       updateMentionSuggestions();
-      if (state.toolMenu === "emoji") {
-        state.toolMenu = null;
-        state.mention = null;
-        render();
-      }
     });
     editor.addEventListener("select", captureEditorSelection);
     editor.addEventListener("focus", () => {
@@ -4212,15 +4215,12 @@ function bindEvents() {
       syncMentionMenu();
     });
   });
-  document.querySelector(".workspace")?.addEventListener("click", event => {
+  document.querySelector(".messages")?.addEventListener("pointerdown", event => {
     if (state.toolMenu !== "emoji") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (target.closest(".emoji-popover, [data-tool='emoji'], #editor, button, a, input, textarea, select, label, [role='button']")) return;
-    if (target.closest(".message, .conversation-row, .list-item, .chat-header, .composer, .modal, .detail-pane")) return;
-    state.toolMenu = null;
-    state.mention = null;
-    render();
+    if (target.closest(".emoji-popover")) return;
+    dismissEmojiPicker();
   });
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
@@ -8106,6 +8106,15 @@ function rememberEditorSelection(editor = document.querySelector("#editor")) {
   const start = Math.max(0, Math.min(length, editor.selectionStart ?? length));
   const end = Math.max(start, Math.min(length, editor.selectionEnd ?? length));
   state.editorSelection = { start, end };
+}
+
+function dismissEmojiPicker() {
+  if (state.toolMenu !== "emoji") return false;
+  state.toolMenu = null;
+  state.mention = null;
+  document.querySelector(".emoji-popover")?.remove();
+  document.querySelector("[data-tool='emoji']")?.classList.remove("active");
+  return true;
 }
 
 function syncMentionMenu() {
