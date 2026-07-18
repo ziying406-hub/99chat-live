@@ -77,7 +77,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260719-avatar-fallback-v1";
+const APP_VERSION = "20260719-avatar-fallback-v2";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -931,6 +931,7 @@ function bindAvatarFallbacks() {
     image.addEventListener("error", () => {
       if (image.dataset.avatarFallbackApplied === "true") return;
       image.dataset.avatarFallbackApplied = "true";
+      rememberFailedAvatarSource(image.dataset.avatarSource);
       image.src = image.dataset.avatarFallback || avatar("友");
     }, { once: true });
   });
@@ -9388,7 +9389,7 @@ function avatar(label) {
 
 function avatarFor(entity, fallback = "我") {
   const rawAvatar = String(entity?.avatar || "").trim();
-  if (rawAvatar && rawAvatar !== "undefined" && rawAvatar !== "null") {
+  if (isUsableAvatarSource(rawAvatar)) {
     return avatarSrc(rawAvatar);
   }
   return avatarSrc(avatar(firstAvatarGlyph(entity?.nickname || entity?.title || entity?.name || fallback)));
@@ -9400,7 +9401,18 @@ function avatarFallbackFor(entity, fallback = "我") {
 }
 
 function renderEntityAvatar(entity, fallback = "我", className = "avatar") {
-  return `<img class="${className}" src="${avatarFor(entity, fallback)}" data-avatar-fallback="${avatarFallbackFor(entity, fallback)}" alt="">`;
+  const rawAvatar = String(entity?.avatar || "").trim();
+  return `<img class="${className}" src="${avatarFor(entity, fallback)}" data-avatar-source="${escapeAttr(rawAvatar)}" data-avatar-fallback="${avatarFallbackFor(entity, fallback)}" alt="">`;
+}
+
+const failedAvatarSources = new Set();
+
+function isUsableAvatarSource(source) {
+  return Boolean(source && source !== "undefined" && source !== "null" && !failedAvatarSources.has(source));
+}
+
+function rememberFailedAvatarSource(source) {
+  if (source) failedAvatarSources.add(source);
 }
 
 function firstAvatarGlyph(value) {
