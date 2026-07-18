@@ -1136,7 +1136,6 @@ function renderMessageSidebar() {
       <div class="search-box"><input data-action="search" value="${escapeAttr(state.query)}" placeholder="搜索"></div>
       <div class="segmented">
         ${seg("all", "全部")}
-        ${seg("unread", "未读")}
         ${seg("group", "群聊")}
       </div>
       <div class="list">
@@ -6844,7 +6843,7 @@ function filteredConversations() {
   const q = state.query.toLowerCase();
   return sortConversationList(listOrEmpty(state.data.conversations).filter(c => {
     const matchesQ = !q || `${c.title} ${c.lastText}`.toLowerCase().includes(q);
-    const matchesFilter = state.filter === "all" || (state.filter === "unread" && c.unread) || (state.filter === "group" && c.kind === "group");
+    const matchesFilter = state.filter === "all" || (state.filter === "group" && c.kind === "group");
     return matchesQ && matchesFilter;
   }));
 }
