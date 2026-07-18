@@ -76,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-emoji-picker-focus-v1";
+const APP_VERSION = "20260718-emoji-dismiss-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -4168,6 +4168,11 @@ function bindEvents() {
     editor.addEventListener("click", () => {
       captureEditorSelection();
       updateMentionSuggestions();
+      if (state.toolMenu === "emoji") {
+        state.toolMenu = null;
+        state.mention = null;
+        render();
+      }
     });
     editor.addEventListener("select", captureEditorSelection);
     editor.addEventListener("focus", () => {
@@ -4206,6 +4211,16 @@ function bindEvents() {
       state.toolMenu = null;
       syncMentionMenu();
     });
+  });
+  document.querySelector(".workspace")?.addEventListener("click", event => {
+    if (state.toolMenu !== "emoji") return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".emoji-popover, [data-tool='emoji'], #editor, button, a, input, textarea, select, label, [role='button']")) return;
+    if (target.closest(".message, .conversation-row, .list-item, .chat-header, .composer, .modal, .detail-pane")) return;
+    state.toolMenu = null;
+    state.mention = null;
+    render();
   });
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
