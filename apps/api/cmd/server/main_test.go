@@ -2015,7 +2015,12 @@ func TestStaticWebRouteServesIndexFallback(t *testing.T) {
 	}
 
 	handler := staticWebRoute(webDir)
-	for _, path := range []string{"/", "/settings"} {
+	for _, path := range []string{
+		"/",
+		"/settings",
+		"/messages/groups/405213",
+		"/messages/sessions/user-a--user-b",
+	} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
 		handler(rec, req)

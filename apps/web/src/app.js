@@ -25,7 +25,8 @@ import { composerVoiceRecordAction } from "./composerActions.js";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
-import { buildMarkUnreadPatch, effectiveUnreadCount, resolveSelectedConversationId, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
+import { buildMarkUnreadPatch, effectiveUnreadCount, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
+import { conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-conversation-paths-v1";
 import { writeClipboardText } from "./clipboardCopy.js";
 import {
   buildCreateGroupPayload,
@@ -76,7 +77,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-navigation-read-state-v1";
+const APP_VERSION = "20260718-conversation-paths-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -121,7 +122,7 @@ const state = {
   contactGroupFilter: "owned",
   collectionFilter: "all",
   query: "",
-  selectedConversationId: "group-21444",
+  selectedConversationId: null,
   sidePage: null,
   modal: null,
   createGroupSelection: [],
@@ -207,6 +208,7 @@ async function init() {
     connectRealtime();
   }
   window.addEventListener("hashchange", handleSidePageHash);
+  window.addEventListener("popstate", handleConversationRouteChange);
   render();
   await handleSidePageHash();
   if (state.showSplash) {
@@ -253,6 +255,27 @@ async function handleSidePageHash() {
   await openSidePage(sidePage);
 }
 
+async function handleConversationRouteChange() {
+  const conversationId = conversationIdFromLocation(window.location);
+  if (conversationId && getConversation(conversationId)) {
+    await openConversationFromHash(conversationId);
+    return;
+  }
+  if (!conversationId && state.selectedConversationId) {
+    state.selectedConversationId = null;
+    state.sidePage = null;
+    render();
+  }
+}
+
+function syncConversationPath(conversationId, { push = false } = {}) {
+  const nextPath = conversationPathFor(conversationId);
+  const nextUrl = `${nextPath}${window.location.search}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (currentUrl === nextUrl) return;
+  window.history[push ? "pushState" : "replaceState"](null, "", nextUrl);
+}
+
 function syncSidePageFromHash() {
   const sidePage = window.location.hash?.slice(1);
   if (isKnownConversationHash(sidePage)) return;
@@ -271,6 +294,7 @@ async function openConversationFromHash(value) {
   state.section = "messages";
   state.selectedConversationId = conversationId;
   state.sidePage = null;
+  syncConversationPath(conversationId);
   markConversationRead(conversationId);
   await Promise.all([
     loadMessages(conversationId),
@@ -307,7 +331,11 @@ async function loadData() {
       loginDevices: [],
       messages: {}
     };
-    state.selectedConversationId = resolveSelectedConversationId(state.selectedConversationId, state.data.conversations);
+    const routedConversationId = conversationIdFromLocation(window.location);
+    state.selectedConversationId = routedConversationId && getConversation(routedConversationId)
+      ? routedConversationId
+      : null;
+    if (routedConversationId && !state.selectedConversationId) syncConversationPath(null);
     if (state.selectedConversationId) {
       markConversationRead(state.selectedConversationId);
       await Promise.all([
@@ -719,6 +747,7 @@ async function showBrowserMessageNotification(conversation, message, { incoming,
       if (options.data.conversationId) {
         state.section = "messages";
         state.selectedConversationId = options.data.conversationId;
+        syncConversationPath(state.selectedConversationId, { push: true });
         state.sidePage = null;
         render();
       }
@@ -4019,7 +4048,10 @@ function bindEvents() {
     e.preventDefault();
     clearKnownSidePageHash();
     state.section = el.dataset.section;
-    if (state.section !== "messages") state.selectedConversationId = null;
+    if (state.section !== "messages") {
+      state.selectedConversationId = null;
+      syncConversationPath(null);
+    }
     state.query = "";
     state.sidePage = state.section === "me" ? "profile" : null;
     render();
@@ -4028,6 +4060,7 @@ function bindEvents() {
     clearKnownSidePageHash();
     state.section = "messages";
     state.selectedConversationId = el.dataset.conversation;
+    syncConversationPath(state.selectedConversationId, { push: true });
     state.sidePage = null;
     state.mention = null;
     state.mentionIds = [];
@@ -4077,6 +4110,7 @@ function bindEvents() {
       window.history.replaceState(null, "", chatReturnPath(window.location));
     } else {
       state.selectedConversationId = null;
+      syncConversationPath(null);
     }
     render();
   }));
@@ -4920,8 +4954,9 @@ async function dissolveCurrentGroup() {
     state.data.groups = state.data.groups.filter(item => item.id !== group.id);
     state.data.conversations = state.data.conversations.filter(item => item.id !== conversationId);
     delete state.data.messages[conversationId];
-    state.selectedConversationId = state.data.conversations[0]?.id || null;
+    state.selectedConversationId = null;
     state.sidePage = null;
+    syncConversationPath(null);
     toast("群已解散");
     render();
   } catch (error) {
@@ -4962,7 +4997,6 @@ async function clearAllConversationHistories() {
       unread: 0,
       mentionedMe: false
     }));
-    state.selectedConversationId = state.data.conversations[0]?.id || null;
     state.messageMenu = null;
     state.multiSelect = false;
     state.selectedMessageIds = [];
@@ -5385,6 +5419,7 @@ async function confirmModal(kind) {
     const conv = { id: `group-${group.id}`, kind: "group", title: group.title, avatar: group.avatar, unread: 0, lastText: "群聊已创建", lastAt: new Date().toISOString() };
     state.data.conversations.unshift(conv);
     state.selectedConversationId = conv.id;
+    syncConversationPath(conv.id, { push: true });
     state.data.messages[conv.id] = [];
     state.section = "messages";
     state.createGroupSelection = [];
@@ -5539,6 +5574,7 @@ async function updateFriendRequest(requestId, status, options = {}) {
   if (status === "accepted" && acceptedConversationId) {
     state.section = "messages";
     state.selectedConversationId = acceptedConversationId;
+    syncConversationPath(acceptedConversationId, { push: true });
     state.sidePage = null;
     await loadMessages(state.selectedConversationId);
     scheduleScrollToBottom();
@@ -6216,6 +6252,7 @@ async function openJoinedGroup(group) {
   clearPendingJoin();
   state.section = "messages";
   state.selectedConversationId = `group-${latestGroup.id}`;
+  syncConversationPath(state.selectedConversationId, { push: true });
   state.sidePage = null;
   await loadMessages(state.selectedConversationId);
   scheduleScrollToBottom();
@@ -6273,6 +6310,7 @@ async function openGroupFromExplore(groupId, sidePage) {
   ensureGroupConversation(group);
   state.section = "messages";
   state.selectedConversationId = `group-${group.id}`;
+  syncConversationPath(state.selectedConversationId, { push: true });
   state.sidePage = sidePage;
   await loadMessages(state.selectedConversationId);
   if (sidePage === "applications") await loadGroupJoinRequests(group);
@@ -6717,6 +6755,7 @@ function ensureRealtimeConversation(conversationId, message = {}) {
     legacy.id = conversationId;
     if (state.selectedConversationId === legacyId) {
       state.selectedConversationId = conversationId;
+      syncConversationPath(conversationId);
     }
     state.data.messages[conversationId] = [
       ...(state.data.messages[legacyId] || []),
@@ -6788,7 +6827,8 @@ function removeGroupMemberFromState(groupId, userId) {
     state.data.conversations = (state.data.conversations || []).filter(item => item.id !== conversationId);
     delete state.data.messages?.[conversationId];
     if (state.selectedConversationId === conversationId) {
-      state.selectedConversationId = state.data.conversations[0]?.id || "";
+      state.selectedConversationId = null;
+      syncConversationPath(null);
     }
     state.sidePage = null;
     return;
@@ -7449,6 +7489,7 @@ function simulateIncomingGroupInvite() {
   });
   state.section = "messages";
   state.selectedConversationId = `group-${group.id}`;
+  syncConversationPath(state.selectedConversationId, { push: true });
   state.sidePage = null;
   toast(`你已被直接加入 ${group.title}`);
   render();
@@ -7644,7 +7685,10 @@ function hydrateMockSessionFromStorage(session = null) {
     state.user = structuredClone(registeredSession.user);
     ensureUserSettings();
     state.data = structuredClone(registeredSession.data);
-    state.selectedConversationId = state.data.conversations[0]?.id || "";
+    const routedConversationId = conversationIdFromLocation(window.location);
+    state.selectedConversationId = routedConversationId && getConversation(routedConversationId)
+      ? routedConversationId
+      : null;
     state.sidePage = null;
     return;
   }
@@ -7654,7 +7698,10 @@ function hydrateMockSessionFromStorage(session = null) {
   state.data = structuredClone(mock);
   applyStoredMockGroupTitles();
   applyStoredMockGroupNicknames();
-  state.selectedConversationId = state.data.conversations[0]?.id || "";
+  const routedConversationId = conversationIdFromLocation(window.location);
+  state.selectedConversationId = routedConversationId && getConversation(routedConversationId)
+    ? routedConversationId
+    : null;
 }
 
 function migrateRegisteredMockChatId(session) {
@@ -8188,6 +8235,7 @@ function openChatFromContactKey(key) {
     state.data.messages[sessionId] = state.data.messages[sessionId] || [];
   }
   state.selectedConversationId = sessionId;
+  syncConversationPath(sessionId, { push: true });
   state.section = "messages";
   state.sidePage = null;
   state.modal = null;
@@ -8414,9 +8462,9 @@ async function handleConversationAction(action) {
       state.data.conversations = state.data.conversations.filter(item => item.id !== conversation.id);
       delete state.data.messages[conversation.id];
       if (state.selectedConversationId === conversation.id) {
-        const nextConversation = state.data.conversations[0] || null;
-        state.selectedConversationId = nextConversation?.id || "";
+        state.selectedConversationId = null;
         state.sidePage = null;
+        syncConversationPath(null);
       }
       toast("已移出聊天列表");
       render();
@@ -8812,6 +8860,7 @@ async function submitForwardSelection() {
     if (firstConversationId) {
       state.section = "messages";
       state.selectedConversationId = firstConversationId;
+      syncConversationPath(firstConversationId, { push: true });
       state.sidePage = null;
       markConversationRead(firstConversationId);
       await loadMessages(firstConversationId);
