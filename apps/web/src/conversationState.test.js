@@ -5,6 +5,7 @@ import {
   buildMarkUnreadPatch,
   effectiveUnreadCount,
   resolveSelectedConversationId,
+  shouldCommitConversationSelection,
   shouldShowMentionReminder,
   shouldNotifyConversation,
   sortConversationList,
@@ -41,6 +42,37 @@ test("initial load falls back to the first visible conversation", () => {
   ];
 
   assert.equal(resolveSelectedConversationId("missing", conversations), "group-a");
+});
+
+test("only the latest conversation selection can commit its async result", () => {
+  assert.equal(shouldCommitConversationSelection({
+    expectedConversationId: "group-a",
+    expectedToken: 3,
+    selectedConversationId: "group-a",
+    selectionToken: 3,
+    section: "messages",
+    sidePage: null
+  }), true);
+
+  assert.equal(shouldCommitConversationSelection({
+    expectedConversationId: "group-a",
+    expectedToken: 3,
+    selectedConversationId: "group-a",
+    selectionToken: 5,
+    section: "messages",
+    sidePage: null
+  }), false);
+});
+
+test("conversation selection does not commit while a side page is open", () => {
+  assert.equal(shouldCommitConversationSelection({
+    expectedConversationId: "group-a",
+    expectedToken: 3,
+    selectedConversationId: "group-a",
+    selectionToken: 3,
+    section: "messages",
+    sidePage: "settings"
+  }), false);
 });
 
 test("read conversations do not show mention reminders from old preview text", () => {

@@ -25,7 +25,7 @@ import { composerVoiceRecordAction } from "./composerActions.js";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
-import { buildMarkUnreadPatch, effectiveUnreadCount, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260708-mention-read-visible";
+import { buildMarkUnreadPatch, effectiveUnreadCount, shouldCommitConversationSelection, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260719-conversation-selection-v1";
 import { canonicalConversationIdForRoute, conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-group-chat-id-routes-v1";
 import { writeClipboardText } from "./clipboardCopy.js";
 import {
@@ -77,7 +77,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260719-in-app-notification-sound-v1";
+const APP_VERSION = "20260719-conversation-selection-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -123,6 +123,7 @@ const state = {
   collectionFilter: "all",
   query: "",
   selectedConversationId: null,
+  conversationSelectionToken: 0,
   sidePage: null,
   modal: null,
   createGroupSelection: [],
@@ -302,15 +303,46 @@ function isKnownConversationHash(value) {
 
 async function openConversationFromHash(value) {
   const conversationId = canonicalConversationIdForRoute(decodeURIComponent(value || ""), state.data?.groups || []);
-  if (!getConversation(conversationId)) return;
+  await openConversation(conversationId);
+}
+
+function beginConversationSelection(conversationId, { push = false } = {}) {
+  const alreadyOpen = Boolean(
+    state.section === "messages" &&
+    state.selectedConversationId === conversationId &&
+    !state.sidePage
+  );
+  const token = ++state.conversationSelectionToken;
   state.section = "messages";
   state.selectedConversationId = conversationId;
   state.sidePage = null;
-  syncConversationPath(conversationId);
+  syncConversationPath(conversationId, { push });
+  return { alreadyOpen, token };
+}
+
+function isCurrentConversationSelection(conversationId, token) {
+  return shouldCommitConversationSelection({
+    expectedConversationId: conversationId,
+    expectedToken: token,
+    selectedConversationId: state.selectedConversationId,
+    selectionToken: state.conversationSelectionToken,
+    section: state.section,
+    sidePage: state.sidePage
+  });
+}
+
+async function openConversation(conversationId, { push = false } = {}) {
+  if (!conversationId || !getConversation(conversationId)) return;
+  const { alreadyOpen, token } = beginConversationSelection(conversationId, { push });
+  if (alreadyOpen) {
+    void acknowledgeConversationRead(conversationId);
+    return;
+  }
   await Promise.all([
     loadMessages(conversationId, { restoreUnreadBoundary: true }),
     loadConversationGroup(conversationId)
   ]);
+  if (!isCurrentConversationSelection(conversationId, token)) return;
   render();
   void acknowledgeConversationRead(conversationId);
 }
@@ -4171,19 +4203,10 @@ function bindEvents() {
   }));
   document.querySelectorAll("[data-conversation]").forEach(el => el.addEventListener("click", async () => {
     clearKnownSidePageHash();
-    state.section = "messages";
-    state.selectedConversationId = el.dataset.conversation;
-    syncConversationPath(state.selectedConversationId, { push: true });
-    state.sidePage = null;
     state.mention = null;
     state.mentionIds = [];
     state.conversationMenu = null;
-    await Promise.all([
-      loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
-      loadConversationGroup(state.selectedConversationId)
-    ]);
-    render();
-    void acknowledgeConversationRead(state.selectedConversationId);
+    await openConversation(el.dataset.conversation, { push: true });
   }));
   document.querySelector(".sidebar .list")?.addEventListener("contextmenu", e => {
     const item = e.target.closest("[data-conversation]");

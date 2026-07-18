@@ -24,6 +24,23 @@ export function resolveSelectedConversationId(currentId, conversations = []) {
   return conversations.find(conversation => conversation?.id)?.id || "";
 }
 
+export function shouldCommitConversationSelection({
+  expectedConversationId,
+  expectedToken,
+  selectedConversationId,
+  selectionToken,
+  section,
+  sidePage
+} = {}) {
+  return Boolean(
+    expectedConversationId &&
+    expectedConversationId === selectedConversationId &&
+    expectedToken === selectionToken &&
+    section === "messages" &&
+    !sidePage
+  );
+}
+
 export function shouldNotifyConversation(conversation = {}) {
   return !conversation.muted;
 }
