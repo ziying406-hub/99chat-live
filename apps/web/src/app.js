@@ -76,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-emoji-caret-v1";
+const APP_VERSION = "20260718-emoji-picker-focus-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -4176,22 +4176,37 @@ function bindEvents() {
     });
     editor.addEventListener("keydown", handleEditorKeydown);
   }
-  document.querySelectorAll("[data-tool]").forEach(el => el.addEventListener("click", () => {
-    if (el.dataset.tool === "emoji") rememberEditorSelection();
-    state.toolMenu = state.toolMenu === el.dataset.tool ? null : el.dataset.tool;
-    if (state.toolMenu === "emoji") state.emojiCategory = "frequent";
-    state.mention = null;
-    render();
-  }));
-  document.querySelectorAll("[data-emoji-category]").forEach(el => el.addEventListener("click", () => {
-    state.emojiCategory = el.dataset.emojiCategory || "frequent";
-    render();
-  }));
-  document.querySelectorAll("[data-emoji]").forEach(el => el.addEventListener("click", () => {
-    insertIntoEditor(el.dataset.emoji || "");
-    state.toolMenu = null;
-    syncMentionMenu();
-  }));
+  document.querySelectorAll("[data-tool]").forEach(el => {
+    if (el.dataset.tool === "emoji") {
+      el.addEventListener("pointerdown", event => {
+        // Keep the current editor selection while opening or closing the picker.
+        event.preventDefault();
+        rememberEditorSelection();
+      });
+    }
+    el.addEventListener("click", () => {
+      if (el.dataset.tool === "emoji") rememberEditorSelection();
+      state.toolMenu = state.toolMenu === el.dataset.tool ? null : el.dataset.tool;
+      if (state.toolMenu === "emoji") state.emojiCategory = "frequent";
+      state.mention = null;
+      render();
+    });
+  });
+  document.querySelectorAll("[data-emoji-category]").forEach(el => {
+    el.addEventListener("pointerdown", event => event.preventDefault());
+    el.addEventListener("click", () => {
+      state.emojiCategory = el.dataset.emojiCategory || "frequent";
+      render();
+    });
+  });
+  document.querySelectorAll("[data-emoji]").forEach(el => {
+    el.addEventListener("pointerdown", event => event.preventDefault());
+    el.addEventListener("click", () => {
+      insertIntoEditor(el.dataset.emoji || "");
+      state.toolMenu = null;
+      syncMentionMenu();
+    });
+  });
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
   document.querySelectorAll("[data-profile-action]").forEach(el => el.addEventListener("click", () => handleProfileAction(el.dataset.profileAction)));
@@ -8183,7 +8198,10 @@ function pinCurrentMessageScrollPosition() {
 
 function rememberTransientFocus() {
   const active = document.activeElement;
-  if (!(active instanceof HTMLInputElement) && !(active instanceof HTMLTextAreaElement)) return;
+  if (!(active instanceof HTMLInputElement) && !(active instanceof HTMLTextAreaElement)) {
+    state.transientFocus = null;
+    return;
+  }
   if (active.id === "editor") {
     state.transientFocus = {
       selector: "#editor",
