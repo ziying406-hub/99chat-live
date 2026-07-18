@@ -96,3 +96,15 @@ test("outgoing or background realtime messages are not acknowledged again", () =
     false
   );
 });
+
+test("an incoming message is not acknowledged after leaving the chat section", () => {
+  assert.equal(
+    shouldAcknowledgeRealtimeMessage({
+      conversationId: "session-u1--u2",
+      selectedConversationId: "session-u1--u2",
+      incoming: true,
+      section: "contact"
+    }),
+    false
+  );
+});

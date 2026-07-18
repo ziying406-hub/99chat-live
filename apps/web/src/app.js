@@ -76,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-message-realtime-dedup-v1";
+const APP_VERSION = "20260718-navigation-read-state-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -377,16 +377,17 @@ function scheduleRealtimeReadReceipt(conversationId, incoming) {
   if (!shouldAcknowledgeRealtimeMessage({
     conversationId,
     selectedConversationId: state.selectedConversationId,
-    incoming
+    incoming,
+    section: state.section
   })) return;
   if (state.readReceiptSyncTimers[conversationId]) return;
 
   state.readReceiptSyncTimers[conversationId] = window.setTimeout(async () => {
     delete state.readReceiptSyncTimers[conversationId];
-    if (state.selectedConversationId !== conversationId) return;
+    if (state.section !== "messages" || state.selectedConversationId !== conversationId) return;
     try {
       await loadMessages(conversationId);
-      if (state.selectedConversationId === conversationId) {
+      if (state.section === "messages" && state.selectedConversationId === conversationId) {
         scheduleScrollToBottom();
         render();
       }
@@ -4018,6 +4019,7 @@ function bindEvents() {
     e.preventDefault();
     clearKnownSidePageHash();
     state.section = el.dataset.section;
+    if (state.section !== "messages") state.selectedConversationId = null;
     state.query = "";
     state.sidePage = state.section === "me" ? "profile" : null;
     render();

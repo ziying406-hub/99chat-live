@@ -40,6 +40,11 @@ export function applyMessageReadReceipt(messages, payload) {
   return changed ? nextMessages : messages;
 }
 
-export function shouldAcknowledgeRealtimeMessage({ conversationId, selectedConversationId, incoming }) {
-  return Boolean(incoming && conversationId && conversationId === selectedConversationId);
+export function shouldAcknowledgeRealtimeMessage({ conversationId, selectedConversationId, incoming, section = "messages" }) {
+  return Boolean(
+    incoming &&
+      section === "messages" &&
+      conversationId &&
+      conversationId === selectedConversationId
+  );
 }
