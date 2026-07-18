@@ -76,7 +76,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260718-group-composer-focus-v2";
+const APP_VERSION = "20260718-emoji-panel-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -131,6 +131,7 @@ const state = {
   addFriendError: "",
   toast: "",
   toolMenu: null,
+  emojiCategory: "frequent",
   voiceMode: false,
   useMock: false,
   data: null,
@@ -1452,10 +1453,32 @@ function renderToolMenu() {
       </div>`;
   }
   if (state.toolMenu === "emoji") {
-    const emojis = "😀 😄 😊 😎 😍 👍 🙏 🎉 🔥 ❤️ 💬 📌 ⭐ 🇲🇾 🇸🇬 🇨🇳 🇭🇰 🇹🇼 🇵🇭 🇹🇭 🇻🇳 🇯🇵 🇰🇷".split(" ");
-    return `<div class="emoji-popover">${emojis.map(e => `<button data-emoji="${e}">${e}</button>`).join("")}</div>`;
+    const categories = emojiCategories();
+    const activeCategory = categories.find(category => category.key === state.emojiCategory) || categories[0];
+    return `
+      <div class="emoji-popover" role="dialog" aria-label="表情">
+        <div class="emoji-category-tabs" role="tablist" aria-label="表情分类">
+          ${categories.map(category => `
+            <button class="emoji-category-tab ${category.key === activeCategory.key ? "active" : ""}" type="button" data-emoji-category="${category.key}" title="${category.label}" aria-label="${category.label}" aria-pressed="${category.key === activeCategory.key}">${category.icon}</button>
+          `).join("")}
+        </div>
+        <div class="emoji-grid" role="list" aria-label="${activeCategory.label}">
+          ${activeCategory.items.map(emoji => `<button type="button" data-emoji="${emoji}" aria-label="插入 ${emoji}">${emoji}</button>`).join("")}
+        </div>
+      </div>`;
   }
   return "";
+}
+
+function emojiCategories() {
+  const store = ensureStickerStore();
+  return [
+    { key: "frequent", label: "常用", icon: "🕘", items: uniqueStrings([...store.favorites, ...store.items, "😀", "🥳", "👍", "❤️", "😂", "🙏", "🔥", "🎉", "👏", "😍", "😭", "😎", "🤝", "✅"]) },
+    { key: "faces", label: "表情", icon: "😀", items: "😀 😃 😄 😁 😆 😅 😂 🤣 😊 😇 🙂 🙃 😉 😍 🥰 😘 🤔 🤗 🤭 🤫 🤩 😎 🥳 😭 😤 😡 🤯 😴 🤢 🤮 🥺".split(" ") },
+    { key: "gestures", label: "手势", icon: "👍", items: "👍 👎 👌 ✌️ 🤞 🤟 🤘 🤙 👏 🙌 🫶 🤝 🙏 💪 👊 ✊ 🤜 🤛 👋 🫡 ✍️ 💅 👀".split(" ") },
+    { key: "hearts", label: "心情", icon: "❤️", items: "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❤️‍🔥 ❤️‍🩹 💯 💢 💥 💫 ⭐ 🌟 ✨ 🎉 🎊 🔥 ☀️ 🌈".split(" ") },
+    { key: "life", label: "生活", icon: "🍀", items: "📌 📣 💬 ✅ ❗ ❓ 💡 🎁 🎂 🍰 ☕ 🍻 🍀 🌹 🌸 🐶 🐱 🐼 🦊 🐯 🚗 ✈️ 📷 🎮".split(" ") }
+  ];
 }
 
 function renderMentionMenu() {
@@ -4142,7 +4165,12 @@ function bindEvents() {
   }
   document.querySelectorAll("[data-tool]").forEach(el => el.addEventListener("click", () => {
     state.toolMenu = state.toolMenu === el.dataset.tool ? null : el.dataset.tool;
+    if (state.toolMenu === "emoji") state.emojiCategory = "frequent";
     state.mention = null;
+    render();
+  }));
+  document.querySelectorAll("[data-emoji-category]").forEach(el => el.addEventListener("click", () => {
+    state.emojiCategory = el.dataset.emojiCategory || "frequent";
     render();
   }));
   document.querySelectorAll("[data-emoji]").forEach(el => el.addEventListener("click", () => {
@@ -7466,8 +7494,8 @@ function ensureStickerStore() {
 
 function defaultStickerStore() {
   return {
-    items: ["😀", "🥳", "👍", "🔥", "❤️", "😄", "🎉", "🙌"],
-    favorites: ["😀", "🎉", "❤️"]
+    items: ["😀", "🥳", "👍", "🔥", "❤️", "😄", "🎉", "🙌", "😂", "🙏", "😍", "🤝", "✅", "📌"],
+    favorites: ["😀", "🎉", "❤️", "👍", "😂", "🙏"]
   };
 }
 

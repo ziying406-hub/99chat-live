@@ -2310,11 +2310,9 @@ a {
   right: 18px;
   bottom: 78px;
   width: 320px;
-  max-height: 220px;
+  max-height: 274px;
   overflow: auto;
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 4px;
+  display: block;
   padding: 10px;
   border-radius: 22px;
   border: 1px solid rgba(219, 229, 242, 0.92);
@@ -2324,6 +2322,32 @@ a {
   z-index: 5;
   transform-origin: right bottom;
   animation: popIn 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.emoji-category-tabs {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 3px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(219, 229, 242, 0.82);
+}
+
+.emoji-popover .emoji-category-tab {
+  height: 30px;
+  font-size: 17px;
+  border-radius: 9px;
+}
+
+.emoji-popover .emoji-category-tab.active {
+  background: rgba(31, 122, 224, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(31, 122, 224, 0.18);
+}
+
+.emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
+  gap: 4px;
 }
 
 .emoji-popover button {
@@ -8549,13 +8573,17 @@ button:disabled,
     right: 18px;
     bottom: 154px;
     width: auto;
-    max-height: 214px;
-    grid-template-columns: repeat(7, minmax(0, 1fr));
+    max-height: 260px;
     gap: 5px;
     padding: 10px;
     border-radius: 24px;
     box-shadow: 0 14px 34px rgba(15, 23, 42, 0.1);
     transform-origin: center bottom;
+  }
+
+  .emoji-grid {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: 5px;
   }
 
   .emoji-popover button {
