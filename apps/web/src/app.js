@@ -861,13 +861,13 @@ function installNotificationSoundUnlock() {
   document.addEventListener("keydown", unlockNotificationSound, { capture: true });
 }
 
-function playNotificationTone(context, frequency, startAt, duration = 0.16) {
+function playNotificationTone(context, frequency, startAt, duration = 0.2) {
   const oscillator = context.createOscillator();
   const gain = context.createGain();
   oscillator.type = "sine";
   oscillator.frequency.setValueAtTime(frequency, startAt);
   gain.gain.setValueAtTime(0.0001, startAt);
-  gain.gain.exponentialRampToValueAtTime(0.085, startAt + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.16, startAt + 0.012);
   gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
   oscillator.connect(gain);
   gain.connect(context.destination);
