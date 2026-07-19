@@ -877,7 +877,7 @@ function playNotificationTone(context, frequency, startAt, duration = 0.2) {
 
 function playNotificationChime(context, { mentionedMe = false } = {}) {
   const startAt = context.currentTime + 0.02;
-  const tones = mentionedMe ? [1319, 1568, 1760] : [880, 1047, 1319];
+  const tones = mentionedMe ? [2349, 2794, 3136] : [1760, 2093, 2349];
   tones.forEach((frequency, index) => {
     playNotificationTone(context, frequency, startAt + (index * 0.27));
   });
