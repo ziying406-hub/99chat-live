@@ -688,6 +688,9 @@ function connectRealtime() {
         const conv = getConversation(id) || ensureRealtimeConversation(id, message);
         rememberMentionNotification(message.id);
         toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
+        // Mentions have a dedicated event. It is the fallback when the matching
+        // message-created event was missed during a reconnect.
+        playInAppNotificationSound({ incoming: true, shouldNotify: true, mentionedMe: true });
         showBrowserMessageNotification(conv, message, { incoming: true, mentionedMe: true });
       }
       if (envelope.type === "message.read") {
@@ -818,6 +821,7 @@ async function requestBrowserNotificationPermission() {
 
 let notificationAudioContext = null;
 let notificationSoundUnlockInstalled = false;
+let notificationAudioPrimed = false;
 
 function notificationAudioContextForPlayback() {
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -826,15 +830,34 @@ function notificationAudioContextForPlayback() {
   return notificationAudioContext;
 }
 
+function primeNotificationAudio(context) {
+  if (notificationAudioPrimed || context?.state !== "running") return;
+  try {
+    // A silent buffer played inside a real user gesture unlocks later async tones
+    // in browsers that otherwise allow only the settings-preview click to make sound.
+    const source = context.createBufferSource();
+    source.buffer = context.createBuffer(1, 1, context.sampleRate);
+    source.connect(context.destination);
+    source.start();
+    notificationAudioPrimed = true;
+  } catch (_) {}
+}
+
 function unlockNotificationSound() {
   const context = notificationAudioContextForPlayback();
-  if (context?.state === "suspended") void context.resume().catch(() => {});
+  if (!context) return;
+  const unlock = () => primeNotificationAudio(context);
+  if (context.state === "running") {
+    unlock();
+    return;
+  }
+  void context.resume().then(unlock).catch(() => {});
 }
 
 function installNotificationSoundUnlock() {
   if (notificationSoundUnlockInstalled) return;
   notificationSoundUnlockInstalled = true;
-  document.addEventListener("pointerdown", unlockNotificationSound, { capture: true, passive: true });
+  document.addEventListener("pointerdown", unlockNotificationSound, { capture: true });
   document.addEventListener("keydown", unlockNotificationSound, { capture: true });
 }
 
