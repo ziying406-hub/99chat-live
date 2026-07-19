@@ -155,6 +155,7 @@ const state = {
   pendingMessageScrollRestore: null,
   unreadBoundaryByConversation: {},
   unreadBoundaryFocusConversationId: null,
+  readAcknowledgementInFlight: new Set(),
   draftTextByConversation: parseDraftMap(localStorage.getItem(DRAFT_CACHE_KEY)),
   replyDraftByConversation: parseDraftMap(localStorage.getItem(REPLY_DRAFT_CACHE_KEY)),
   pendingEditorAutofocus: false,
@@ -335,7 +336,7 @@ async function openConversation(conversationId, { push = false } = {}) {
   if (!conversationId || !getConversation(conversationId)) return;
   const { alreadyOpen, token } = beginConversationSelection(conversationId, { push });
   if (alreadyOpen) {
-    void acknowledgeConversationRead(conversationId);
+    acknowledgeUnreadBoundaryAtBottom();
     return;
   }
   await Promise.all([
@@ -344,7 +345,6 @@ async function openConversation(conversationId, { push = false } = {}) {
   ]);
   if (!isCurrentConversationSelection(conversationId, token)) return;
   render();
-  void acknowledgeConversationRead(conversationId);
 }
 
 async function loadData() {
@@ -505,6 +505,7 @@ function scheduleRealtimeReadReceipt(conversationId, incoming) {
   state.readReceiptSyncTimers[conversationId] = window.setTimeout(async () => {
     delete state.readReceiptSyncTimers[conversationId];
     if (!canAcknowledgeConversationRead(conversationId)) return;
+    if (state.unreadBoundaryByConversation[conversationId] && !messageListIsAtBottom()) return;
     await acknowledgeConversationRead(conversationId);
     if (canAcknowledgeConversationRead(conversationId)) {
       scheduleScrollToBottom();
@@ -651,10 +652,21 @@ function connectRealtime() {
         const incoming = message.senderId !== state.user?.id;
         const conv = ensureRealtimeConversation(id, message) || getConversation(id);
         state.data.messages[id] = appendMessageOnce(state.data.messages[id], message);
+        const keepUnreadBoundary = incoming && id === state.selectedConversationId && (
+          Boolean(state.unreadBoundaryByConversation[id]) || !messageListIsAtBottom()
+        );
+        if (keepUnreadBoundary) {
+          const boundary = state.unreadBoundaryByConversation[id];
+          if (boundary) {
+            boundary.count += 1;
+          } else {
+            state.unreadBoundaryByConversation[id] = { firstMessageId: message.id, count: 1 };
+          }
+        }
         const mentionedMe = incoming && messageMentionsCurrentUser(message);
         const shouldNotify = shouldNotifyConversation(conv) || mentionedMe;
         upsertConversationPreview(id, message, {
-          bumpUnread: shouldNotify && incoming && !canAcknowledgeConversationRead(id),
+          bumpUnread: shouldNotify && incoming && (!canAcknowledgeConversationRead(id) || keepUnreadBoundary),
           mentionMe: mentionedMe
         });
         if (mentionedMe) {
@@ -664,7 +676,7 @@ function connectRealtime() {
         playInAppNotificationSound({ incoming, shouldNotify, mentionedMe });
         showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
         scheduleRealtimeReadReceipt(id, incoming);
-        if (id === state.selectedConversationId) scheduleScrollToBottom();
+        if (id === state.selectedConversationId && !keepUnreadBoundary) scheduleScrollToBottom();
         render();
       }
       if (envelope.type === "message.mentioned") {
@@ -3534,13 +3546,13 @@ function renderNotificationsContent() {
       ${settingToggle("新消息角标", "notificationBadge", { description: "应用未打开时提醒你" })}
       ${settingToggle("声音", "notificationSound", { description: "应用打开时播放提示音" })}
       ${settingToggle("震动", "mentionAlerts", { description: "提到你或重要消息时轻触提醒" })}
-      <button class="setting-row setting-toggle-row notification-permission-row" type="button" data-notification-permission>
+      <button class="setting-row setting-toggle-row notification-permission-row ${permission.requestable ? "is-requestable" : "is-browser-managed"}" type="button" data-notification-permission>
         <span class="setting-copy">
           <span>浏览器通知权限</span>
           <span class="item-meta">${escapeHTML(permission.description)}</span>
         </span>
         <span class="notification-permission-control">
-          <span class="switch ${permission.enabled ? "on" : "off"}"></span>
+          ${permission.requestable ? `<span class="switch off"></span>` : ""}
           <strong>${escapeHTML(permission.action)}</strong>
         </span>
       </button>
@@ -4393,6 +4405,9 @@ function bindEvents() {
     if (target.closest(".emoji-popover")) return;
     dismissEmojiPicker();
   });
+  document.querySelector(".messages")?.addEventListener("scroll", () => {
+    acknowledgeUnreadBoundaryAtBottom();
+  }, { passive: true });
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
   document.querySelectorAll("[data-profile-action]").forEach(el => el.addEventListener("click", () => handleProfileAction(el.dataset.profileAction)));
@@ -4521,6 +4536,10 @@ function bindEvents() {
   document.querySelectorAll("[data-setting-toggle]").forEach(el => el.addEventListener("click", () => toggleUserSetting(el.dataset.settingToggle)));
   document.querySelector("[data-notification-permission]")?.addEventListener("click", async () => {
     const previousPermission = currentBrowserNotificationPermissionView();
+    if (!previousPermission.requestable) {
+      toast(previousPermission.toast);
+      return;
+    }
     const allowed = await requestBrowserNotificationPermission();
     if (!allowed) toast(previousPermission.toast);
     render();
@@ -9202,6 +9221,26 @@ function canAcknowledgeConversationRead(conversationId) {
   );
 }
 
+function messageListIsAtBottom() {
+  const messages = document.querySelector(".messages");
+  if (!messages) return false;
+  return messages.scrollHeight - messages.scrollTop - messages.clientHeight <= 24;
+}
+
+function acknowledgeUnreadBoundaryAtBottom() {
+  const conversationId = state.selectedConversationId;
+  if (!conversationId || !state.unreadBoundaryByConversation[conversationId]) return;
+  if (!canAcknowledgeConversationRead(conversationId) || !messageListIsAtBottom()) return;
+  if (state.readAcknowledgementInFlight.has(conversationId)) return;
+
+  state.readAcknowledgementInFlight.add(conversationId);
+  void acknowledgeConversationRead(conversationId)
+    .then(acknowledged => {
+      if (acknowledged && canAcknowledgeConversationRead(conversationId)) render();
+    })
+    .finally(() => state.readAcknowledgementInFlight.delete(conversationId));
+}
+
 async function acknowledgeConversationRead(conversationId) {
   if (!canAcknowledgeConversationRead(conversationId)) return false;
   markConversationRead(conversationId);
@@ -9219,6 +9258,7 @@ function acknowledgeVisibleConversationRead() {
   if (document.visibilityState !== "visible") return;
   const conversationId = state.selectedConversationId;
   if (!canAcknowledgeConversationRead(conversationId)) return;
+  if (state.unreadBoundaryByConversation[conversationId] && !messageListIsAtBottom()) return;
   void acknowledgeConversationRead(conversationId).then((acknowledged) => {
     if (acknowledged && canAcknowledgeConversationRead(conversationId)) render();
   });
