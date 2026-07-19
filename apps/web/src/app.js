@@ -462,7 +462,7 @@ function renderConversationMessages(messages, conversationId) {
   const boundary = state.unreadBoundaryByConversation[conversationId];
   return (messages || []).map(message => {
     const divider = boundary?.firstMessageId === message.id
-      ? `<div class="unread-message-boundary" role="status"><span>${boundary.count}则未读消息</span></div>`
+      ? `<div class="unread-message-boundary" role="status"><button class="unread-message-jump" type="button" data-jump-unread-to-latest aria-label="跳到最新 ${boundary.count} 则未读消息"><span aria-hidden="true">⌃</span>${boundary.count}则未读消息</button></div>`
       : "";
     return `${divider}${renderMessage(message)}`;
   }).join("");
@@ -4412,6 +4412,7 @@ function bindEvents() {
   document.querySelector(".messages")?.addEventListener("scroll", () => {
     acknowledgeUnreadBoundaryAtBottom();
   }, { passive: true });
+  document.querySelectorAll("[data-jump-unread-to-latest]").forEach(el => el.addEventListener("click", jumpToLatestUnreadMessages));
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
   document.querySelectorAll("[data-profile-action]").forEach(el => el.addEventListener("click", () => handleProfileAction(el.dataset.profileAction)));
@@ -9246,6 +9247,20 @@ function acknowledgeUnreadBoundaryAtBottom() {
       }
     })
     .finally(() => state.readAcknowledgementInFlight.delete(conversationId));
+}
+
+function jumpToLatestUnreadMessages() {
+  const conversationId = state.selectedConversationId;
+  if (!conversationId || !state.unreadBoundaryByConversation[conversationId]) return;
+
+  scheduleScrollToBottom();
+  render();
+  requestAnimationFrame(() => {
+    const messages = document.querySelector(".messages");
+    if (!messages) return;
+    messages.scrollTop = messages.scrollHeight;
+    requestAnimationFrame(() => acknowledgeUnreadBoundaryAtBottom());
+  });
 }
 
 async function acknowledgeConversationRead(conversationId) {

@@ -1385,27 +1385,40 @@ a {
 .unread-message-boundary {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 18px 0;
-  color: #1d4ed8;
-  font-size: 12px;
-  font-weight: 700;
+  justify-content: flex-end;
+  margin: 10px 0 18px;
 }
 
-.unread-message-boundary::before,
-.unread-message-boundary::after {
-  content: "";
-  flex: 1;
-  height: 1px;
-  background: #bfdbfe;
-}
-
-.unread-message-boundary span {
+.unread-message-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
   white-space: nowrap;
-  padding: 4px 10px;
-  border: 1px solid #bfdbfe;
+  padding: 10px 16px;
+  border: 1px solid rgba(219, 229, 242, 0.94);
   border-radius: 999px;
+  background: rgba(255, 255, 255, 0.98);
+  color: #2d64df;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 750;
+  cursor: pointer;
+  box-shadow: 0 10px 20px rgba(15, 23, 42, 0.14);
+}
+
+.unread-message-jump:hover {
   background: #eff6ff;
+  border-color: #bfdbfe;
+}
+
+.unread-message-jump:focus-visible {
+  outline: none;
+  box-shadow: var(--ring), 0 10px 20px rgba(15, 23, 42, 0.14);
+}
+
+.unread-message-jump span {
+  font-size: 18px;
+  line-height: 0.75;
 }
 
 .message {
