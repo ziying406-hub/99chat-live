@@ -867,12 +867,20 @@ function playNotificationTone(context, frequency, startAt, duration = 0.2) {
   oscillator.type = "sine";
   oscillator.frequency.setValueAtTime(frequency, startAt);
   gain.gain.setValueAtTime(0.0001, startAt);
-  gain.gain.exponentialRampToValueAtTime(0.16, startAt + 0.012);
+  gain.gain.exponentialRampToValueAtTime(0.24, startAt + 0.012);
   gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration);
   oscillator.connect(gain);
   gain.connect(context.destination);
   oscillator.start(startAt);
   oscillator.stop(startAt + duration + 0.01);
+}
+
+function playNotificationChime(context, { mentionedMe = false } = {}) {
+  const startAt = context.currentTime + 0.02;
+  const tones = mentionedMe ? [880, 1047, 1319] : [660, 740, 880];
+  tones.forEach((frequency, index) => {
+    playNotificationTone(context, frequency, startAt + (index * 0.27));
+  });
 }
 
 function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}) {
@@ -882,9 +890,7 @@ function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}
   if (!context) return;
   const play = () => {
     if (context.state !== "running") return;
-    const startAt = context.currentTime + 0.02;
-    playNotificationTone(context, mentionedMe ? 880 : 660, startAt);
-    if (mentionedMe) playNotificationTone(context, 1175, startAt + 0.19);
+    playNotificationChime(context, { mentionedMe });
   };
   if (context.state === "running") {
     play();
@@ -909,9 +915,7 @@ function previewNotificationSound() {
       toast("浏览器暂未允许播放声音");
       return;
     }
-    const startAt = context.currentTime + 0.02;
-    playNotificationTone(context, 660, startAt);
-    playNotificationTone(context, 880, startAt + 0.19);
+    playNotificationChime(context);
     toast("正在播放提示音");
   };
   if (context.state === "running") {
