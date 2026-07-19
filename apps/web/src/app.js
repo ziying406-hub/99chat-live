@@ -25,6 +25,7 @@ import { composerVoiceRecordAction } from "./composerActions.js";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
+import { clearStaleScrollRestore } from "./messageScrollRestore.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, shouldCommitConversationSelection, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260719-conversation-selection-v1";
 import { canonicalConversationIdForRoute, conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-group-chat-id-routes-v1";
 import { writeClipboardText } from "./clipboardCopy.js";
@@ -1443,7 +1444,7 @@ function renderChatPane(conv) {
             <button class="primary-btn inline composer-send-btn" type="submit" ${blockedReason ? "disabled" : ""}>传送</button>
           </form>
           <div class="mention-menu" id="mentionMenu">${renderMentionMenu()}</div>
-          ${renderToolMenu()}
+          <div id="composerToolMenuHost">${renderToolMenu()}</div>
         `}
       </div>
     </section>`;
@@ -4450,29 +4451,27 @@ function bindEvents() {
       state.toolMenu = state.toolMenu === el.dataset.tool ? null : el.dataset.tool;
       if (state.toolMenu === "emoji") state.emojiCategory = "frequent";
       state.mention = null;
+      if (el.dataset.tool === "emoji") {
+        syncMentionMenu();
+        refreshEmojiToolMenu();
+        return;
+      }
       render();
     });
   });
-  document.querySelectorAll("[data-emoji-category]").forEach(el => {
-    el.addEventListener("pointerdown", event => event.preventDefault());
-    el.addEventListener("click", () => {
-      state.emojiCategory = el.dataset.emojiCategory || "frequent";
-      render();
-    });
-  });
-  document.querySelectorAll("[data-emoji]").forEach(el => {
-    el.addEventListener("pointerdown", event => event.preventDefault());
-    el.addEventListener("click", () => {
-      insertIntoEditor(el.dataset.emoji || "");
-      state.toolMenu = null;
-      syncMentionMenu();
-    });
-  });
+  bindEmojiToolMenuEvents();
   document.querySelector(".messages")?.addEventListener("pointerdown", event => {
     if (state.toolMenu !== "emoji") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
     if (target.closest(".emoji-popover")) return;
+    dismissEmojiPicker();
+  });
+  document.querySelector(".chat-pane")?.addEventListener("pointerdown", event => {
+    if (state.toolMenu !== "emoji") return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    if (target.closest(".emoji-popover, #editor, [data-tool='emoji']")) return;
     dismissEmojiPicker();
   });
   document.querySelector(".messages")?.addEventListener("scroll", () => {
@@ -4998,6 +4997,7 @@ async function sendMessage(payload) {
   state.toolMenu = null;
   state.mentionIds = [];
   setCurrentReplyDraft(null);
+  state.pendingEditorAutofocus = true;
   scheduleScrollToBottom();
   render();
   focusComposerEditor();
@@ -5012,6 +5012,7 @@ async function sendMessage(payload) {
     upsertConversationPreview(conversationId, failed);
     toast(sendErrorMessage(error));
   }
+  state.pendingEditorAutofocus = true;
   scheduleScrollToBottom();
   render();
   focusComposerEditor();
@@ -8389,9 +8390,36 @@ function dismissEmojiPicker() {
   if (state.toolMenu !== "emoji") return false;
   state.toolMenu = null;
   state.mention = null;
-  document.querySelector(".emoji-popover")?.remove();
-  document.querySelector("[data-tool='emoji']")?.classList.remove("active");
+  refreshEmojiToolMenu();
   return true;
+}
+
+function bindEmojiToolMenuEvents(root = document) {
+  root.querySelectorAll("[data-emoji-category]").forEach(el => {
+    el.addEventListener("pointerdown", event => event.preventDefault());
+    el.addEventListener("click", () => {
+      state.emojiCategory = el.dataset.emojiCategory || "frequent";
+      refreshEmojiToolMenu();
+    });
+  });
+  root.querySelectorAll("[data-emoji]").forEach(el => {
+    el.addEventListener("pointerdown", event => event.preventDefault());
+    el.addEventListener("click", () => {
+      insertIntoEditor(el.dataset.emoji || "");
+      state.toolMenu = null;
+      refreshEmojiToolMenu();
+      syncMentionMenu();
+    });
+  });
+}
+
+function refreshEmojiToolMenu() {
+  const host = document.querySelector("#composerToolMenuHost");
+  if (host) {
+    host.innerHTML = renderToolMenu();
+    bindEmojiToolMenuEvents(host);
+  }
+  document.querySelector("[data-tool='emoji']")?.classList.toggle("active", state.toolMenu === "emoji");
 }
 
 function syncMentionMenu() {
@@ -8560,9 +8588,17 @@ function restoreTransientFocus() {
 }
 
 function restoreMessageScrollPosition({ skip = false } = {}) {
-  if (!state.authed || skip || state.scrollToBottom) return;
+  if (!state.authed) return;
   const conversationId = state.selectedConversationId;
   if (!conversationId) return;
+  if (skip || state.scrollToBottom) {
+    state.pendingMessageScrollRestore = clearStaleScrollRestore(
+      state.pendingMessageScrollRestore,
+      conversationId,
+      { skip, scrollToBottom: state.scrollToBottom }
+    );
+    return;
+  }
   const pending = state.pendingMessageScrollRestore?.conversationId === conversationId
     ? state.pendingMessageScrollRestore.scrollTop
     : undefined;
