@@ -693,11 +693,15 @@ function connectRealtime() {
       if (envelope.type === "message.read") {
         const id = envelope.conversationId;
         if (id && state.data.messages[id]) {
+          const keepSelectedConversationAtBottom =
+            id === state.selectedConversationId &&
+            (state.readAcknowledgementInFlight.has(id) || messageListIsAtBottom());
           state.data.messages[id] = applyMessageReadReceipt(state.data.messages[id], envelope.payload);
           if (String(envelope.payload?.userId || "") === String(state.user?.id || "")) {
             markConversationRead(id);
             delete state.unreadBoundaryByConversation[id];
           }
+          if (keepSelectedConversationAtBottom) scheduleScrollToBottom();
           render();
         }
       }
@@ -9236,7 +9240,10 @@ function acknowledgeUnreadBoundaryAtBottom() {
   state.readAcknowledgementInFlight.add(conversationId);
   void acknowledgeConversationRead(conversationId)
     .then(acknowledged => {
-      if (acknowledged && canAcknowledgeConversationRead(conversationId)) render();
+      if (acknowledged && canAcknowledgeConversationRead(conversationId)) {
+        scheduleScrollToBottom();
+        render();
+      }
     })
     .finally(() => state.readAcknowledgementInFlight.delete(conversationId));
 }
@@ -9259,8 +9266,12 @@ function acknowledgeVisibleConversationRead() {
   const conversationId = state.selectedConversationId;
   if (!canAcknowledgeConversationRead(conversationId)) return;
   if (state.unreadBoundaryByConversation[conversationId] && !messageListIsAtBottom()) return;
+  const keepSelectedConversationAtBottom = messageListIsAtBottom();
   void acknowledgeConversationRead(conversationId).then((acknowledged) => {
-    if (acknowledged && canAcknowledgeConversationRead(conversationId)) render();
+    if (acknowledged && canAcknowledgeConversationRead(conversationId)) {
+      if (keepSelectedConversationAtBottom) scheduleScrollToBottom();
+      render();
+    }
   });
 }
 
