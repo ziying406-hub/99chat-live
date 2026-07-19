@@ -856,10 +856,46 @@ function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}
   const settings = ensureUserSettings();
   if (!incoming || !shouldNotify || !settings.notificationsEnabled || !settings.notificationSound) return;
   const context = notificationAudioContextForPlayback();
-  if (!context || context.state !== "running") return;
-  const startAt = context.currentTime + 0.02;
-  playNotificationTone(context, mentionedMe ? 880 : 660, startAt);
-  if (mentionedMe) playNotificationTone(context, 1175, startAt + 0.19);
+  if (!context) return;
+  const play = () => {
+    if (context.state !== "running") return;
+    const startAt = context.currentTime + 0.02;
+    playNotificationTone(context, mentionedMe ? 880 : 660, startAt);
+    if (mentionedMe) playNotificationTone(context, 1175, startAt + 0.19);
+  };
+  if (context.state === "running") {
+    play();
+    return;
+  }
+  void context.resume().then(play).catch(() => {});
+}
+
+function previewNotificationSound() {
+  const settings = ensureUserSettings();
+  if (!settings.notificationsEnabled || !settings.notificationSound) {
+    toast("请先开启接收通知和声音");
+    return;
+  }
+  const context = notificationAudioContextForPlayback();
+  if (!context) {
+    toast("当前浏览器不支持提示音");
+    return;
+  }
+  const play = () => {
+    if (context.state !== "running") {
+      toast("浏览器暂未允许播放声音");
+      return;
+    }
+    const startAt = context.currentTime + 0.02;
+    playNotificationTone(context, 660, startAt);
+    playNotificationTone(context, 880, startAt + 0.19);
+    toast("正在播放提示音");
+  };
+  if (context.state === "running") {
+    play();
+    return;
+  }
+  void context.resume().then(play).catch(() => toast("浏览器暂未允许播放声音"));
 }
 
 async function showBrowserMessageNotification(conversation, message, { incoming, mentionedMe } = {}) {
@@ -3549,6 +3585,9 @@ function renderNotificationsContent() {
       ${settingToggle("接收通知", "notificationsEnabled", { description: "关闭后仅保留应用内消息" })}
       ${settingToggle("新消息角标", "notificationBadge", { description: "应用未打开时提醒你" })}
       ${settingToggle("声音", "notificationSound", { description: "应用打开时播放提示音" })}
+      <button class="setting-row setting-action-row" type="button" data-test-notification-sound>
+        <span>测试声音</span><strong>播放</strong>
+      </button>
       ${settingToggle("震动", "mentionAlerts", { description: "提到你或重要消息时轻触提醒" })}
       <button class="setting-row setting-toggle-row notification-permission-row ${permission.requestable ? "is-requestable" : "is-browser-managed"}" type="button" data-notification-permission>
         <span class="setting-copy">
@@ -4539,6 +4578,7 @@ function bindEvents() {
   }));
   document.querySelector("[data-invite-confirm]")?.addEventListener("click", () => inviteSelectedMembers());
   document.querySelectorAll("[data-setting-toggle]").forEach(el => el.addEventListener("click", () => toggleUserSetting(el.dataset.settingToggle)));
+  document.querySelector("[data-test-notification-sound]")?.addEventListener("click", previewNotificationSound);
   document.querySelector("[data-notification-permission]")?.addEventListener("click", async () => {
     const previousPermission = currentBrowserNotificationPermissionView();
     if (!previousPermission.requestable) {
