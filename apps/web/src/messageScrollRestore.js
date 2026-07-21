@@ -5,3 +5,11 @@ export function clearStaleScrollRestore(pendingRestore, conversationId, options 
   }
   return pendingRestore || null;
 }
+
+export function nextScrollFocusGeneration(generation = 0) {
+  return generation + 1;
+}
+
+export function canApplyScrollFocus(expectedGeneration, activeGeneration) {
+  return expectedGeneration === activeGeneration;
+}

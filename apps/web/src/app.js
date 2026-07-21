@@ -25,7 +25,11 @@ import { composerVoiceRecordAction } from "./composerActions.js";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
-import { clearStaleScrollRestore } from "./messageScrollRestore.js";
+import {
+  canApplyScrollFocus,
+  clearStaleScrollRestore,
+  nextScrollFocusGeneration
+} from "./messageScrollRestore.js";
 import { buildMarkUnreadPatch, effectiveUnreadCount, shouldCommitConversationSelection, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260719-conversation-selection-v1";
 import { canonicalConversationIdForRoute, conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-group-chat-id-routes-v1";
 import { writeClipboardText } from "./clipboardCopy.js";
@@ -156,6 +160,7 @@ const state = {
   pendingMessageScrollRestore: null,
   unreadBoundaryByConversation: {},
   unreadBoundaryFocusConversationId: null,
+  unreadBoundaryFocusGeneration: 0,
   readAcknowledgementInFlight: new Set(),
   draftTextByConversation: parseDraftMap(localStorage.getItem(DRAFT_CACHE_KEY)),
   replyDraftByConversation: parseDraftMap(localStorage.getItem(REPLY_DRAFT_CACHE_KEY)),
@@ -315,6 +320,7 @@ function beginConversationSelection(conversationId, { push = false } = {}) {
     !state.sidePage
   );
   const token = ++state.conversationSelectionToken;
+  cancelUnreadBoundaryFocus();
   state.section = "messages";
   state.selectedConversationId = conversationId;
   state.sidePage = null;
@@ -4277,6 +4283,7 @@ function bindEvents() {
     clearKnownSidePageHash();
     state.section = el.dataset.section;
     if (state.section !== "messages") {
+      cancelUnreadBoundaryFocus();
       state.selectedConversationId = null;
       syncConversationPath(null);
     }
@@ -4327,6 +4334,7 @@ function bindEvents() {
       state.sidePage = null;
       window.history.replaceState(null, "", chatReturnPath(window.location));
     } else {
+      cancelUnreadBoundaryFocus();
       state.selectedConversationId = null;
       syncConversationPath(null);
     }
@@ -9356,6 +9364,7 @@ function jumpToLatestUnreadMessages() {
   const conversationId = state.selectedConversationId;
   if (!conversationId || !state.unreadBoundaryByConversation[conversationId]) return;
 
+  cancelUnreadBoundaryFocus();
   scheduleScrollToBottom();
   render();
   requestAnimationFrame(() => {
@@ -9685,13 +9694,21 @@ function flushUnreadBoundaryFocus() {
   const conversationId = state.unreadBoundaryFocusConversationId;
   if (!conversationId || conversationId !== state.selectedConversationId) return;
   state.unreadBoundaryFocusConversationId = null;
+  const generation = nextScrollFocusGeneration(state.unreadBoundaryFocusGeneration);
+  state.unreadBoundaryFocusGeneration = generation;
   const focusBoundary = () => {
+    if (!canApplyScrollFocus(generation, state.unreadBoundaryFocusGeneration)) return;
     document.querySelector(".unread-message-boundary")?.scrollIntoView({ block: "center", behavior: "auto" });
   };
   requestAnimationFrame(() => {
     focusBoundary();
     requestAnimationFrame(focusBoundary);
   });
+}
+
+function cancelUnreadBoundaryFocus() {
+  state.unreadBoundaryFocusConversationId = null;
+  state.unreadBoundaryFocusGeneration = nextScrollFocusGeneration(state.unreadBoundaryFocusGeneration);
 }
 
 function escapeHTML(value) {

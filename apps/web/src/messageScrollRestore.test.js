@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { clearStaleScrollRestore } from "./messageScrollRestore.js";
+import {
+  canApplyScrollFocus,
+  clearStaleScrollRestore,
+  nextScrollFocusGeneration
+} from "./messageScrollRestore.js";
 
 test("discards a saved position when the same conversation intentionally scrolls to the latest message", () => {
   assert.equal(clearStaleScrollRestore(
@@ -14,4 +18,12 @@ test("discards a saved position when the same conversation intentionally scrolls
 test("keeps a saved position for another conversation", () => {
   const pending = { conversationId: "session-a", scrollTop: 24 };
   assert.equal(clearStaleScrollRestore(pending, "group-130011", { skip: true }), pending);
+});
+
+test("invalidates an already queued unread-boundary focus when the user navigates away", () => {
+  const queuedGeneration = nextScrollFocusGeneration(4);
+  const activeGeneration = nextScrollFocusGeneration(queuedGeneration);
+
+  assert.equal(canApplyScrollFocus(queuedGeneration, activeGeneration), false);
+  assert.equal(canApplyScrollFocus(activeGeneration, activeGeneration), true);
 });
