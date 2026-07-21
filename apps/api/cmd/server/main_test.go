@@ -3991,6 +3991,33 @@ func TestReadingConversationAddsReadReceiptCounts(t *testing.T) {
 	}
 }
 
+func TestConversationUnreadCountsAreScopedToEachReader(t *testing.T) {
+	store := seedStore()
+	conversationID := "session-u1-u2"
+	readAt := time.Now().Add(-10 * time.Minute)
+	store.conversations = append(store.conversations, Conversation{
+		ID:     conversationID,
+		Kind:   "session",
+		Unread: 99, // Shared legacy value must never leak into a user's list.
+	})
+	store.messages[conversationID] = []Message{
+		{ID: "before", ConversationID: conversationID, SenderID: "u2", CreatedAt: readAt.Add(-time.Minute)},
+		{ID: "after", ConversationID: conversationID, SenderID: "u2", CreatedAt: readAt.Add(time.Minute)},
+		{ID: "own", ConversationID: conversationID, SenderID: "u1", CreatedAt: readAt.Add(2 * time.Minute)},
+	}
+	store.messageReads[conversationID] = map[string]time.Time{
+		"u1": readAt,
+		"u2": readAt.Add(3 * time.Minute),
+	}
+
+	if got := store.unreadCountForUserLocked(conversationID, "u1"); got != 1 {
+		t.Fatalf("u1 unread = %d, want 1", got)
+	}
+	if got := store.unreadCountForUserLocked(conversationID, "u2"); got != 0 {
+		t.Fatalf("u2 unread = %d, want 0", got)
+	}
+}
+
 func TestReadingConversationReturnsPreviousReadAtHeader(t *testing.T) {
 	store := seedStore()
 	store.sessions["member-token"] = "388754"

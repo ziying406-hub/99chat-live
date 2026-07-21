@@ -2309,6 +2309,10 @@ func (s *Store) conversationsRoute(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
 	for i := range items {
 		items[i] = s.conversationForUserLocked(items[i], current.ID)
+		// Unread state belongs to the viewer, never to the shared conversation row.
+		// The persisted conversation.unread field is legacy display data and cannot
+		// represent independent read positions across accounts or devices.
+		items[i].Unread = s.unreadCountForUserLocked(items[i].ID, current.ID)
 	}
 	s.mu.RUnlock()
 	items = filterSlice(items, func(item Conversation) bool { return !hidden[item.ID] })
@@ -2610,6 +2614,22 @@ func (s *Store) conversationMessages(conversationID, userID string) ([]Message, 
 		previousReadAt = reads[userID]
 	}
 	return s.visibleConversationMessagesLocked(conversationID, userID, previousReadAt), previousReadAt
+}
+
+func (s *Store) unreadCountForUserLocked(conversationID, userID string) int {
+	readAt := time.Time{}
+	if reads := s.messageReads[conversationID]; reads != nil {
+		readAt = reads[userID]
+	}
+
+	unread := 0
+	for _, message := range s.messages[conversationID] {
+		if message.SenderID == userID || !message.CreatedAt.After(readAt) {
+			continue
+		}
+		unread++
+	}
+	return unread
 }
 
 func (s *Store) visibleConversationMessagesLocked(conversationID, userID string, previousReadAt time.Time) []Message {
