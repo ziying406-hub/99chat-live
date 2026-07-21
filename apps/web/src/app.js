@@ -27,9 +27,10 @@ import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
 import {
   canApplyScrollFocus,
+  canRestoreConversationScroll,
   clearStaleScrollRestore,
   nextScrollFocusGeneration
-} from "./messageScrollRestore.js";
+} from "./messageScrollRestore.js?v=20260721-unread-boundary-scroll-v1";
 import { buildMarkUnreadPatch, effectiveUnreadCount, shouldCommitConversationSelection, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260719-conversation-selection-v1";
 import { canonicalConversationIdForRoute, conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-group-chat-id-routes-v1";
 import { writeClipboardText } from "./clipboardCopy.js";
@@ -82,7 +83,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260719-avatar-fallback-v2";
+const APP_VERSION = "20260721-unread-boundary-scroll-v1";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -152,6 +153,7 @@ const state = {
   friendSyncSnapshot: [],
   readReceiptSyncTimers: {},
   scrollToBottom: false,
+  scrollToBottomGeneration: 0,
   preview: null,
   mention: null,
   mentionIds: [],
@@ -8613,6 +8615,7 @@ function restoreMessageScrollPosition({ skip = false } = {}) {
   const scrollTop = typeof pending === "number" ? pending : state.messageScrollTopByConversation[conversationId];
   if (typeof scrollTop !== "number") return;
   const applyScroll = () => {
+    if (!canRestoreConversationScroll(conversationId, state.selectedConversationId)) return;
     const messages = document.querySelector(".messages");
     if (!messages) return;
     messages.scrollTop = scrollTop;
@@ -9674,12 +9677,16 @@ function mediaURL(value) {
 
 function scheduleScrollToBottom() {
   state.scrollToBottom = true;
+  state.scrollToBottomGeneration = nextScrollFocusGeneration(state.scrollToBottomGeneration);
 }
 
 function flushScrollToBottom() {
   if (!state.scrollToBottom) return;
   state.scrollToBottom = false;
+  const conversationId = state.selectedConversationId;
+  const generation = state.scrollToBottomGeneration;
   const scroll = () => {
+    if (!canApplyScrollFocus(generation, state.scrollToBottomGeneration, conversationId, state.selectedConversationId)) return;
     const messages = document.querySelector(".messages");
     if (messages) messages.scrollTop = messages.scrollHeight;
   };
@@ -9694,10 +9701,12 @@ function flushUnreadBoundaryFocus() {
   const conversationId = state.unreadBoundaryFocusConversationId;
   if (!conversationId || conversationId !== state.selectedConversationId) return;
   state.unreadBoundaryFocusConversationId = null;
+  state.scrollToBottom = false;
+  state.scrollToBottomGeneration = nextScrollFocusGeneration(state.scrollToBottomGeneration);
   const generation = nextScrollFocusGeneration(state.unreadBoundaryFocusGeneration);
   state.unreadBoundaryFocusGeneration = generation;
   const focusBoundary = () => {
-    if (!canApplyScrollFocus(generation, state.unreadBoundaryFocusGeneration)) return;
+    if (!canApplyScrollFocus(generation, state.unreadBoundaryFocusGeneration, conversationId, state.selectedConversationId)) return;
     document.querySelector(".unread-message-boundary")?.scrollIntoView({ block: "center", behavior: "auto" });
   };
   requestAnimationFrame(() => {

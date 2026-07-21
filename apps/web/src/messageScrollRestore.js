@@ -10,6 +10,12 @@ export function nextScrollFocusGeneration(generation = 0) {
   return generation + 1;
 }
 
-export function canApplyScrollFocus(expectedGeneration, activeGeneration) {
-  return expectedGeneration === activeGeneration;
+export function canApplyScrollFocus(expectedGeneration, activeGeneration, expectedConversationId, selectedConversationId) {
+  if (expectedGeneration !== activeGeneration) return false;
+  if (expectedConversationId === undefined) return true;
+  return expectedConversationId === selectedConversationId;
+}
+
+export function canRestoreConversationScroll(expectedConversationId, selectedConversationId) {
+  return expectedConversationId === selectedConversationId;
 }

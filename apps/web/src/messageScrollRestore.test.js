@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   canApplyScrollFocus,
+  canRestoreConversationScroll,
   clearStaleScrollRestore,
   nextScrollFocusGeneration
 } from "./messageScrollRestore.js";
@@ -26,4 +27,11 @@ test("invalidates an already queued unread-boundary focus when the user navigate
 
   assert.equal(canApplyScrollFocus(queuedGeneration, activeGeneration), false);
   assert.equal(canApplyScrollFocus(activeGeneration, activeGeneration), true);
+});
+
+test("does not apply a queued scroll after the user changes conversations", () => {
+  assert.equal(canApplyScrollFocus(3, 3, "group-130011", "session-6"), false);
+  assert.equal(canApplyScrollFocus(3, 3, "group-130011", "group-130011"), true);
+  assert.equal(canRestoreConversationScroll("group-130011", "session-6"), false);
+  assert.equal(canRestoreConversationScroll("group-130011", "group-130011"), true);
 });
