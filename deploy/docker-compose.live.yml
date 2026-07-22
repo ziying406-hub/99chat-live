@@ -17,6 +17,12 @@ services:
     # compose cleanup cannot discard profile photos or file attachments.
     volumes:
       - /opt/99chat-live-data/uploads:/app/uploads
+    # Traefik runs in the existing 99chat project network. The app must join it
+    # as well, otherwise its router labels are visible but the proxy cannot
+    # reach the container that serves 99.99chat99.com.
+    networks:
+      - default
+      - traefik
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.99chat-live.rule=Host(`99.99chat99.com`)"
@@ -41,3 +47,8 @@ services:
 volumes:
   postgres:
     name: 99chat-live_postgres
+
+networks:
+  traefik:
+    external: true
+    name: 99chat_default
