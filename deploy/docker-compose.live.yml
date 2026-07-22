@@ -25,6 +25,7 @@ services:
       - traefik
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=99chat_default"
       - "traefik.http.routers.99chat-live.rule=Host(`99.99chat99.com`)"
       - "traefik.http.routers.99chat-live.entrypoints=websecure"
       - "traefik.http.routers.99chat-live.tls.certresolver=letsencrypt"
