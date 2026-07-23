@@ -665,7 +665,14 @@ function connectRealtime() {
         })) return;
         const incoming = message.senderId !== state.user?.id;
         const conv = ensureRealtimeConversation(id, message) || getConversation(id);
-        state.data.messages[id] = appendMessageOnce(state.data.messages[id], message);
+        const previousMessages = state.data.messages[id];
+        const nextMessages = appendMessageOnce(previousMessages, message);
+        const isNewRealtimeMessage = nextMessages !== previousMessages;
+        state.data.messages[id] = nextMessages;
+        // WebSocket delivery is at-least-once. The message list is already
+        // de-duplicated by id, so keep unread counters and notifications on
+        // that same path instead of counting a replay a second time.
+        if (!isNewRealtimeMessage) return;
         const keepUnreadBoundary = incoming && id === state.selectedConversationId && (
           Boolean(state.unreadBoundaryByConversation[id]) || !messageListIsAtBottom()
         );

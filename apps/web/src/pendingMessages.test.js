@@ -63,6 +63,13 @@ test("realtime delivery after the send response does not duplicate a saved messa
   assert.deepEqual(appendMessageOnce([{ id: "old" }, saved], saved), [{ id: "old" }, saved]);
 });
 
+test("replayed realtime delivery keeps the original list reference", () => {
+  const saved = { id: "m1", conversationId: "group-1", type: "text", body: "hello" };
+  const messages = [{ id: "old" }, saved];
+
+  assert.strictEqual(appendMessageOnce(messages, saved), messages);
+});
+
 test("realtime delivery keeps a saved message while its optimistic placeholder is pending", () => {
   const pending = { id: "pending-1", conversationId: "group-1", sendStatus: "sending" };
   const saved = { id: "m1", conversationId: "group-1", type: "text", body: "hello" };
