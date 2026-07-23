@@ -5957,3 +5957,18 @@ func mapValues(groups map[string]Group) []Group {
 	}
 	return values
 }
+
+func TestPrivateConversationGetsSequentialPublicChatID(t *testing.T) {
+	store := emptyDemoStore()
+	store.mu.Lock()
+	store.ensureAcceptedFriendConversationLocked("user-a", Contact{ID: "user-b", Nickname: "User B"})
+	store.ensureAcceptedFriendConversationLocked("user-a", Contact{ID: "user-c", Nickname: "User C"})
+	store.mu.Unlock()
+
+	if len(store.conversations) != 2 {
+		t.Fatalf("expected two private conversations, got %d", len(store.conversations))
+	}
+	if store.conversations[0].ChatID != "230002" || store.conversations[1].ChatID != "230001" {
+		t.Fatalf("unexpected private conversation chat IDs: %#v", store.conversations)
+	}
+}

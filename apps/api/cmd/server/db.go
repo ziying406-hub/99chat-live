@@ -126,6 +126,10 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
 			next_value BIGINT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS session_chat_id_sequence (
+			singleton SMALLINT PRIMARY KEY CHECK (singleton = 1),
+			next_value BIGINT NOT NULL
+		)`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS qr_code TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS disable_member_add_friend BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE groups ADD COLUMN IF NOT EXISTS all_muted BOOLEAN NOT NULL DEFAULT false`,
@@ -195,12 +199,14 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 			created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`,
 		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS chat_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS avatar_url TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS unread INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_text TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS last_at TIMESTAMPTZ NOT NULL DEFAULT now()`,
 		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT false`,
 		`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS muted BOOLEAN NOT NULL DEFAULT false`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_session_chat_id ON conversations(chat_id) WHERE kind = 'session' AND chat_id <> ''`,
 		`CREATE TABLE IF NOT EXISTS messages (
 			id TEXT PRIMARY KEY,
 			conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
@@ -551,13 +557,108 @@ func (pg *PostgresStore) backfillAcceptedFriendships(ctx context.Context) error 
 		if conversationID == "" {
 			continue
 		}
-		if _, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, unread, last_text, last_at)
-			VALUES ($1, 'session', 0, '你们已是好友，可以开始聊天了!', $2)
-			ON CONFLICT (id) DO NOTHING`, conversationID, item.createdAt); err != nil {
+		if err := ensureSessionConversationTx(ctx, tx, conversationID, "", "", "你们已是好友，可以开始聊天了!", item.createdAt); err != nil {
 			return err
 		}
 	}
 	return tx.Commit(ctx)
+}
+
+func (pg *PostgresStore) backfillSessionChatIDs(ctx context.Context) error {
+	tx, err := pg.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	var nextValue int64
+	err = tx.QueryRow(ctx, `SELECT next_value FROM session_chat_id_sequence WHERE singleton = 1 FOR UPDATE`).Scan(&nextValue)
+	sequenceExists := err == nil
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return err
+	}
+	if nextValue < firstPublicSessionChatID {
+		nextValue = firstPublicSessionChatID
+	}
+	rows, err := tx.Query(ctx, `SELECT id, chat_id FROM conversations WHERE kind = 'session' ORDER BY created_at, id`)
+	if err != nil {
+		return err
+	}
+	type sessionChatID struct{ id, chatID string }
+	var sessions []sessionChatID
+	for rows.Next() {
+		var session sessionChatID
+		if err := rows.Scan(&session.id, &session.chatID); err != nil {
+			rows.Close()
+			return err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	needsMigration := !sequenceExists
+	if !needsMigration {
+		for _, session := range sessions {
+			if !isPublicSessionChatID(session.chatID) {
+				needsMigration = true
+				break
+			}
+		}
+	}
+	if needsMigration {
+		for _, session := range sessions {
+			if _, err := tx.Exec(ctx, `UPDATE conversations SET chat_id = $2 WHERE id = $1`, session.id, "migrating-"+session.id); err != nil {
+				return err
+			}
+		}
+		nextValue = firstPublicSessionChatID
+		for _, session := range sessions {
+			if _, err := tx.Exec(ctx, `UPDATE conversations SET chat_id = $2 WHERE id = $1`, session.id, fmt.Sprintf("%06d", nextValue)); err != nil {
+				return err
+			}
+			nextValue++
+		}
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO session_chat_id_sequence(singleton, next_value)
+		VALUES (1, $1)
+		ON CONFLICT (singleton) DO UPDATE SET next_value = EXCLUDED.next_value`, nextValue); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+func nextPublicSessionChatIDTx(ctx context.Context, tx pgx.Tx) (string, error) {
+	var value int64
+	err := tx.QueryRow(ctx, `UPDATE session_chat_id_sequence
+		SET next_value = next_value + 1
+		WHERE singleton = 1
+		RETURNING next_value - 1`).Scan(&value)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%06d", value), nil
+}
+
+func ensureSessionConversationTx(ctx context.Context, tx pgx.Tx, conversationID, title, avatar, lastText string, lastAt time.Time) error {
+	var exists bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conversations WHERE id = $1)`, conversationID).Scan(&exists); err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	chatID, err := nextPublicSessionChatIDTx(ctx, tx)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `INSERT INTO conversations(id, kind, chat_id, title, avatar_url, unread, last_text, last_at)
+		VALUES ($1, 'session', $2, $3, $4, 0, $5, $6)`,
+		conversationID, chatID, title, avatar, lastText, lastAt)
+	return err
 }
 
 func (pg *PostgresStore) backfillGroupChatIDs(ctx context.Context) error {
@@ -757,10 +858,13 @@ func (pg *PostgresStore) seed(ctx context.Context, s *Store) error {
 }
 
 func (pg *PostgresStore) load(ctx context.Context, hub *Hub) (*Store, error) {
-	if err := pg.backfillAcceptedFriendships(ctx); err != nil {
+	if err := pg.backfillGroupChatIDs(ctx); err != nil {
 		return nil, err
 	}
-	if err := pg.backfillGroupChatIDs(ctx); err != nil {
+	if err := pg.backfillSessionChatIDs(ctx); err != nil {
+		return nil, err
+	}
+	if err := pg.backfillAcceptedFriendships(ctx); err != nil {
 		return nil, err
 	}
 	if err := pg.backfillGroupOwnerMemberships(ctx); err != nil {
@@ -914,7 +1018,7 @@ func (pg *PostgresStore) loadContacts(ctx context.Context, userID string) ([]Con
 }
 
 func (pg *PostgresStore) loadConversations(ctx context.Context) ([]Conversation, error) {
-	rows, err := pg.pool.Query(ctx, `SELECT id, kind, title, avatar_url, unread, last_text, last_at, pinned, muted
+	rows, err := pg.pool.Query(ctx, `SELECT id, kind, chat_id, title, avatar_url, unread, last_text, last_at, pinned, muted
 		FROM conversations ORDER BY last_at DESC`)
 	if err != nil {
 		return nil, err
@@ -923,7 +1027,7 @@ func (pg *PostgresStore) loadConversations(ctx context.Context) ([]Conversation,
 	var conversations []Conversation
 	for rows.Next() {
 		var conv Conversation
-		if err := rows.Scan(&conv.ID, &conv.Kind, &conv.Title, &conv.Avatar, &conv.Unread, &conv.LastText, &conv.LastAt, &conv.Pinned, &conv.Muted); err != nil {
+		if err := rows.Scan(&conv.ID, &conv.Kind, &conv.ChatID, &conv.Title, &conv.Avatar, &conv.Unread, &conv.LastText, &conv.LastAt, &conv.Pinned, &conv.Muted); err != nil {
 			return nil, err
 		}
 		conversations = append(conversations, conv)
@@ -3410,12 +3514,12 @@ func (s *Store) conversationForPersistence(conversationID string) (Conversation,
 }
 
 func upsertConversation(ctx context.Context, tx pgx.Tx, conv Conversation, groupID string) error {
-	_, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, group_id, title, avatar_url, unread, last_text, last_at, pinned, muted)
-		VALUES ($1, $2, NULLIF($3, ''), $4, $5, $6, $7, $8, $9, $10)
+	_, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, chat_id, group_id, title, avatar_url, unread, last_text, last_at, pinned, muted)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (id) DO UPDATE SET title = EXCLUDED.title, avatar_url = EXCLUDED.avatar_url,
 			unread = EXCLUDED.unread, last_text = EXCLUDED.last_text, last_at = EXCLUDED.last_at,
 			pinned = EXCLUDED.pinned, muted = EXCLUDED.muted`,
-		conv.ID, conv.Kind, groupID, conv.Title, conv.Avatar, conv.Unread, conv.LastText, conv.LastAt, conv.Pinned, conv.Muted)
+		conv.ID, conv.Kind, conv.ChatID, groupID, conv.Title, conv.Avatar, conv.Unread, conv.LastText, conv.LastAt, conv.Pinned, conv.Muted)
 	return err
 }
 
@@ -3961,10 +4065,7 @@ func (s *Store) updateFriendRequest(ctx context.Context, currentUserID, requestI
 		}
 		conversationID := canonicalPrivateConversationID(currentUserID, fromUserID)
 		if conversationID != "" {
-			if _, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, title, avatar_url, unread, last_text, last_at)
-				VALUES ($1, 'session', $2, $3, 0, '你们已是好友，可以开始聊天了!', now())
-				ON CONFLICT (id) DO NOTHING`,
-				conversationID, request.User.Nickname, request.User.Avatar); err != nil {
+			if err := ensureSessionConversationTx(ctx, tx, conversationID, request.User.Nickname, request.User.Avatar, "你们已是好友，可以开始聊天了!", time.Now()); err != nil {
 				return FriendRequest{}, err
 			}
 		}

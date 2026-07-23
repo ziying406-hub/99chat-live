@@ -12,8 +12,17 @@ export function conversationIdFromLocation(location = {}) {
     : null;
 }
 
-export function canonicalConversationIdForRoute(routeConversationId, groups = []) {
+export function canonicalConversationIdForRoute(routeConversationId, groups = [], conversations = []) {
   const value = String(routeConversationId || "");
+  if (value.startsWith("session-")) {
+    const routeToken = value.slice("session-".length);
+    const conversation = conversations.find(item => item && item.kind === "session" && (
+      String(item.id) === value ||
+      String(item.id) === routeToken ||
+      String(item.chatId) === routeToken
+    ));
+    return conversation?.id || value;
+  }
   if (!value.startsWith("group-")) return value;
 
   const routeToken = value.slice("group-".length);
@@ -26,7 +35,7 @@ export function canonicalConversationIdForRoute(routeConversationId, groups = []
   return group ? `group-${group.id}` : value;
 }
 
-export function conversationPathFor(conversationId, groups = []) {
+export function conversationPathFor(conversationId, groups = [], conversations = []) {
   const value = String(conversationId || "");
   if (value.startsWith("group-")) {
     const group = groups.find(item => item && `group-${item.id}` === value);
@@ -34,7 +43,9 @@ export function conversationPathFor(conversationId, groups = []) {
     return `/messages/groups/${encodeURIComponent(routeToken)}`;
   }
   if (value.startsWith("session-")) {
-    return `/messages/sessions/${encodeURIComponent(value.slice("session-".length))}`;
+    const conversation = conversations.find(item => item && item.id === value && item.kind === "session");
+    const routeToken = conversation?.chatId || value.slice("session-".length);
+    return `/messages/sessions/${encodeURIComponent(routeToken)}`;
   }
   return "/";
 }

@@ -32,7 +32,7 @@ import {
   nextScrollFocusGeneration
 } from "./messageScrollRestore.js?v=20260721-unread-boundary-scroll-v1";
 import { buildMarkUnreadPatch, effectiveUnreadCount, shouldCommitConversationSelection, shouldNotifyConversation, shouldShowMentionReminder, sortConversationList, unreadBadgeLabel } from "./conversationState.js?v=20260719-conversation-selection-v1";
-import { canonicalConversationIdForRoute, conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260718-group-chat-id-routes-v1";
+import { canonicalConversationIdForRoute, conversationIdFromLocation, conversationPathFor } from "./conversationRoute.js?v=20260723-session-chat-id-routes-v1";
 import { writeClipboardText } from "./clipboardCopy.js";
 import {
   buildCreateGroupPayload,
@@ -273,7 +273,8 @@ async function handleSidePageHash() {
 function conversationIdFromCurrentRoute() {
   return canonicalConversationIdForRoute(
     conversationIdFromLocation(window.location),
-    state.data?.groups || []
+    state.data?.groups || [],
+    state.data?.conversations || []
   );
 }
 
@@ -291,7 +292,7 @@ async function handleConversationRouteChange() {
 }
 
 function syncConversationPath(conversationId, { push = false } = {}) {
-  const nextPath = conversationPathFor(conversationId, state.data?.groups || []);
+  const nextPath = conversationPathFor(conversationId, state.data?.groups || [], state.data?.conversations || []);
   const nextUrl = `${nextPath}${window.location.search}`;
   const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
   if (currentUrl === nextUrl) return;
@@ -311,7 +312,11 @@ function isKnownConversationHash(value) {
 }
 
 async function openConversationFromHash(value) {
-  const conversationId = canonicalConversationIdForRoute(decodeURIComponent(value || ""), state.data?.groups || []);
+  const conversationId = canonicalConversationIdForRoute(
+    decodeURIComponent(value || ""),
+    state.data?.groups || [],
+    state.data?.conversations || []
+  );
   await openConversation(conversationId);
 }
 

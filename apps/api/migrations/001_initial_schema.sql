@@ -110,6 +110,7 @@ CREATE TABLE group_bots (
 CREATE TABLE conversations (
   id TEXT PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('session', 'group')),
+  chat_id TEXT NOT NULL DEFAULT '',
   group_id TEXT REFERENCES groups(id),
   title TEXT NOT NULL DEFAULT '',
   avatar_url TEXT NOT NULL DEFAULT '',
@@ -120,6 +121,10 @@ CREATE TABLE conversations (
   muted BOOLEAN NOT NULL DEFAULT false,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE UNIQUE INDEX idx_conversations_session_chat_id
+  ON conversations(chat_id)
+  WHERE kind = 'session' AND chat_id <> '';
 
 CREATE TABLE messages (
   id TEXT PRIMARY KEY,

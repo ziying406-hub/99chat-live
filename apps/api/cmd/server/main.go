@@ -32,12 +32,13 @@ import (
 )
 
 const (
-	demoLoginCode                = "123456"
-	maxUploadSizeBytes     int64 = 64 << 20
-	chatIDLetters                = "abcdefghijklmnopqrstuvwxyz"
-	chatIDDigits                 = "0123456789"
-	chatIDAlphabet               = chatIDLetters + chatIDDigits
-	firstPublicGroupChatID       = 130001
+	demoLoginCode                  = "123456"
+	maxUploadSizeBytes       int64 = 64 << 20
+	chatIDLetters                  = "abcdefghijklmnopqrstuvwxyz"
+	chatIDDigits                   = "0123456789"
+	chatIDAlphabet                 = chatIDLetters + chatIDDigits
+	firstPublicGroupChatID         = 130001
+	firstPublicSessionChatID       = 230001
 )
 
 var adminLoginDummyPasswordHash = func() string {
@@ -84,6 +85,7 @@ type Contact struct {
 type Conversation struct {
 	ID            string    `json:"id"`
 	Kind          string    `json:"kind"`
+	ChatID        string    `json:"chatId,omitempty"`
 	Title         string    `json:"title"`
 	Avatar        string    `json:"avatar"`
 	Unread        int       `json:"unread"`
@@ -504,6 +506,7 @@ type Store struct {
 	conversationHides map[string]map[string]bool
 	groups            map[string]Group
 	nextGroupChatID   int
+	nextSessionChatID int
 	discoverGroups    []Group
 	requests          []FriendRequest
 	joinRequests      []GroupJoinRequest
@@ -3152,9 +3155,7 @@ func (s *Store) createAutomaticFriendship(ctx context.Context, from, target User
 	}
 	conversationID := canonicalPrivateConversationID(from.ID, target.ID)
 	if conversationID != "" {
-		if _, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, title, avatar_url, unread, last_text, last_at)
-			VALUES ($1, 'session', $2, $3, 0, '你们已是好友，可以开始聊天了!', now())
-			ON CONFLICT (id) DO NOTHING`, conversationID, target.Nickname, target.Avatar); err != nil {
+		if err := ensureSessionConversationTx(ctx, tx, conversationID, target.Nickname, target.Avatar, "你们已是好友，可以开始聊天了!", time.Now()); err != nil {
 			return err
 		}
 	}
@@ -4400,6 +4401,7 @@ func (s *Store) ensurePrivateConversationLocked(conversationID string, contact C
 	s.conversations = append(s.conversations, Conversation{
 		ID:       conversationID,
 		Kind:     "session",
+		ChatID:   s.nextSessionChatIDLocked(),
 		Title:    contact.Nickname,
 		Avatar:   contact.Avatar,
 		LastText: displayMessage(msg),
@@ -4420,11 +4422,30 @@ func (s *Store) ensureAcceptedFriendConversationLocked(currentUserID string, con
 	s.conversations = append([]Conversation{{
 		ID:       conversationID,
 		Kind:     "session",
+		ChatID:   s.nextSessionChatIDLocked(),
 		Title:    contact.Nickname,
 		Avatar:   contact.Avatar,
 		LastText: "你们已是好友，可以开始聊天了!",
 		LastAt:   time.Now(),
 	}}, s.conversations...)
+}
+
+func (s *Store) nextSessionChatIDLocked() string {
+	if s.nextSessionChatID < firstPublicSessionChatID {
+		s.nextSessionChatID = firstPublicSessionChatID
+		for _, conversation := range s.conversations {
+			if conversation.Kind != "session" || !isPublicSessionChatID(conversation.ChatID) {
+				continue
+			}
+			value, err := strconv.Atoi(conversation.ChatID)
+			if err == nil && value >= s.nextSessionChatID {
+				s.nextSessionChatID = value + 1
+			}
+		}
+	}
+	chatID := fmt.Sprintf("%06d", s.nextSessionChatID)
+	s.nextSessionChatID++
+	return chatID
 }
 
 func (s *Store) userBlocksContact(ctx context.Context, userID, contactID string) (bool, error) {
@@ -5065,6 +5086,14 @@ func isPublicGroupChatID(chatID string) bool {
 	}
 	value, err := strconv.Atoi(chatID)
 	return err == nil && value >= firstPublicGroupChatID
+}
+
+func isPublicSessionChatID(chatID string) bool {
+	if !isNumericGroupChatID(chatID) {
+		return false
+	}
+	value, err := strconv.Atoi(chatID)
+	return err == nil && value >= firstPublicSessionChatID
 }
 
 func newChatID() string {
