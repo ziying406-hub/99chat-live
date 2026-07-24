@@ -7,6 +7,6 @@ export function isRecordableVoiceDuration(milliseconds = 0) {
   return Number(milliseconds) >= 1000;
 }
 
-export function shouldAutoPlayIncomingVoice({ message, isCurrentConversation, isVisible, enabled }) {
-  return Boolean(enabled && isCurrentConversation && isVisible && message?.type === "voice" && message?.attachment?.url);
+export function shouldAutoPlayIncomingVoice({ message, isCurrentConversation, isVisible, enabled, isIncoming }) {
+  return Boolean(isIncoming && enabled && isCurrentConversation && isVisible && message?.type === "voice" && message?.attachment?.url);
 }

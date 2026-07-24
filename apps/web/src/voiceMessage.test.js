@@ -21,6 +21,30 @@ test("autoplays an eligible incoming voice message", () => {
     message: { type: "voice", attachment: { url: "/uploads/a.webm" } },
     isCurrentConversation: true,
     isVisible: true,
-    enabled: true
+    enabled: true,
+    isIncoming: true
   }), true);
+});
+
+test("does not autoplay an ineligible voice message", () => {
+  const eligibleInput = {
+    message: { type: "voice", attachment: { url: "/uploads/a.webm" } },
+    isCurrentConversation: true,
+    isVisible: true,
+    enabled: true,
+    isIncoming: true
+  };
+
+  const cases = [
+    ["outgoing", { isIncoming: false }],
+    ["disabled", { enabled: false }],
+    ["non-current conversation", { isCurrentConversation: false }],
+    ["hidden document", { isVisible: false }],
+    ["missing attachment", { message: { type: "voice" } }],
+    ["non-voice message", { message: { type: "text", attachment: { url: "/uploads/a.webm" } } }]
+  ];
+
+  for (const [description, overrides] of cases) {
+    assert.equal(shouldAutoPlayIncomingVoice({ ...eligibleInput, ...overrides }), false, description);
+  }
 });
