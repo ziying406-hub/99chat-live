@@ -22,6 +22,7 @@ import {
 } from "./collectionFilters.js";
 import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
+import { isConversationPreviewEnabled, shouldCollapseComposerToolsAfterSend } from "./chatPreferenceBehavior.js?v=20260725-chat-settings-behavior-v1";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
 import { messageAvatarContactKey } from "./messageAvatarAction.js";
@@ -5034,7 +5035,6 @@ async function sendSynthetic(type) {
     file: { type: "file", body: "项目说明.pdf", attachment: { id: "demo-file", name: "项目说明.pdf", url: URL.createObjectURL(new Blob(["这是一个可打开的演示文件。"], { type: "text/plain;charset=utf-8" })), mimeType: "text/plain", size: 4096 } },
     voice: { type: "voice", body: "08" }
   };
-  state.toolMenu = null;
   try {
     await sendMessage(payloads[type]);
   } catch (error) {
@@ -5143,7 +5143,9 @@ async function sendMessage(payload) {
   const pending = buildPendingMessage({ conversationId, user: state.user, payload: finalPayload });
   state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), pending];
   upsertConversationPreview(conversationId, pending);
-  state.toolMenu = null;
+  if (shouldCollapseComposerToolsAfterSend(ensureUserSettings())) {
+    state.toolMenu = null;
+  }
   state.mentionIds = [];
   setCurrentReplyDraft(null);
   state.pendingEditorAutofocus = true;
@@ -9077,6 +9079,7 @@ function getMessageTypeLabel(type) {
 }
 
 function getConversationPreviewText(conversation) {
+  if (!isConversationPreviewEnabled(ensureUserSettings())) return "";
   if (conversation.id === state.selectedConversationId) {
     const draft = String(getCurrentDraftText() || "").trim();
     const replyDraft = getCurrentReplyDraft();
