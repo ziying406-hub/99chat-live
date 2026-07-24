@@ -54,6 +54,7 @@ import { ALL_MEMBERS_MENTION_ID, groupAllMentionCandidate, groupAllMentionIds } 
 import { appendMessageOnce, buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
+import { shouldPlayUnreadSnapshotSound } from "./notificationSoundState.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
@@ -144,6 +145,7 @@ const state = {
   voiceMode: false,
   useMock: false,
   data: null,
+  lastObservedUnreadCount: null,
   ws: null,
   wsReconnectTimer: null,
   wsHeartbeatTimer: null,
@@ -388,6 +390,7 @@ async function loadData() {
       loginDevices: [],
       messages: {}
     };
+    observeUnreadSnapshotForSound();
     const routeConversationId = conversationIdFromCurrentRoute();
     state.selectedConversationId = routeConversationId && getConversation(routeConversationId)
       ? routeConversationId
@@ -639,6 +642,7 @@ async function syncRealtimeSnapshot() {
     wasAtBottom: messageListIsAtBottom()
   });
   await refreshGroupsAndConversations();
+  observeUnreadSnapshotForSound();
   if (state.selectedConversationId) await loadMessages(state.selectedConversationId);
   if (keepSelectedConversationAtBottom) scheduleScrollToBottom();
   render();
@@ -693,6 +697,7 @@ function connectRealtime() {
           bumpUnread: shouldNotify && incoming && (!canAcknowledgeConversationRead(id) || keepUnreadBoundary),
           mentionMe: mentionedMe
         });
+        state.lastObservedUnreadCount = effectiveUnreadCount(state.data.conversations || []);
         if (mentionedMe) {
           rememberMentionNotification(message.id);
           toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
@@ -846,6 +851,8 @@ async function requestBrowserNotificationPermission() {
 let notificationAudioContext = null;
 let notificationSoundUnlockInstalled = false;
 let notificationAudioPrimed = false;
+let pendingUnreadSnapshotSound = false;
+let pendingUnreadSnapshotMention = false;
 
 function notificationAudioContextForPlayback() {
   const AudioContextCtor = window.AudioContext || window.webkitAudioContext;
@@ -870,7 +877,14 @@ function primeNotificationAudio(context) {
 function unlockNotificationSound() {
   const context = notificationAudioContextForPlayback();
   if (!context) return;
-  const unlock = () => primeNotificationAudio(context);
+  const unlock = () => {
+    primeNotificationAudio(context);
+    if (!pendingUnreadSnapshotSound || context.state !== "running") return;
+    const mentionedMe = pendingUnreadSnapshotMention;
+    pendingUnreadSnapshotSound = false;
+    pendingUnreadSnapshotMention = false;
+    playNotificationChime(context, { mentionedMe });
+  };
   if (context.state === "running") {
     unlock();
     return;
@@ -907,20 +921,42 @@ function playNotificationChime(context, { mentionedMe = false } = {}) {
   });
 }
 
-function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}) {
+function playUnreadNotificationSound({ mentionedMe = false } = {}) {
   const settings = ensureUserSettings();
-  if (!incoming || !shouldNotify || !settings.notificationsEnabled || !settings.notificationSound) return;
+  if (!settings.notificationsEnabled || !settings.notificationSound) return;
   const context = notificationAudioContextForPlayback();
   if (!context) return;
   const play = () => {
-    if (context.state !== "running") return;
+    if (context.state !== "running") return false;
+    pendingUnreadSnapshotSound = false;
+    pendingUnreadSnapshotMention = false;
     playNotificationChime(context, { mentionedMe });
+    return true;
   };
   if (context.state === "running") {
     play();
     return;
   }
+  // Browsers can reject resume() outside a user gesture. Keep one queued chime
+  // so the first tap or key press after opening the app plays the reminder.
+  pendingUnreadSnapshotSound = true;
+  pendingUnreadSnapshotMention ||= mentionedMe;
   void context.resume().then(play).catch(() => {});
+}
+
+function observeUnreadSnapshotForSound() {
+  const nextUnreadCount = effectiveUnreadCount(state.data?.conversations || []);
+  const previousUnreadCount = state.lastObservedUnreadCount;
+  state.lastObservedUnreadCount = nextUnreadCount;
+  if (shouldPlayUnreadSnapshotSound({ previousUnreadCount, nextUnreadCount })) {
+    playUnreadNotificationSound();
+  }
+}
+
+function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}) {
+  const settings = ensureUserSettings();
+  if (!incoming || !shouldNotify || !settings.notificationsEnabled || !settings.notificationSound) return;
+  playUnreadNotificationSound({ mentionedMe });
 }
 
 function previewNotificationSound() {
@@ -9342,6 +9378,7 @@ function markConversationRead(conversationId) {
     conv.unread = 0;
     conv.mentionedMe = false;
   }
+  state.lastObservedUnreadCount = effectiveUnreadCount(state.data?.conversations || []);
 }
 
 function canAcknowledgeConversationRead(conversationId) {
