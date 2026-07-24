@@ -5174,7 +5174,8 @@ button.setting-row {
     radial-gradient(circle at 50% 0%, rgba(39, 160, 224, 0.12), transparent 34%),
     rgba(8, 15, 38, 0.48);
   backdrop-filter: blur(10px);
-  z-index: 100;
+  /* Keep mobile confirmation sheets above the persistent bottom navigation. */
+  z-index: 1000;
   animation: modalBackdropIn 180ms ease both;
 }
 
