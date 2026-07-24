@@ -5017,11 +5017,15 @@ async function onSendMessage(event) {
     ...state.mentionIds,
     ...collectMentionIds(body)
   ]);
+  // The composer is rendered twice while an outgoing message is persisted.
+  // Keep the open tool menu across both renders when the user opted out of
+  // automatically collapsing it.
+  const composerToolMenu = state.toolMenu || (document.querySelector(".emoji-popover") ? "emoji" : null);
   state.mentionIds = [];
   state.mention = null;
   setCurrentDraftText("");
   try {
-    await sendMessage({ type: "text", body, mentions });
+    await sendMessage({ type: "text", body, mentions }, { composerToolMenu });
   } catch (error) {
     setCurrentDraftText(body);
     toast(sendErrorMessage(error));
@@ -5131,8 +5135,10 @@ async function uploadFile(file) {
   };
 }
 
-async function sendMessage(payload) {
+async function sendMessage(payload, options = {}) {
   const conversationId = state.selectedConversationId;
+  const composerToolMenu = options.composerToolMenu || state.toolMenu;
+  const keepComposerToolsOpen = Boolean(composerToolMenu) && !shouldCollapseComposerToolsAfterSend(ensureUserSettings());
   const replyingTo = getCurrentReplyDraft();
   const finalPayload = replyingTo
     ? {
@@ -5143,8 +5149,10 @@ async function sendMessage(payload) {
   const pending = buildPendingMessage({ conversationId, user: state.user, payload: finalPayload });
   state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), pending];
   upsertConversationPreview(conversationId, pending);
-  if (shouldCollapseComposerToolsAfterSend(ensureUserSettings())) {
+  if (!keepComposerToolsOpen) {
     state.toolMenu = null;
+  } else {
+    state.toolMenu = composerToolMenu;
   }
   state.mentionIds = [];
   setCurrentReplyDraft(null);
@@ -5163,6 +5171,7 @@ async function sendMessage(payload) {
     upsertConversationPreview(conversationId, failed);
     toast(sendErrorMessage(error));
   }
+  if (keepComposerToolsOpen) state.toolMenu = composerToolMenu;
   state.pendingEditorAutofocus = true;
   scheduleScrollToBottom();
   render();
