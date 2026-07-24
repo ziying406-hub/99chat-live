@@ -97,6 +97,18 @@ test("outgoing or background realtime messages are not acknowledged again", () =
   );
 });
 
+test("an incoming message in another open conversation remains unread", () => {
+  assert.equal(
+    shouldAcknowledgeRealtimeMessage({
+      conversationId: "session-u1--u2",
+      selectedConversationId: "group-1",
+      incoming: true,
+      section: "messages"
+    }),
+    false
+  );
+});
+
 test("an incoming message is not acknowledged after leaving the chat section", () => {
   assert.equal(
     shouldAcknowledgeRealtimeMessage({
