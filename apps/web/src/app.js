@@ -728,7 +728,7 @@ function connectRealtime() {
         if (shouldAutoPlayIncomingVoice({
           message,
           isIncoming: incoming,
-          isCurrentConversation: id === state.selectedConversationId,
+          isCurrentConversation: isVoiceAutoplayConversationOpen(id),
           isVisible: document.visibilityState === "visible",
           enabled: ensureUserSettings().autoPlayVoice
         })) playVoiceMessage(message);
@@ -5224,6 +5224,10 @@ function bindVoicePadEvents() {
   voicePointerLifecycleBound = true;
 }
 
+function isVoiceAutoplayConversationOpen(conversationId) {
+  return state.section === "messages" && !state.sidePage && state.selectedConversationId === conversationId;
+}
+
 function playVoiceMessage(message) {
   state.activeVoiceAudio?.pause();
   const audio = new Audio(message.attachment.url);
@@ -5240,6 +5244,7 @@ function playVoiceMessage(message) {
       state.activeVoiceAudio = null;
       state.activeVoiceMessageId = null;
     }
+    render();
     toast("语音播放失败");
   });
   render();
