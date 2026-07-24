@@ -22,7 +22,7 @@ import {
 } from "./collectionFilters.js";
 import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
-import { formatVoiceDuration, isRecordableVoiceDuration } from "./voiceMessage.js";
+import { formatVoiceDuration, isRecordableVoiceDuration, shouldAutoPlayIncomingVoice } from "./voiceMessage.js";
 import { shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
 import { isConversationPreviewEnabled, shouldCollapseComposerToolsAfterSend } from "./chatPreferenceBehavior.js?v=20260725-chat-settings-behavior-v1";
 import { buildContactCardPayload } from "./contactCard.js";
@@ -154,6 +154,8 @@ const state = {
   voiceRecordingConversationId: null,
   voicePointerId: null,
   voiceRecordingTimer: null,
+  activeVoiceAudio: null,
+  activeVoiceMessageId: null,
   useMock: false,
   data: null,
   lastObservedUnreadCount: null,
@@ -687,7 +689,7 @@ function connectRealtime() {
           currentUserId: state.user?.id,
           contactIds: (state.data.contacts || []).map(contact => contact.id)
         })) return;
-        const incoming = message.senderId !== state.user?.id;
+        const incoming = String(message.senderId || "") !== String(state.user?.id || "");
         const conv = ensureRealtimeConversation(id, message) || getConversation(id);
         const previousMessages = state.data.messages[id];
         const nextMessages = appendMessageOnce(previousMessages, message);
@@ -723,6 +725,13 @@ function connectRealtime() {
         showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
         scheduleRealtimeReadReceipt(id, incoming);
         if (id === state.selectedConversationId && !keepUnreadBoundary) scheduleScrollToBottom();
+        if (shouldAutoPlayIncomingVoice({
+          message,
+          isIncoming: incoming,
+          isCurrentConversation: id === state.selectedConversationId,
+          isVisible: document.visibilityState === "visible",
+          enabled: ensureUserSettings().autoPlayVoice
+        })) playVoiceMessage(message);
         render();
       }
       if (envelope.type === "message.mentioned") {
@@ -1789,7 +1798,13 @@ function renderMessageBody(message) {
         </span>
       </a>`;
   }
-  if (message.type === "voice") return `${quote}<div>🎙 语音消息 00:${String(message.body || "08").padStart(2, "0")}</div>`;
+  if (message.type === "voice") {
+    const source = message.attachment?.url;
+    const duration = formatVoiceDuration(message.body);
+    if (!source) return `${quote}<div>🎙 语音消息 ${duration}</div>`;
+    const playing = state.activeVoiceMessageId === message.id;
+    return `${quote}<button class="voice-message ${playing ? "is-playing" : ""}" type="button" data-play-voice="${escapeAttr(message.id)}" aria-pressed="${playing}">${playing ? "播放中..." : "▶"} ${duration}</button>`;
+  }
   if (message.type === "contact") {
     const contact = findContactByName(message.body) || findContactByName(message.senderName);
     const title = escapeHTML(contact?.nickname || message.body || "联系人");
@@ -4559,6 +4574,10 @@ function bindEvents() {
   }));
   document.querySelector("#composer")?.addEventListener("submit", onSendMessage);
   bindVoicePadEvents();
+  document.querySelectorAll("[data-play-voice]").forEach(el => el.addEventListener("click", () => {
+    const message = (state.data.messages[state.selectedConversationId] || []).find(item => item.id === el.dataset.playVoice);
+    if (message?.attachment?.url) playVoiceMessage(message);
+  }));
   document.querySelector(".messages")?.addEventListener("contextmenu", e => {
     const item = e.target.closest("[data-message-id]");
     const container = e.currentTarget;
@@ -5203,6 +5222,27 @@ function bindVoicePadEvents() {
   window.addEventListener("pointerup", event => stopVoiceRecording(event.pointerId));
   window.addEventListener("pointercancel", event => stopVoiceRecording(event.pointerId));
   voicePointerLifecycleBound = true;
+}
+
+function playVoiceMessage(message) {
+  state.activeVoiceAudio?.pause();
+  const audio = new Audio(message.attachment.url);
+  state.activeVoiceAudio = audio;
+  state.activeVoiceMessageId = message.id;
+  audio.addEventListener("ended", () => {
+    if (state.activeVoiceAudio !== audio) return;
+    state.activeVoiceAudio = null;
+    state.activeVoiceMessageId = null;
+    render();
+  });
+  audio.play().catch(() => {
+    if (state.activeVoiceAudio === audio) {
+      state.activeVoiceAudio = null;
+      state.activeVoiceMessageId = null;
+    }
+    toast("语音播放失败");
+  });
+  render();
 }
 
 async function finishVoiceRecording(recorder, chunks, conversationId) {

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
 import {
   formatVoiceDuration,
@@ -47,4 +48,19 @@ test("does not autoplay an ineligible voice message", () => {
   for (const [description, overrides] of cases) {
     assert.equal(shouldAutoPlayIncomingVoice({ ...eligibleInput, ...overrides }), false, description);
   }
+});
+
+test("renders attached voice messages as playback controls while retaining the legacy fallback", async () => {
+  const appSource = await readFile(new URL("./app.js", import.meta.url), "utf8");
+
+  assert.match(appSource, /data-play-voice/);
+  assert.match(appSource, /const duration = formatVoiceDuration\(message\.body\)/);
+  assert.match(appSource, /🎙 语音消息 \$\{duration\}/);
+});
+
+test("passes the derived incoming flag into realtime voice autoplay", async () => {
+  const appSource = await readFile(new URL("./app.js", import.meta.url), "utf8");
+
+  assert.match(appSource, /const incoming = String\(message\.senderId \|\| ""\) !== String\(state\.user\?\.id \|\| ""\)/);
+  assert.match(appSource, /shouldAutoPlayIncomingVoice\(\{[\s\S]*isIncoming: incoming/);
 });
