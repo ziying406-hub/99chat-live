@@ -4469,10 +4469,6 @@ function bindEvents() {
     }, true);
     sidePageDelegateBound = true;
   }
-  document.querySelectorAll("[data-sidepage]").forEach(el => el.addEventListener("click", async e => {
-    e.preventDefault();
-    await openSidePage(el.dataset.sidepage);
-  }));
   document.querySelectorAll("[data-mobile-close]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     if (state.sidePage) {
