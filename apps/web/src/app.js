@@ -851,6 +851,9 @@ async function requestBrowserNotificationPermission() {
 let notificationAudioContext = null;
 let notificationSoundUnlockInstalled = false;
 let notificationAudioPrimed = false;
+let notificationCueAudio = null;
+let notificationCueUnlocked = false;
+let notificationCueDataUrl = null;
 let pendingUnreadSnapshotSound = false;
 let pendingUnreadSnapshotMention = false;
 
@@ -859,6 +862,87 @@ function notificationAudioContextForPlayback() {
   if (!AudioContextCtor) return null;
   if (!notificationAudioContext) notificationAudioContext = new AudioContextCtor();
   return notificationAudioContext;
+}
+
+function notificationCueSource() {
+  if (notificationCueDataUrl) return notificationCueDataUrl;
+  const sampleRate = 22050;
+  const duration = 0.92;
+  const frameCount = Math.floor(sampleRate * duration);
+  const buffer = new ArrayBuffer(44 + (frameCount * 2));
+  const view = new DataView(buffer);
+  const writeText = (offset, value) => {
+    [...value].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+  };
+  writeText(0, "RIFF");
+  view.setUint32(4, 36 + (frameCount * 2), true);
+  writeText(8, "WAVE");
+  writeText(12, "fmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, "data");
+  view.setUint32(40, frameCount * 2, true);
+
+  const frequencies = [2093, 2637, 3136];
+  for (let index = 0; index < frameCount; index += 1) {
+    const time = index / sampleRate;
+    const noteIndex = Math.floor(time / 0.3);
+    const noteTime = time - (noteIndex * 0.3);
+    const envelope = noteIndex < frequencies.length && noteTime < 0.2
+      ? Math.sin(Math.min(1, noteTime / 0.012) * Math.PI / 2) * Math.exp(-noteTime * 7)
+      : 0;
+    const sample = Math.sin(2 * Math.PI * (frequencies[noteIndex] || frequencies[0]) * time) * envelope * 0.9;
+    view.setInt16(44 + (index * 2), Math.max(-1, Math.min(1, sample)) * 32767, true);
+  }
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunkSize = 8192;
+  for (let offset = 0; offset < bytes.length; offset += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + chunkSize));
+  }
+  notificationCueDataUrl = `data:audio/wav;base64,${btoa(binary)}`;
+  return notificationCueDataUrl;
+}
+
+function notificationCueForPlayback() {
+  if (!("Audio" in window)) return null;
+  if (!notificationCueAudio) {
+    notificationCueAudio = new Audio(notificationCueSource());
+    notificationCueAudio.preload = "auto";
+  }
+  return notificationCueAudio;
+}
+
+function primeNotificationCue() {
+  const cue = notificationCueForPlayback();
+  if (!cue || notificationCueUnlocked) return;
+  cue.volume = 0;
+  cue.currentTime = 0;
+  void cue.play().then(() => {
+    cue.pause();
+    cue.currentTime = 0;
+    cue.volume = 1;
+    notificationCueUnlocked = true;
+  }).catch(() => {
+    cue.volume = 1;
+  });
+}
+
+function playNotificationCue() {
+  const cue = notificationCueForPlayback();
+  if (!cue || !notificationCueUnlocked) return false;
+  cue.pause();
+  cue.currentTime = 0;
+  cue.volume = 1;
+  void cue.play().catch(() => {
+    notificationCueUnlocked = false;
+  });
+  return true;
 }
 
 function primeNotificationAudio(context) {
@@ -875,6 +959,7 @@ function primeNotificationAudio(context) {
 }
 
 function unlockNotificationSound() {
+  primeNotificationCue();
   const context = notificationAudioContextForPlayback();
   if (!context) return;
   const unlock = () => {
@@ -924,13 +1009,18 @@ function playNotificationChime(context, { mentionedMe = false } = {}) {
 function playUnreadNotificationSound({ mentionedMe = false } = {}) {
   const settings = ensureUserSettings();
   if (!settings.notificationsEnabled || !settings.notificationSound) return;
+  if (playNotificationCue()) {
+    pendingUnreadSnapshotSound = false;
+    pendingUnreadSnapshotMention = false;
+    return;
+  }
   const context = notificationAudioContextForPlayback();
   if (!context) return;
   const play = () => {
     if (context.state !== "running") return false;
     pendingUnreadSnapshotSound = false;
     pendingUnreadSnapshotMention = false;
-    playNotificationChime(context, { mentionedMe });
+    if (!playNotificationCue()) playNotificationChime(context, { mentionedMe });
     return true;
   };
   if (context.state === "running") {
@@ -975,7 +1065,7 @@ function previewNotificationSound() {
       toast("浏览器暂未允许播放声音");
       return;
     }
-    playNotificationChime(context);
+    if (!playNotificationCue()) playNotificationChime(context);
     toast("正在播放提示音");
   };
   if (context.state === "running") {

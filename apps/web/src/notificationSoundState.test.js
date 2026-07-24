@@ -2,8 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { shouldPlayUnreadSnapshotSound } from "./notificationSoundState.js";
 
-test("initial unread snapshot requests one sound", () => {
-  assert.equal(shouldPlayUnreadSnapshotSound({ nextUnreadCount: 3 }), true);
+test("initial unread snapshot stays silent", () => {
+  assert.equal(shouldPlayUnreadSnapshotSound({ nextUnreadCount: 3 }), false);
 });
 
 test("a reconnect only requests sound when unread count increases", () => {
