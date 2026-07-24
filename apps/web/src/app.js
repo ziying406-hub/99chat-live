@@ -4621,7 +4621,7 @@ function bindEvents() {
     if (state.toolMenu !== "emoji") return;
     const target = event.target;
     if (!(target instanceof Element)) return;
-    if (target.closest(".emoji-popover, #editor, [data-tool='emoji']")) return;
+    if (target.closest(".emoji-popover, #composer, [data-tool='emoji']")) return;
     dismissEmojiPicker();
   });
   document.querySelector(".messages")?.addEventListener("scroll", () => {
