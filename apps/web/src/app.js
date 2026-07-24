@@ -23,6 +23,7 @@ import {
 import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
 import { formatVoiceDuration, isRecordableVoiceDuration } from "./voiceMessage.js";
+import { shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
 import { isConversationPreviewEnabled, shouldCollapseComposerToolsAfterSend } from "./chatPreferenceBehavior.js?v=20260725-chat-settings-behavior-v1";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
@@ -1601,7 +1602,7 @@ function renderChatPane(conv) {
           <form class="composer ${state.voiceMode ? "voice-mode" : "text-mode"}" id="composer">
             <button class="icon-btn composer-mode-btn ${state.voiceMode ? "active" : ""}" type="button" data-action="voice" title="${state.voiceMode ? "切换输入" : "语音"}" ${blockedReason ? "disabled" : ""}>${state.voiceMode ? "⌨" : icons.mic}</button>
             <div class="composer-input-stack">
-              ${state.voiceMode ? `<button class="ghost-btn composer-voice-pad ${state.voiceRecording ? "is-recording" : ""}" type="button" data-action="${composerVoiceRecordAction()}" ${blockedReason ? "disabled" : ""} aria-pressed="${state.voiceRecording}"><span class="voice-dot"></span><span data-voice-recording-label>${escapeHTML(voiceRecordingLabel())}</span></button>` : `<textarea class="editor" id="editor" placeholder="${blockedReason ? escapeAttr(blockedReason) : "输入消息"}" ${blockedReason ? "disabled" : ""} ${state.pendingEditorAutofocus && !blockedReason ? "autofocus" : ""}>${escapeHTML(getCurrentDraftText())}</textarea>`}
+              ${state.voiceMode ? `<button class="ghost-btn composer-voice-pad ${state.voiceRecording ? "is-recording" : ""} ${state.voiceRecordingPending ? "is-pending" : ""}" type="button" data-action="${composerVoiceRecordAction()}" ${blockedReason ? "disabled" : ""} aria-pressed="${state.voiceRecording}" aria-busy="${state.voiceRecordingPending}"><span class="voice-dot"></span><span data-voice-recording-label>${escapeHTML(voiceRecordingLabel())}</span></button>` : `<textarea class="editor" id="editor" placeholder="${blockedReason ? escapeAttr(blockedReason) : "输入消息"}" ${blockedReason ? "disabled" : ""} ${state.pendingEditorAutofocus && !blockedReason ? "autofocus" : ""}>${escapeHTML(getCurrentDraftText())}</textarea>`}
             </div>
             <div class="composer-tools">
               <button class="icon-btn composer-tool-btn" type="button" data-action="mention" title="提及成员" ${blockedReason ? "disabled" : ""}>@</button>
@@ -5064,6 +5065,7 @@ async function sendSynthetic(type) {
 }
 
 function voiceRecordingLabel() {
+  if (state.voiceRecordingPending) return "正在请求麦克风权限…";
   if (!state.voiceRecording) return "按住录音";
   const elapsedSeconds = (Date.now() - state.voiceStartedAt) / 1000;
   return `${formatVoiceDuration(elapsedSeconds)} 松开发送`;
@@ -5072,6 +5074,12 @@ function voiceRecordingLabel() {
 function refreshVoiceRecordingLabel() {
   const label = document.querySelector("[data-voice-recording-label]");
   if (label) label.textContent = voiceRecordingLabel();
+  const pad = document.querySelector(".composer-voice-pad");
+  if (!pad) return;
+  pad.classList.toggle("is-recording", state.voiceRecording);
+  pad.classList.toggle("is-pending", state.voiceRecordingPending);
+  pad.setAttribute("aria-pressed", String(state.voiceRecording));
+  pad.setAttribute("aria-busy", String(state.voiceRecordingPending));
 }
 
 function stopVoiceRecordingTimer() {
@@ -5117,6 +5125,7 @@ async function startVoiceRecording(pointerId) {
   const conversationId = state.selectedConversationId;
   state.voiceRecordingPending = true;
   state.voicePointerId = pointerId;
+  refreshVoiceRecordingLabel();
   let stream = null;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -5140,7 +5149,7 @@ async function startVoiceRecording(pointerId) {
     state.voiceRecordingPending = false;
     state.voiceRecordingConversationId = conversationId;
     recorder.start();
-    render();
+    refreshVoiceRecordingLabel();
     state.voiceRecordingTimer = window.setInterval(refreshVoiceRecordingLabel, 250);
   } catch (error) {
     stream?.getTracks().forEach(track => track.stop());
@@ -5154,6 +5163,11 @@ async function startVoiceRecording(pointerId) {
 function stopVoiceRecording(pointerId) {
   if (state.voicePointerId !== pointerId) return;
   state.voicePointerId = null;
+  if (state.voiceRecordingPending) {
+    state.voiceRecordingPending = false;
+    refreshVoiceRecordingLabel();
+    return;
+  }
   if (!state.voiceRecording) return;
   const recorder = state.voiceRecorder;
   if (recorder?.state === "recording") recorder.stop();
@@ -5164,13 +5178,25 @@ function bindVoicePadEvents() {
   if (pad) {
     pad.addEventListener("pointerdown", event => {
       event.preventDefault();
-      pad.setPointerCapture?.(event.pointerId);
-      void startVoiceRecording(event.pointerId);
+      if (voicePadEventAction({ type: event.type }) === "start") {
+        void startVoiceRecording(event.pointerId);
+      }
     });
-    pad.addEventListener("pointerup", event => stopVoiceRecording(event.pointerId));
-    pad.addEventListener("pointercancel", event => stopVoiceRecording(event.pointerId));
-    pad.addEventListener("pointerleave", event => {
-      if (state.voiceRecording) stopVoiceRecording(event.pointerId);
+    ["pointerup", "pointercancel", "pointerleave"].forEach(type => {
+      pad.addEventListener(type, event => {
+        const action = voicePadEventAction({
+          type,
+          isRecording: state.voiceRecording,
+          isPending: state.voiceRecordingPending
+        });
+        if (action === "stop" || action === "cancel-pending") stopVoiceRecording(event.pointerId);
+      });
+    });
+    pad.addEventListener("click", event => {
+      if (voicePadEventAction({ type: event.type, detail: event.detail }) === "suppress-click") {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      }
     });
   }
   if (voicePointerLifecycleBound) return;
@@ -5185,7 +5211,8 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
   resetVoiceRecordingState();
   stopVoiceTracks();
   render();
-  if (!isRecordableVoiceDuration(elapsed)) {
+  const isRecordable = isRecordableVoiceDuration(elapsed);
+  if (!isRecordable) {
     toast("录音时间至少 1 秒");
     return;
   }
@@ -5197,7 +5224,12 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
   const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || "audio/webm" });
   try {
     const attachment = await uploadFile(file);
-    if (state.selectedConversationId !== conversationId) return;
+    if (!shouldSendVoiceMessage({
+      isRecordable,
+      hasAudio: blob.size > 0,
+      hasAttachment: Boolean(attachment),
+      isCurrentConversation: state.selectedConversationId === conversationId
+    })) return;
     await sendMessage({ type: "voice", body: String(Math.round(elapsed / 1000)), attachment });
   } catch (error) {
     toast(uploadErrorMessage(error));
@@ -5425,6 +5457,10 @@ function mockGroupRateLimitExceeded() {
 }
 
 async function handleAction(event, action) {
+  if (action === composerVoiceRecordAction()) {
+    toast("请按住录音按钮说话");
+    return;
+  }
   if (action === "simulate-scan-group") {
     await simulateScanCurrentGroup();
     return;

@@ -1,3 +1,3 @@
 export function composerVoiceRecordAction() {
-  return "send-voice";
+  return "voice-record-instruction";
 }

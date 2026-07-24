@@ -33,3 +33,25 @@ both passed
 ## Concern
 
 - A manual microphone authorization and hold/release test was not run in this environment, so real device/browser MediaRecorder behavior still needs that final browser check.
+
+## Review Fixes
+
+- Removed pointer capture from the voice pad. Recording state now updates the existing pad in place, so moving the active pointer outside the pad reliably reaches `pointerleave` and stops recording.
+- Added a clear pending authorization state: `正在请求麦克风权限…`, `aria-busy="true"`, and a matching visual state appear immediately after pointer down.
+- Changed the pad's action from the obsolete synthetic send action to an instruction action. Pointer-generated clicks are suppressed after hold/release; keyboard Enter, Space, and assistive activation show `请按住录音按钮说话` instead of silently doing nothing or sending a placeholder voice message.
+- Added focused `voiceRecording` decision tests for pointer routing and send eligibility. The production send path now uses the same eligibility decision before `sendMessage`.
+
+## Review Verification
+
+```text
+node --test apps/web/src/voiceRecording.test.js apps/web/src/voiceMessage.test.js apps/web/src/composerActions.test.js
+
+9 passed, 0 failed
+```
+
+```text
+node --check apps/web/src/app.js
+git diff --check
+
+both passed
+```

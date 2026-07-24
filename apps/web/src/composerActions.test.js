@@ -3,6 +3,6 @@ import test from "node:test";
 
 import { composerVoiceRecordAction } from "./composerActions.js";
 
-test("voice mode record button uses the real send voice action", () => {
-  assert.equal(composerVoiceRecordAction(), "send-voice");
+test("voice mode record button uses the accessible voice instruction action", () => {
+  assert.equal(composerVoiceRecordAction(), "voice-record-instruction");
 });

@@ -2018,6 +2018,17 @@ a {
   color: #b91c1c;
 }
 
+.composer-voice-pad.is-pending {
+  border-color: rgba(14, 116, 144, 0.48);
+  color: #0f766e;
+}
+
+.composer-voice-pad.is-pending .voice-dot {
+  background: #0f766e;
+  box-shadow: 0 0 0 6px rgba(15, 118, 110, 0.1);
+  animation: voice-recording-pulse 1s ease-in-out infinite;
+}
+
 .composer-voice-pad.is-recording .voice-dot {
   animation: voice-recording-pulse 1s ease-in-out infinite;
 }
