@@ -2008,6 +2008,22 @@ a {
     linear-gradient(180deg, #ffffff 0%, #f5f8fc 100%);
   color: var(--text);
   font-weight: 800;
+  touch-action: none;
+  user-select: none;
+}
+
+.composer-voice-pad.is-recording {
+  border-color: rgba(239, 68, 68, 0.72);
+  background: rgba(254, 242, 242, 0.94);
+  color: #b91c1c;
+}
+
+.composer-voice-pad.is-recording .voice-dot {
+  animation: voice-recording-pulse 1s ease-in-out infinite;
+}
+
+@keyframes voice-recording-pulse {
+  50% { opacity: 0.42; }
 }
 
 .voice-dot {

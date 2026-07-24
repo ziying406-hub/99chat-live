@@ -22,6 +22,7 @@ import {
 } from "./collectionFilters.js";
 import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
+import { formatVoiceDuration, isRecordableVoiceDuration } from "./voiceMessage.js";
 import { isConversationPreviewEnabled, shouldCollapseComposerToolsAfterSend } from "./chatPreferenceBehavior.js?v=20260725-chat-settings-behavior-v1";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
@@ -144,6 +145,14 @@ const state = {
   emojiCategory: "frequent",
   editorSelection: null,
   voiceMode: false,
+  voiceRecorder: null,
+  voiceStream: null,
+  voiceStartedAt: 0,
+  voiceRecording: false,
+  voiceRecordingPending: false,
+  voiceRecordingConversationId: null,
+  voicePointerId: null,
+  voiceRecordingTimer: null,
   useMock: false,
   data: null,
   lastObservedUnreadCount: null,
@@ -198,6 +207,7 @@ const state = {
 
 const mock = createMockData();
 let sidePageDelegateBound = false;
+let voicePointerLifecycleBound = false;
 
 const icons = {
   chat: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 5.8C4 4.25 5.25 3 6.8 3h10.4C18.75 3 20 4.25 20 5.8v6.4c0 1.55-1.25 2.8-2.8 2.8H11l-5 4v-4.1A2.8 2.8 0 0 1 4 12.2V5.8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`,
@@ -225,6 +235,7 @@ async function init() {
   window.addEventListener("hashchange", handleSidePageHash);
   window.addEventListener("popstate", handleConversationRouteChange);
   window.addEventListener("focus", acknowledgeVisibleConversationRead);
+  window.addEventListener("beforeunload", cancelVoiceRecording);
   document.addEventListener("visibilitychange", acknowledgeVisibleConversationRead);
   render();
   await handleSidePageHash();
@@ -288,6 +299,7 @@ async function handleConversationRouteChange() {
     return;
   }
   if (!conversationId && state.selectedConversationId) {
+    cancelVoiceRecording();
     state.selectedConversationId = null;
     state.sidePage = null;
     render();
@@ -295,6 +307,9 @@ async function handleConversationRouteChange() {
 }
 
 function syncConversationPath(conversationId, { push = false } = {}) {
+  if (state.voiceRecordingConversationId && state.voiceRecordingConversationId !== conversationId) {
+    cancelVoiceRecording();
+  }
   const nextPath = conversationPathFor(conversationId, state.data?.groups || [], state.data?.conversations || []);
   const nextUrl = `${nextPath}${window.location.search}`;
   const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
@@ -1586,7 +1601,7 @@ function renderChatPane(conv) {
           <form class="composer ${state.voiceMode ? "voice-mode" : "text-mode"}" id="composer">
             <button class="icon-btn composer-mode-btn ${state.voiceMode ? "active" : ""}" type="button" data-action="voice" title="${state.voiceMode ? "切换输入" : "语音"}" ${blockedReason ? "disabled" : ""}>${state.voiceMode ? "⌨" : icons.mic}</button>
             <div class="composer-input-stack">
-              ${state.voiceMode ? `<button class="ghost-btn composer-voice-pad" type="button" data-action="${composerVoiceRecordAction()}" ${blockedReason ? "disabled" : ""}><span class="voice-dot"></span><span>00:00 点击录音</span></button>` : `<textarea class="editor" id="editor" placeholder="${blockedReason ? escapeAttr(blockedReason) : "输入消息"}" ${blockedReason ? "disabled" : ""} ${state.pendingEditorAutofocus && !blockedReason ? "autofocus" : ""}>${escapeHTML(getCurrentDraftText())}</textarea>`}
+              ${state.voiceMode ? `<button class="ghost-btn composer-voice-pad ${state.voiceRecording ? "is-recording" : ""}" type="button" data-action="${composerVoiceRecordAction()}" ${blockedReason ? "disabled" : ""} aria-pressed="${state.voiceRecording}"><span class="voice-dot"></span><span data-voice-recording-label>${escapeHTML(voiceRecordingLabel())}</span></button>` : `<textarea class="editor" id="editor" placeholder="${blockedReason ? escapeAttr(blockedReason) : "输入消息"}" ${blockedReason ? "disabled" : ""} ${state.pendingEditorAutofocus && !blockedReason ? "autofocus" : ""}>${escapeHTML(getCurrentDraftText())}</textarea>`}
             </div>
             <div class="composer-tools">
               <button class="icon-btn composer-tool-btn" type="button" data-action="mention" title="提及成员" ${blockedReason ? "disabled" : ""}>@</button>
@@ -4542,6 +4557,7 @@ function bindEvents() {
     render();
   }));
   document.querySelector("#composer")?.addEventListener("submit", onSendMessage);
+  bindVoicePadEvents();
   document.querySelector(".messages")?.addEventListener("contextmenu", e => {
     const item = e.target.closest("[data-message-id]");
     const container = e.currentTarget;
@@ -5047,6 +5063,147 @@ async function sendSynthetic(type) {
   }
 }
 
+function voiceRecordingLabel() {
+  if (!state.voiceRecording) return "按住录音";
+  const elapsedSeconds = (Date.now() - state.voiceStartedAt) / 1000;
+  return `${formatVoiceDuration(elapsedSeconds)} 松开发送`;
+}
+
+function refreshVoiceRecordingLabel() {
+  const label = document.querySelector("[data-voice-recording-label]");
+  if (label) label.textContent = voiceRecordingLabel();
+}
+
+function stopVoiceRecordingTimer() {
+  if (state.voiceRecordingTimer) window.clearInterval(state.voiceRecordingTimer);
+  state.voiceRecordingTimer = null;
+}
+
+function stopVoiceTracks() {
+  state.voiceStream?.getTracks?.().forEach(track => track.stop());
+  state.voiceStream = null;
+}
+
+function resetVoiceRecordingState() {
+  stopVoiceRecordingTimer();
+  state.voiceRecorder = null;
+  state.voiceStartedAt = 0;
+  state.voiceRecording = false;
+  state.voiceRecordingPending = false;
+  state.voiceRecordingConversationId = null;
+  state.voicePointerId = null;
+}
+
+function cancelVoiceRecording() {
+  const recorder = state.voiceRecorder;
+  const wasActive = Boolean(state.voiceRecording || state.voiceRecordingPending || state.voiceStream);
+  resetVoiceRecordingState();
+  stopVoiceTracks();
+  if (recorder?.state === "recording") {
+    try {
+      recorder.stop();
+    } catch (_) {}
+  }
+  if (wasActive) refreshVoiceRecordingLabel();
+}
+
+async function startVoiceRecording(pointerId) {
+  if (state.voiceRecording || state.voiceRecordingPending) return;
+  if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+    toast("当前浏览器不支持语音录制");
+    return;
+  }
+
+  const conversationId = state.selectedConversationId;
+  state.voiceRecordingPending = true;
+  state.voicePointerId = pointerId;
+  let stream = null;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    if (state.voicePointerId !== pointerId || state.selectedConversationId !== conversationId) {
+      stream.getTracks().forEach(track => track.stop());
+      resetVoiceRecordingState();
+      return;
+    }
+    const recorder = new MediaRecorder(stream);
+    const chunks = [];
+    recorder.addEventListener("dataavailable", event => {
+      if (event.data.size) chunks.push(event.data);
+    });
+    recorder.addEventListener("stop", () => {
+      void finishVoiceRecording(recorder, chunks, conversationId);
+    });
+    state.voiceStream = stream;
+    state.voiceRecorder = recorder;
+    state.voiceStartedAt = Date.now();
+    state.voiceRecording = true;
+    state.voiceRecordingPending = false;
+    state.voiceRecordingConversationId = conversationId;
+    recorder.start();
+    render();
+    state.voiceRecordingTimer = window.setInterval(refreshVoiceRecordingLabel, 250);
+  } catch (error) {
+    stream?.getTracks().forEach(track => track.stop());
+    if (state.voicePointerId === pointerId) {
+      resetVoiceRecordingState();
+      toast("无法使用麦克风，请检查权限");
+    }
+  }
+}
+
+function stopVoiceRecording(pointerId) {
+  if (state.voicePointerId !== pointerId) return;
+  state.voicePointerId = null;
+  if (!state.voiceRecording) return;
+  const recorder = state.voiceRecorder;
+  if (recorder?.state === "recording") recorder.stop();
+}
+
+function bindVoicePadEvents() {
+  const pad = document.querySelector(".composer-voice-pad");
+  if (pad) {
+    pad.addEventListener("pointerdown", event => {
+      event.preventDefault();
+      pad.setPointerCapture?.(event.pointerId);
+      void startVoiceRecording(event.pointerId);
+    });
+    pad.addEventListener("pointerup", event => stopVoiceRecording(event.pointerId));
+    pad.addEventListener("pointercancel", event => stopVoiceRecording(event.pointerId));
+    pad.addEventListener("pointerleave", event => {
+      if (state.voiceRecording) stopVoiceRecording(event.pointerId);
+    });
+  }
+  if (voicePointerLifecycleBound) return;
+  window.addEventListener("pointerup", event => stopVoiceRecording(event.pointerId));
+  window.addEventListener("pointercancel", event => stopVoiceRecording(event.pointerId));
+  voicePointerLifecycleBound = true;
+}
+
+async function finishVoiceRecording(recorder, chunks, conversationId) {
+  if (state.voiceRecorder !== recorder) return;
+  const elapsed = Date.now() - state.voiceStartedAt;
+  resetVoiceRecordingState();
+  stopVoiceTracks();
+  render();
+  if (!isRecordableVoiceDuration(elapsed)) {
+    toast("录音时间至少 1 秒");
+    return;
+  }
+  const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+  if (!blob.size) {
+    toast("录音失败，请重试");
+    return;
+  }
+  const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || "audio/webm" });
+  try {
+    const attachment = await uploadFile(file);
+    if (state.selectedConversationId !== conversationId) return;
+    await sendMessage({ type: "voice", body: String(Math.round(elapsed / 1000)), attachment });
+  } catch (error) {
+    toast(uploadErrorMessage(error));
+  }
+}
+
 async function pickAndUpload(kind) {
   const picker = document.querySelector("#filePicker");
   if (!picker) return;
@@ -5276,10 +5433,10 @@ async function handleAction(event, action) {
     await markAllConversationsRead();
   }
   if (action === "voice") {
+    if (state.voiceMode) cancelVoiceRecording();
     state.voiceMode = !state.voiceMode;
     render();
   }
-  if (action === composerVoiceRecordAction()) sendSynthetic("voice");
   if (action === "clear-chat") {
     if (confirm("确定清除当前聊天记录？")) {
       await clearCurrentConversationMessages();
