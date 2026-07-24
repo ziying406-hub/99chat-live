@@ -2516,6 +2516,22 @@ func TestReadConversationMessagesUsesLatestSenderAvatar(t *testing.T) {
 	t.Fatal("expected seeded group message")
 }
 
+func TestReadConversationMessagesReturnsUpdatedReadReceiptCounts(t *testing.T) {
+	store := seedStore()
+
+	messages, _, _ := store.readConversationMessages(context.Background(), "group-21444", "388754")
+	message := messageByID(messages, "m2")
+	if message.ID == "" {
+		t.Fatal("expected seeded outgoing group message")
+	}
+	if message.ReadCount != 1 {
+		t.Fatalf("readCount = %d, want 1 after reader acknowledgement", message.ReadCount)
+	}
+	if message.ReadTotal != 4 {
+		t.Fatalf("readTotal = %d, want 4", message.ReadTotal)
+	}
+}
+
 func TestMePatchPersistsStickerStore(t *testing.T) {
 	store := seedStore()
 	token := store.issueToken(store.user.ID)

@@ -2682,6 +2682,12 @@ func (s *Store) readConversationMessages(ctx context.Context, conversationID, us
 	previousReadAt := s.messageReads[conversationID][userID]
 	messages := s.visibleConversationMessagesLocked(conversationID, userID, previousReadAt)
 	s.messageReads[conversationID][userID] = now
+	// The read pointer has to be advanced before calculating receipt counts.
+	// Otherwise the websocket event contains the pre-read values and senders
+	// only see the updated read state after a manual refresh.
+	for i := range messages {
+		messages[i] = s.withReadStatsLocked(messages[i])
+	}
 	s.mu.Unlock()
 	_ = s.persistConversationRead(ctx, conversationID, userID, now)
 	return messages, previousReadAt, now

@@ -724,11 +724,13 @@ function connectRealtime() {
       }
       if (envelope.type === "message.read") {
         const id = envelope.conversationId;
-        if (id && state.data.messages[id]) {
+        if (id) {
           const keepSelectedConversationAtBottom =
             id === state.selectedConversationId &&
             (state.readAcknowledgementInFlight.has(id) || messageListIsAtBottom());
-          state.data.messages[id] = applyMessageReadReceipt(state.data.messages[id], envelope.payload);
+          if (state.data.messages[id]) {
+            state.data.messages[id] = applyMessageReadReceipt(state.data.messages[id], envelope.payload);
+          }
           if (String(envelope.payload?.userId || "") === String(state.user?.id || "")) {
             markConversationRead(id);
             delete state.unreadBoundaryByConversation[id];
@@ -9522,11 +9524,17 @@ function jumpToLatestUnreadMessages() {
 
 async function acknowledgeConversationRead(conversationId) {
   if (!canAcknowledgeConversationRead(conversationId)) return false;
-  markConversationRead(conversationId);
-  delete state.unreadBoundaryByConversation[conversationId];
-  if (state.useMock) return true;
+  if (state.useMock) {
+    markConversationRead(conversationId);
+    delete state.unreadBoundaryByConversation[conversationId];
+    return true;
+  }
   try {
     await api(`/api/conversations/${conversationId}/messages/read`, { method: "POST" });
+    // Only clear the local unread state after the shared account read pointer
+    // was accepted by the server. A failed request must remain unread locally.
+    markConversationRead(conversationId);
+    delete state.unreadBoundaryByConversation[conversationId];
     return true;
   } catch (_) {
     return false;
