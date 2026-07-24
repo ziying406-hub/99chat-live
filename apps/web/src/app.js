@@ -57,7 +57,7 @@ import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
-import { shouldReconnectRealtimeHeartbeat, shouldRefreshRealtimeSnapshotOnOpen } from "./realtimeConnection.js";
+import { shouldKeepRealtimeSnapshotAtBottom, shouldReconnectRealtimeHeartbeat, shouldRefreshRealtimeSnapshotOnOpen } from "./realtimeConnection.js";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
@@ -635,9 +635,12 @@ function startRealtimeHeartbeat(ws) {
 
 async function syncRealtimeSnapshot() {
   if (state.useMock || !state.data) return;
+  const keepSelectedConversationAtBottom = shouldKeepRealtimeSnapshotAtBottom({
+    wasAtBottom: messageListIsAtBottom()
+  });
   await refreshGroupsAndConversations();
   if (state.selectedConversationId) await loadMessages(state.selectedConversationId);
-  scheduleScrollToBottom();
+  if (keepSelectedConversationAtBottom) scheduleScrollToBottom();
   render();
 }
 
