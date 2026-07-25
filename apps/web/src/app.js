@@ -5337,8 +5337,10 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
     return;
   }
   const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || "audio/webm" });
+  let attachment;
+  let pending;
   try {
-    const attachment = await uploadFile(file);
+    attachment = await uploadFile(file);
     if (!shouldSendVoiceMessage({
       isRecordable,
       hasAudio: blob.size > 0,
@@ -5346,7 +5348,7 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
       isCurrentConversation: true
     })) return;
     const payload = { type: "voice", body: String(Math.round(elapsed / 1000)), attachment };
-    const pending = buildPendingMessage({ conversationId, user: state.user, payload });
+    pending = buildPendingMessage({ conversationId, user: state.user, payload });
     state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), pending];
     upsertConversationPreview(conversationId, pending);
     if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
@@ -5357,6 +5359,23 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
     if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
     render();
   } catch (error) {
+    if (pending && attachment) {
+      const messages = state.data.messages[conversationId] || [];
+      const deliveredVoice = messages.find(message =>
+        message.id !== pending.id &&
+        message.type === "voice" &&
+        String(message.senderId || "") === String(state.user?.id || "") &&
+        ((attachment.id && message.attachment?.id === attachment.id) ||
+          (attachment.url && message.attachment?.url === attachment.url))
+      );
+      if (deliveredVoice) {
+        state.data.messages[conversationId] = messages.filter(message => message.id !== pending.id);
+        upsertConversationPreview(conversationId, deliveredVoice);
+        if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
+        render();
+        return;
+      }
+    }
     queueFailedVoiceUpload({
       file,
       duration: String(Math.round(elapsed / 1000)),
