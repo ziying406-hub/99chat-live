@@ -495,39 +495,40 @@ type LoginDevice struct {
 }
 
 type Store struct {
-	mu                sync.RWMutex
-	user              User
-	users             map[string]User
-	contacts          []Contact
-	conversations     []Conversation
-	messages          map[string][]Message
-	messageReads      map[string]map[string]time.Time
-	conversationBurns map[string]map[string]bool
-	messageClears     map[string]map[string]time.Time
-	conversationHides map[string]map[string]bool
-	groups            map[string]Group
-	nextGroupChatID   int
-	nextSessionChatID int
-	discoverGroups    []Group
-	requests          []FriendRequest
-	joinRequests      []GroupJoinRequest
-	blacklists        []GroupBlacklistEntry
-	groupBots         map[string][]GroupBot
-	collections       []Collection
-	reports           []Report
-	feedback          []Feedback
-	auditLogs         []AuditLog
-	adminUsers        map[string]AdminUserRecord
-	adminSessions     map[string]AdminSession
-	adminAuditLogs    []AdminAuditLog
-	systemSettings    AdminSystemSettings
-	adminAuditLogHook func(AdminAuditLog) error
-	passwordHashes    map[string]string
-	hub               *Hub
-	pg                *PostgresStore
-	sessions          map[string]string
-	sessionCreatedAt  map[string]time.Time
-	uploadDir         string
+	mu                      sync.RWMutex
+	user                    User
+	users                   map[string]User
+	contacts                []Contact
+	conversations           []Conversation
+	messages                map[string][]Message
+	messageReads            map[string]map[string]time.Time
+	conversationBurns       map[string]map[string]bool
+	messageClears           map[string]map[string]time.Time
+	conversationHides       map[string]map[string]bool
+	groups                  map[string]Group
+	nextGroupChatID         int
+	nextSessionChatID       int
+	discoverGroups          []Group
+	requests                []FriendRequest
+	joinRequests            []GroupJoinRequest
+	blacklists              []GroupBlacklistEntry
+	groupBots               map[string][]GroupBot
+	collections             []Collection
+	reports                 []Report
+	feedback                []Feedback
+	auditLogs               []AuditLog
+	adminUsers              map[string]AdminUserRecord
+	adminSessions           map[string]AdminSession
+	adminAuditLogs          []AdminAuditLog
+	systemSettings          AdminSystemSettings
+	adminAuditLogHook       func(AdminAuditLog) error
+	passwordHashes          map[string]string
+	hub                     *Hub
+	pg                      *PostgresStore
+	persistVoiceMessageHook func(context.Context, Message) (Message, bool, error)
+	sessions                map[string]string
+	sessionCreatedAt        map[string]time.Time
+	uploadDir               string
 }
 
 type Hub struct {
@@ -2457,6 +2458,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "conversation target not found")
 			return
 		}
+		voiceCreated := false
 		s.mu.Lock()
 		if operationID != "" {
 			for _, existing := range s.messages[conversationID] {
@@ -2470,13 +2472,33 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 		if ensurePrivateConversation {
 			s.ensurePrivateConversationLocked(conversationID, privateContact, msg)
 		}
+		if operationID != "" {
+			s.mu.Unlock()
+			var persisted Message
+			persisted, voiceCreated, err = s.persistVoiceMessage(r.Context(), msg)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "message persistence failed")
+				return
+			}
+			s.mu.Lock()
+			for _, existing := range s.messages[conversationID] {
+				if existing.SenderID == current.ID && existing.OperationID == operationID {
+					s.mu.Unlock()
+					writeJSON(w, http.StatusCreated, existing)
+					return
+				}
+			}
+			msg = persisted
+		}
 		if s.messageReads == nil {
 			s.messageReads = map[string]map[string]time.Time{}
 		}
 		if s.messageReads[conversationID] == nil {
 			s.messageReads[conversationID] = map[string]time.Time{}
 		}
-		msg.BurnAfterRead = s.conversationBurnEnabledLocked(conversationID, current.ID)
+		if operationID == "" || voiceCreated {
+			msg.BurnAfterRead = s.conversationBurnEnabledLocked(conversationID, current.ID)
+		}
 		s.messageReads[conversationID][current.ID] = msg.CreatedAt
 		s.messages[conversationID] = append(s.messages[conversationID], msg)
 		if s.conversationHides != nil && s.conversationHides[current.ID] != nil {
@@ -2493,6 +2515,14 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		_ = s.persistConversationRead(r.Context(), conversationID, current.ID, msg.CreatedAt)
 		_ = s.unhideConversationFor(r.Context(), current.ID, conversationID)
+		if operationID != "" {
+			if voiceCreated {
+				s.broadcastMessageCreated(msg)
+				_ = s.sendKeywordBotReplies(r.Context(), msg)
+			}
+			writeJSON(w, http.StatusCreated, msg)
+			return
+		}
 		if err := s.persistMessage(r.Context(), msg); err != nil {
 			writeError(w, http.StatusInternalServerError, "message persistence failed")
 			return

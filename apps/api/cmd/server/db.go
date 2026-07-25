@@ -3496,6 +3496,56 @@ func (s *Store) persistMessage(ctx context.Context, msg Message) error {
 	return tx.Commit(ctx)
 }
 
+// persistVoiceMessage makes an operation ID authoritative in Postgres before a
+// process publishes the message to its local cache. A competing process gets
+// the already-persisted message back instead of retaining its own candidate.
+func (s *Store) persistVoiceMessage(ctx context.Context, msg Message) (Message, bool, error) {
+	if s.persistVoiceMessageHook != nil {
+		return s.persistVoiceMessageHook(ctx, msg)
+	}
+	if s.pg == nil {
+		return msg, true, nil
+	}
+	conversation, ok, groupID := s.conversationForPersistence(msg.ConversationID)
+	tx, err := s.pg.pool.Begin(ctx)
+	if err != nil {
+		return Message{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	if ok {
+		if err := insertConversationIfMissing(ctx, tx, conversation, groupID); err != nil {
+			return Message{}, false, err
+		}
+	}
+	created, err := insertVoiceMessage(ctx, tx, msg)
+	if err != nil {
+		return Message{}, false, err
+	}
+	if !created {
+		msg, err = messageByOperationID(ctx, tx, msg.SenderID, msg.ConversationID, msg.OperationID)
+		if err != nil {
+			return Message{}, false, err
+		}
+		return msg, false, tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_text = $2, last_at = $3, unread = 0 WHERE id = $1`,
+		msg.ConversationID, displayMessage(msg), msg.CreatedAt); err != nil {
+		return Message{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Message{}, false, err
+	}
+	return msg, true, nil
+}
+
+func insertConversationIfMissing(ctx context.Context, tx pgx.Tx, conv Conversation, groupID string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO conversations(id, kind, chat_id, group_id, title, avatar_url, unread, last_text, last_at, pinned, muted)
+		VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10, $11)
+		ON CONFLICT (id) DO NOTHING`,
+		conv.ID, conv.Kind, conv.ChatID, groupID, conv.Title, conv.Avatar, conv.Unread, conv.LastText, conv.LastAt, conv.Pinned, conv.Muted)
+	return err
+}
+
 func (s *Store) conversationForPersistence(conversationID string) (Conversation, bool, string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -4963,6 +5013,80 @@ func insertMessage(ctx context.Context, tx pgx.Tx, msg Message) error {
 		}
 	}
 	return nil
+}
+
+func insertVoiceMessage(ctx context.Context, tx pgx.Tx, msg Message) (bool, error) {
+	quote := sanitizeQuote(msg.Quote)
+	var quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel string
+	if quote != nil {
+		quoteMessageID = quote.MessageID
+		quoteConversationID = quote.ConversationID
+		quoteSenderName = quote.SenderName
+		quotePreview = quote.Preview
+		quoteType = quote.Type
+		quoteTypeLabel = quote.TypeLabel
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO messages(
+			id, conversation_id, sender_user_id, type, body, mentions, burn_after_read, operation_id, created_at,
+			quote_message_id, quote_conversation_id, quote_sender_name, quote_preview, quote_type, quote_type_label
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		ON CONFLICT (sender_user_id, conversation_id, operation_id) WHERE operation_id <> '' DO NOTHING`,
+		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.BurnAfterRead, msg.OperationID, msg.CreatedAt,
+		quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil
+	}
+	if msg.Attachment != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO message_attachments(id, message_id, name, object_key, mime_type, size_bytes)
+			VALUES ($1, $2, $3, $4, $5, $6)
+			ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, object_key = EXCLUDED.object_key,
+			mime_type = EXCLUDED.mime_type, size_bytes = EXCLUDED.size_bytes`,
+			msg.Attachment.ID, msg.ID, msg.Attachment.Name, msg.Attachment.URL, msg.Attachment.MimeType, msg.Attachment.Size); err != nil {
+			return false, err
+		}
+	}
+	return true, nil
+}
+
+func messageByOperationID(ctx context.Context, tx pgx.Tx, senderID, conversationID, operationID string) (Message, error) {
+	var msg Message
+	var attachment Attachment
+	var attachmentID, name, objectKey, mimeType *string
+	var size *int64
+	var mentions []string
+	var quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel string
+	err := tx.QueryRow(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, u.avatar_url, m.type, m.body, m.mentions, m.burn_after_read, m.operation_id, m.created_at,
+			m.quote_message_id, m.quote_conversation_id, m.quote_sender_name, m.quote_preview, m.quote_type, m.quote_type_label,
+			a.id, a.name, a.object_key, a.mime_type, a.size_bytes
+		FROM messages m
+		JOIN users u ON u.id = m.sender_user_id
+		LEFT JOIN message_attachments a ON a.message_id = m.id
+		WHERE m.sender_user_id = $1 AND m.conversation_id = $2 AND m.operation_id = $3`, senderID, conversationID, operationID).
+		Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.SenderAvatar, &msg.Type, &msg.Body, &mentions, &msg.BurnAfterRead, &msg.OperationID, &msg.CreatedAt,
+			&quoteMessageID, &quoteConversationID, &quoteSenderName, &quotePreview, &quoteType, &quoteTypeLabel,
+			&attachmentID, &name, &objectKey, &mimeType, &size)
+	if err != nil {
+		return Message{}, err
+	}
+	msg.Mentions = mentions
+	if quoteMessageID != "" || quotePreview != "" || quoteSenderName != "" {
+		msg.Quote = &Quote{MessageID: quoteMessageID, ConversationID: quoteConversationID, SenderName: quoteSenderName, Preview: quotePreview, Type: quoteType, TypeLabel: quoteTypeLabel}
+	}
+	if attachmentID != nil {
+		attachment.ID = *attachmentID
+		attachment.Name = valueString(name)
+		attachment.URL = valueString(objectKey)
+		attachment.MimeType = valueString(mimeType)
+		if size != nil {
+			attachment.Size = *size
+		}
+		msg.Attachment = &attachment
+	}
+	return msg, nil
 }
 
 func scanAdminMessageRecord(rows pgx.Rows) (adminMessageRecord, error) {

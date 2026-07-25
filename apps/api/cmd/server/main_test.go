@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -1932,6 +1933,103 @@ func TestVoiceMessageCreateIsIdempotentForSameOperation(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected one persisted operation, got %d messages: %+v", count, store.messages[conversationID])
+	}
+}
+
+func TestVoiceMessageCreateDoesNotRetainCandidateWhenPersistenceFails(t *testing.T) {
+	store := seedStore()
+	store.persistVoiceMessageHook = func(context.Context, Message) (Message, bool, error) {
+		return Message{}, false, errors.New("duplicate operation fetch failed")
+	}
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/conversations/group-21444/messages", bytes.NewBufferString(`{"type":"voice","operationId":"voice-persist-failure","attachment":{"id":"voice-file-failure","name":"voice.webm","url":"/uploads/voice.webm","mimeType":"audio/webm","size":8}}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected persistence failure 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	for _, message := range store.messages["group-21444"] {
+		if message.OperationID == "voice-persist-failure" {
+			t.Fatalf("unpersisted voice candidate leaked into local messages: %+v", message)
+		}
+	}
+}
+
+func TestVoiceMessageCreateConcurrentInstancesUseCanonicalPersistedMessage(t *testing.T) {
+	const conversationID = "group-21444"
+	const operationID = "voice-cross-instance"
+
+	type persistedVoice struct {
+		sync.Mutex
+		message Message
+	}
+	persisted := &persistedVoice{}
+	persist := func(_ context.Context, candidate Message) (Message, bool, error) {
+		persisted.Lock()
+		defer persisted.Unlock()
+		if persisted.message.ID != "" {
+			return persisted.message, false, nil
+		}
+		persisted.message = candidate
+		return candidate, true, nil
+	}
+
+	stores := []*Store{seedStore(), seedStore()}
+	muxes := make([]*http.ServeMux, len(stores))
+	for i, store := range stores {
+		store.persistVoiceMessageHook = persist
+		muxes[i] = http.NewServeMux()
+		registerRoutes(muxes[i], store)
+	}
+
+	responses := make([]Message, len(stores))
+	statuses := make([]int, len(stores))
+	var wg sync.WaitGroup
+	for i := range stores {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := `{"type":"voice","operationId":"` + operationID + `","attachment":{"id":"voice-file-cross-instance","name":"voice.webm","url":"/uploads/voice.webm","mimeType":"audio/webm","size":8}}`
+			req := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conversationID+"/messages", bytes.NewBufferString(body))
+			rec := httptest.NewRecorder()
+			muxes[i].ServeHTTP(rec, req)
+			statuses[i] = rec.Code
+			if rec.Code == http.StatusCreated {
+				if err := json.NewDecoder(rec.Body).Decode(&responses[i]); err != nil {
+					t.Errorf("instance %d decode response: %v", i, err)
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if statuses[0] != http.StatusCreated || statuses[1] != http.StatusCreated {
+		t.Fatalf("expected both creates to succeed, got statuses %v", statuses)
+	}
+	if responses[0].ID == "" || responses[0].ID != responses[1].ID {
+		t.Fatalf("instances returned different messages: %+v", responses)
+	}
+	for i, store := range stores {
+		store.mu.RLock()
+		count := 0
+		for _, message := range store.messages[conversationID] {
+			if message.OperationID == operationID {
+				count++
+				if message.ID != persisted.message.ID {
+					store.mu.RUnlock()
+					t.Fatalf("instance %d retained phantom %s instead of canonical %s", i, message.ID, persisted.message.ID)
+				}
+			}
+		}
+		store.mu.RUnlock()
+		if count != 1 {
+			t.Fatalf("instance %d operation count = %d, want 1", i, count)
+		}
 	}
 }
 
