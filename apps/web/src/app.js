@@ -1820,7 +1820,7 @@ function renderMessageBody(message) {
     if (!source) return `${quote}<div>🎙 语音消息 ${duration}</div>`;
     const playing = isActive && state.activeVoicePlaying;
     const progress = durationSeconds > 0 ? Math.min(100, (progressSeconds / durationSeconds) * 100) : 0;
-    return `${quote}<button class="voice-message ${playing ? "is-playing" : ""}" type="button" data-play-voice="${escapeAttr(message.id)}" data-voice-source="${escapeAttr(source)}" aria-pressed="${playing}" aria-label="${playing ? "暂停" : "播放"}语音 ${formatVoiceDuration(progressSeconds)} / ${duration}"><span class="voice-message-icon">${playing ? "Ⅱ" : "▶"}</span><span class="voice-message-timing">${formatVoiceDuration(progressSeconds)} / ${duration}</span><span class="voice-message-progress" aria-hidden="true"><span style="width:${progress}%"></span></span></button>`;
+    return `${quote}<button class="voice-message ${playing ? "is-playing" : ""}" type="button" data-play-voice="${escapeAttr(message.id)}" data-voice-source="${escapeAttr(source)}" data-voice-duration="${durationSeconds}" aria-pressed="${playing}" aria-label="${playing ? "暂停" : "播放"}语音 ${formatVoiceDuration(progressSeconds)} / ${duration}"><span class="voice-message-icon">${playing ? "Ⅱ" : "▶"}</span><span class="voice-message-timing">${formatVoiceDuration(progressSeconds)} / ${duration}</span><span class="voice-message-progress" aria-hidden="true"><span style="width:${progress}%"></span></span></button>`;
   }
   if (message.type === "contact") {
     const contact = findContactByName(message.body) || findContactByName(message.senderName);
@@ -5250,6 +5250,31 @@ function isVoiceAutoplayConversationOpen(conversationId) {
   return state.section === "messages" && !state.sidePage && state.selectedConversationId === conversationId;
 }
 
+function syncVoicePlaybackUI(messageId) {
+  if (typeof document === "undefined" || !messageId) return;
+  const control = [...document.querySelectorAll("[data-play-voice]")]
+    .find(element => element.dataset.playVoice === messageId);
+  if (!control) return;
+  const isActive = state.activeVoiceMessageId === messageId;
+  const playing = isActive && state.activeVoicePlaying;
+  const storedDuration = Number(control.dataset.voiceDuration) || 0;
+  const duration = isActive && state.activeVoiceDuration > 0 ? state.activeVoiceDuration : storedDuration;
+  const progress = isActive ? Math.min(state.activeVoiceProgress, duration) : 0;
+  const percent = duration > 0 ? Math.min(100, (progress / duration) * 100) : 0;
+  const current = formatVoiceDuration(progress);
+  const total = formatVoiceDuration(duration);
+
+  control.classList.toggle("is-playing", playing);
+  control.setAttribute("aria-pressed", String(playing));
+  control.setAttribute("aria-label", `${playing ? "暂停" : "播放"}语音 ${current} / ${total}`);
+  const icon = control.querySelector(".voice-message-icon");
+  if (icon) icon.textContent = playing ? "Ⅱ" : "▶";
+  const timing = control.querySelector(".voice-message-timing");
+  if (timing) timing.textContent = `${current} / ${total}`;
+  const progressBar = control.querySelector(".voice-message-progress > span");
+  if (progressBar) progressBar.style.width = `${percent}%`;
+}
+
 function playVoiceMessage(message) {
   if (state.activeVoiceMessageId === message.id && state.activeVoiceAudio) {
     if (state.activeVoicePlaying) {
@@ -5264,11 +5289,12 @@ function playVoiceMessage(message) {
       state.activeVoicePlaying = false;
       state.activeVoiceProgress = 0;
       state.activeVoiceDuration = 0;
-      render();
+      syncVoicePlaybackUI(message.id);
       toast("语音播放失败");
     });
     return;
   }
+  const previousMessageId = state.activeVoiceMessageId;
   state.activeVoiceAudio?.pause();
   const audio = new Audio(mediaURL(message.attachment?.url || ""));
   state.activeVoiceAudio = audio;
@@ -5276,6 +5302,7 @@ function playVoiceMessage(message) {
   state.activeVoicePlaying = false;
   state.activeVoiceProgress = 0;
   state.activeVoiceDuration = 0;
+  if (previousMessageId && previousMessageId !== message.id) syncVoicePlaybackUI(previousMessageId);
   const clearActiveVoice = () => {
     if (state.activeVoiceAudio !== audio) return false;
     state.activeVoiceAudio = null;
@@ -5288,39 +5315,39 @@ function playVoiceMessage(message) {
   audio.addEventListener("play", () => {
     if (state.activeVoiceAudio !== audio) return;
     state.activeVoicePlaying = true;
-    render();
+    syncVoicePlaybackUI(message.id);
   });
   audio.addEventListener("pause", () => {
     if (state.activeVoiceAudio !== audio) return;
     state.activeVoicePlaying = false;
     state.activeVoiceProgress = Number(audio.currentTime) || 0;
-    render();
+    syncVoicePlaybackUI(message.id);
   });
   audio.addEventListener("loadedmetadata", () => {
     if (state.activeVoiceAudio !== audio) return;
     state.activeVoiceDuration = Number.isFinite(audio.duration) ? audio.duration : 0;
-    render();
+    syncVoicePlaybackUI(message.id);
   });
   audio.addEventListener("timeupdate", () => {
     if (state.activeVoiceAudio !== audio) return;
     state.activeVoiceProgress = Number(audio.currentTime) || 0;
     state.activeVoiceDuration = Number.isFinite(audio.duration) ? audio.duration : state.activeVoiceDuration;
-    render();
+    syncVoicePlaybackUI(message.id);
   });
   audio.addEventListener("ended", () => {
-    if (clearActiveVoice()) render();
+    if (clearActiveVoice()) syncVoicePlaybackUI(message.id);
   });
   audio.addEventListener("error", () => {
     if (!clearActiveVoice()) return;
-    render();
+    syncVoicePlaybackUI(message.id);
     toast("语音播放失败");
   });
   audio.play().catch(() => {
     if (!clearActiveVoice()) return;
-    render();
+    syncVoicePlaybackUI(message.id);
     toast("语音播放失败");
   });
-  render();
+  syncVoicePlaybackUI(message.id);
 }
 
 async function finishVoiceRecording(recorder, chunks, conversationId) {

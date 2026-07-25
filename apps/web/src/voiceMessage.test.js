@@ -119,9 +119,10 @@ test("requires the chat conversation to be visibly open before autoplay", async 
   assert.equal(isVoiceAutoplayConversationOpen("c2"), false, "another conversation is not open");
 });
 
-test("clears and rerenders after voice playback is rejected", async () => {
+test("updates only the voice control when playback is rejected", async () => {
   const state = { activeVoiceAudio: null, activeVoiceMessageId: null };
   const rendered = [];
+  const synced = [];
   const toasts = [];
   let rejectPlay;
   class FakeAudio {
@@ -147,6 +148,7 @@ test("clears and rerenders after voice playback is rejected", async () => {
     Audio: FakeAudio,
     mediaURL: value => value,
     render: () => rendered.push("render"),
+    syncVoicePlaybackUI: messageId => synced.push(messageId),
     toast: message => toasts.push(message)
   });
 
@@ -156,8 +158,59 @@ test("clears and rerenders after voice playback is rejected", async () => {
 
   assert.equal(state.activeVoiceAudio, null);
   assert.equal(state.activeVoiceMessageId, null);
-  assert.equal(rendered.length, 2, "renders once to start and once to clear the failed state");
+  assert.equal(rendered.length, 0, "voice playback must not rerender the full chat");
+  assert.deepEqual(synced, ["voice-1", "voice-1"]);
   assert.deepEqual(toasts, ["语音播放失败"]);
+});
+
+test("updates only the voice control during playback progress", async () => {
+  const state = {
+    activeVoiceAudio: null,
+    activeVoiceMessageId: null,
+    activeVoicePlaying: false,
+    activeVoiceProgress: 0,
+    activeVoiceDuration: 0
+  };
+  const rendered = [];
+  const synced = [];
+  let player;
+  class FakeAudio {
+    constructor() {
+      this.listeners = {};
+      this.currentTime = 0;
+      this.duration = 3;
+      player = this;
+    }
+
+    addEventListener(name, listener) {
+      this.listeners[name] = listener;
+    }
+
+    pause() {}
+
+    play() {
+      return Promise.resolve();
+    }
+  }
+  const playVoiceMessage = await loadAppFunction("playVoiceMessage", {
+    state,
+    Audio: FakeAudio,
+    mediaURL: value => value,
+    render: () => rendered.push("render"),
+    syncVoicePlaybackUI: messageId => synced.push(messageId),
+    toast: () => {}
+  });
+
+  playVoiceMessage({ id: "voice-1", attachment: { url: "/uploads/voice-1.webm" } });
+  player.listeners.play();
+  player.listeners.loadedmetadata();
+  player.currentTime = 1.5;
+  player.listeners.timeupdate();
+
+  assert.equal(rendered.length, 0, "progress updates must not remount the chat window");
+  assert.equal(state.activeVoiceProgress, 1.5);
+  assert.equal(state.activeVoiceDuration, 3);
+  assert.deepEqual(synced, ["voice-1", "voice-1", "voice-1", "voice-1"]);
 });
 
 test("keeps only the newest voice player active through its lifecycle", async () => {
@@ -187,6 +240,7 @@ test("keeps only the newest voice player active through its lifecycle", async ()
     Audio: FakeAudio,
     mediaURL: value => value,
     render: () => {},
+    syncVoicePlaybackUI: () => {},
     toast: () => {}
   });
 
@@ -238,6 +292,7 @@ test("pauses and resumes the same voice message while retaining playback progres
     Audio: FakeAudio,
     mediaURL: value => value,
     render: () => {},
+    syncVoicePlaybackUI: () => {},
     toast: () => {}
   });
 
@@ -291,6 +346,7 @@ test("cleans up playback state when a voice player emits an error", async () => 
     Audio: FakeAudio,
     mediaURL: value => value,
     render: () => {},
+    syncVoicePlaybackUI: () => {},
     toast: message => toasts.push(message)
   });
 
