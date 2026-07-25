@@ -5241,6 +5241,9 @@ func (s *Store) serveUpload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	if strings.EqualFold(filepath.Ext(fileName), ".m4a") {
+		w.Header().Set("Content-Type", "audio/mp4")
+	}
 	http.ServeFile(w, r, filepath.Join(s.uploadDir, fileID, fileName))
 }
 

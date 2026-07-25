@@ -1461,6 +1461,31 @@ func TestUploadFileCanBeServed(t *testing.T) {
 	}
 }
 
+func TestServeUploadPreservesSafariMP4AudioContentType(t *testing.T) {
+	store := seedStore()
+	store.uploadDir = t.TempDir()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	uploadReq := httptest.NewRequest(http.MethodPut, "/api/files/upload/file-mp4/voice.m4a", bytes.NewBufferString("audio"))
+	uploadRec := httptest.NewRecorder()
+	mux.ServeHTTP(uploadRec, uploadReq)
+	if uploadRec.Code != http.StatusCreated {
+		t.Fatalf("expected upload 201, got %d: %s", uploadRec.Code, uploadRec.Body.String())
+	}
+
+	serveReq := httptest.NewRequest(http.MethodGet, "/uploads/file-mp4/voice.m4a", nil)
+	serveRec := httptest.NewRecorder()
+	mux.ServeHTTP(serveRec, serveReq)
+
+	if serveRec.Code != http.StatusOK {
+		t.Fatalf("expected uploaded audio 200, got %d: %s", serveRec.Code, serveRec.Body.String())
+	}
+	if contentType := serveRec.Header().Get("Content-Type"); contentType != "audio/mp4" {
+		t.Fatalf("Content-Type = %q, want audio/mp4", contentType)
+	}
+}
+
 func TestServeUploadSupportsHead(t *testing.T) {
 	store := seedStore()
 	store.uploadDir = t.TempDir()

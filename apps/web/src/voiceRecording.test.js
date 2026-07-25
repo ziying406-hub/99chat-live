@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
+import { recordedVoiceExtension, shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
 import { buildPendingMessage, replacePendingMessage } from "./pendingMessages.js";
 import { readFile } from "node:fs/promises";
 
@@ -21,8 +21,51 @@ test("routes a held pointer leaving the voice pad to cancel recording", () => {
   assert.equal(voicePadEventAction({ type: "pointerdown" }), "start");
   assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: true }), "cancel");
   assert.equal(voicePadEventAction({ type: "pointercancel", isRecording: true }), "cancel");
-  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: false }), "none");
+  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: false, isPending: true }), "cancel-pending");
+  assert.equal(voicePadEventAction({ type: "pointercancel", isRecording: false, isPending: true }), "cancel-pending");
   assert.equal(voicePadEventAction({ type: "pointerup", isPending: true }), "cancel-pending");
+});
+
+test("uses an m4a extension for Safari audio/mp4 recordings", () => {
+  assert.equal(recordedVoiceExtension("audio/mp4"), "m4a");
+  assert.equal(recordedVoiceExtension("audio/webm;codecs=opus"), "webm");
+});
+
+test("does not start recording when microphone permission resolves after cancellation", async () => {
+  const state = {
+    selectedConversationId: "conversation-a",
+    voiceRecording: false,
+    voiceRecordingPending: false,
+    voicePointerId: null
+  };
+  let resolvePermission;
+  const tracks = [{ stopped: false, stop() { this.stopped = true; } }];
+  const stream = { getTracks: () => tracks };
+  let recorderCreated = false;
+  const startVoiceRecording = await loadAppFunction("startVoiceRecording", {
+    state,
+    navigator: { mediaDevices: { getUserMedia: () => new Promise(resolve => { resolvePermission = resolve; }) } },
+    MediaRecorder: class { constructor() { recorderCreated = true; } },
+    refreshVoiceRecordingLabel: () => {},
+    resetVoiceRecordingState: () => {
+      state.voiceRecording = false;
+      state.voiceRecordingPending = false;
+      state.voicePointerId = null;
+    },
+    Date,
+    finishVoiceRecording: () => {},
+    window: { setInterval: () => 1 },
+    toast: () => {}
+  });
+
+  const start = startVoiceRecording(7);
+  state.voicePointerId = null;
+  state.voiceRecordingPending = false;
+  resolvePermission(stream);
+  await start;
+
+  assert.equal(recorderCreated, false);
+  assert.equal(tracks[0].stopped, true);
 });
 
 test("routes keyboard activation to an instruction instead of a voice send", () => {
@@ -75,6 +118,7 @@ test("keeps a completed recording with its original conversation after the user 
     Date: { now: () => 3_000 },
     Blob: class { constructor() { this.size = 8; this.type = "audio/webm"; } },
     File: class { constructor() { return { name: "voice.webm", size: 8, type: "audio/webm" }; } },
+    recordedVoiceExtension: () => "webm",
     resetVoiceRecordingState: () => { state.voiceRecorder = null; },
     stopVoiceTracks: () => {},
     render: () => {},
@@ -128,6 +172,7 @@ test("replaces the pending voice message when realtime delivery arrives before p
     Date: { now: () => 3_000 },
     Blob: class { constructor() { this.size = 8; this.type = "audio/webm"; } },
     File: class { constructor() { return { name: "voice.webm", size: 8, type: "audio/webm" }; } },
+    recordedVoiceExtension: () => "webm",
     resetVoiceRecordingState: () => { state.voiceRecorder = null; },
     stopVoiceTracks: () => {},
     render: () => {},
@@ -182,6 +227,7 @@ test("does not queue a retry when realtime delivery arrives before voice persist
     Date: { now: () => 3_000 },
     Blob: class { constructor() { this.size = 8; this.type = "audio/webm"; } },
     File: class { constructor() { return { name: "voice.webm", size: 8, type: "audio/webm" }; } },
+    recordedVoiceExtension: () => "webm",
     resetVoiceRecordingState: () => { state.voiceRecorder = null; },
     stopVoiceTracks: () => {},
     render: () => {},
@@ -282,6 +328,7 @@ test("retains a failed voice upload for retry in its original conversation", asy
     Date: { now: () => 3_000 },
     Blob: class { constructor() { this.size = 8; this.type = "audio/webm"; } },
     File: class { constructor() { return file; } },
+    recordedVoiceExtension: () => "webm",
     resetVoiceRecordingState: () => { state.voiceRecorder = null; },
     stopVoiceTracks: () => {},
     render: () => {},
@@ -333,7 +380,8 @@ test("retries a failed voice upload with the same file without duplicating or ch
     toast: message => calls.push(["toast", message]),
     markMessageFailed: message => message,
     uploadErrorMessage: () => "上传失败",
-    scheduleScrollToBottom: () => {}
+    scheduleScrollToBottom: () => {},
+    removeFailedVoiceUpload: async id => state.failedVoiceUploads.delete(id)
   });
 
   await retryFailedVoiceUpload(failed.id, state.failedVoiceUploads.get(failed.id));
@@ -352,4 +400,81 @@ test("retries a failed voice upload with the same file without duplicating or ch
   }]);
   assert.deepEqual(state.data.messages["conversation-b"], []);
   assert.equal(state.failedVoiceUploads.has(failed.id), false);
+});
+
+test("does not recreate a failed retry when realtime delivery wins its persistence race", async () => {
+  const file = { name: "voice.webm", size: 8, type: "audio/webm" };
+  const failed = {
+    id: "pending-voice-1",
+    conversationId: "conversation-a",
+    senderId: "u1",
+    type: "voice",
+    body: "2",
+    sendStatus: "failed",
+    retryPayload: { type: "voice", body: "2" }
+  };
+  const state = {
+    user: { id: "u1" },
+    selectedConversationId: "conversation-b",
+    data: { messages: { "conversation-a": [failed], "conversation-b": [] } },
+    failedVoiceUploads: new Map([[failed.id, { file, conversationId: "conversation-a" }]])
+  };
+  let beginPersistence;
+  let rejectPersistence;
+  const persistenceStarted = new Promise(resolve => { beginPersistence = resolve; });
+  const retryFailedVoiceUpload = await loadAppFunction("retryFailedVoiceUpload", {
+    state,
+    replacePendingMessage,
+    upsertConversationPreview: () => {},
+    render: () => {},
+    uploadFile: async () => ({ id: "file-1", url: "/uploads/voice.webm" }),
+    persistOutgoingMessage: async () => {
+      beginPersistence();
+      return new Promise((resolve, reject) => { rejectPersistence = reject; });
+    },
+    toast: () => {},
+    markMessageFailed: message => message,
+    uploadErrorMessage: () => "上传失败",
+    scheduleScrollToBottom: () => {},
+    removeFailedVoiceUpload: async id => state.failedVoiceUploads.delete(id)
+  });
+  const delivered = {
+    id: "voice-1",
+    conversationId: "conversation-a",
+    senderId: "u1",
+    type: "voice",
+    body: "2",
+    attachment: { id: "file-1", url: "/uploads/voice.webm" }
+  };
+
+  const completion = retryFailedVoiceUpload(failed.id, state.failedVoiceUploads.get(failed.id));
+  await persistenceStarted;
+  state.data.messages["conversation-a"] = [
+    ...state.data.messages["conversation-a"].filter(message => message.id !== failed.id),
+    delivered
+  ];
+  rejectPersistence(new Error("request failed after save"));
+  await completion;
+
+  assert.deepEqual(state.data.messages["conversation-a"], [delivered]);
+  assert.equal(state.failedVoiceUploads.size, 0);
+});
+
+test("restores a failed voice retry only for its original existing conversation", async () => {
+  const state = { data: {}, failedVoiceUploads: new Map() };
+  const restoreFailedVoiceUploads = await loadAppFunction("restoreFailedVoiceUploads", {
+    state,
+    failedVoiceUploadStorage: {
+      getAll: async () => [
+        { id: "voice-a", conversationId: "conversation-a", file: { size: 8 }, message: { type: "voice", sendStatus: "failed" } },
+        { id: "voice-missing", conversationId: "missing", file: { size: 8 }, message: { type: "voice", sendStatus: "failed" } }
+      ]
+    },
+    getConversation: conversationId => conversationId === "conversation-a"
+  });
+
+  await restoreFailedVoiceUploads();
+
+  assert.deepEqual([...state.failedVoiceUploads.keys()], ["voice-a"]);
+  assert.equal(state.failedVoiceUploads.get("voice-a").conversationId, "conversation-a");
 });

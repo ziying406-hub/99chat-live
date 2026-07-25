@@ -22,8 +22,9 @@ import {
 } from "./collectionFilters.js";
 import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
+import { createFailedVoiceUploadStorage } from "./failedVoiceUploadStorage.js";
 import { formatVoiceDuration, isRecordableVoiceDuration, shouldAutoPlayIncomingVoice } from "./voiceMessage.js";
-import { shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
+import { recordedVoiceExtension, shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
 import { isConversationPreviewEnabled, shouldCollapseComposerToolsAfterSend } from "./chatPreferenceBehavior.js?v=20260725-chat-settings-behavior-v1";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
@@ -93,6 +94,7 @@ const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
 const MOCK_USER_PREFERENCES_KEY = "chatlite-mock-user-preferences";
 const MOCK_REGISTERED_ACCOUNT_KEY = "chatlite-mock-registered-account";
+const failedVoiceUploadStorage = createFailedVoiceUploadStorage();
 
 installStructuredCloneFallback();
 
@@ -418,6 +420,7 @@ async function loadData() {
       loginDevices: [],
       messages: {}
     };
+    await restoreFailedVoiceUploads();
     observeUnreadSnapshotForSound();
     const routeConversationId = conversationIdFromCurrentRoute();
     state.selectedConversationId = routeConversationId && getConversation(routeConversationId)
@@ -516,7 +519,7 @@ function renderConversationMessages(messages, conversationId) {
 async function loadMessages(conversationId, { restoreUnreadBoundary = false } = {}) {
   if (state.useMock) {
     if (!state.data.messages[conversationId]) {
-      state.data.messages[conversationId] = mock.messages[conversationId] || [];
+      state.data.messages[conversationId] = restoreFailedVoiceMessages(conversationId, mock.messages[conversationId] || []);
     }
     if (restoreUnreadBoundary) {
       delete state.unreadBoundaryByConversation[conversationId];
@@ -526,7 +529,7 @@ async function loadMessages(conversationId, { restoreUnreadBoundary = false } = 
   }
   // Loading messages is read-only. A separate request confirms that the visible conversation was read.
   const { data: messages, response } = await api(`/api/conversations/${conversationId}/messages`, { withResponseMeta: true });
-  state.data.messages[conversationId] = messages;
+  state.data.messages[conversationId] = restoreFailedVoiceMessages(conversationId, messages);
   if (restoreUnreadBoundary) {
     const hasUnreadBoundary = updateUnreadBoundary(
       conversationId,
@@ -5336,7 +5339,7 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
     toast("录音失败，请重试");
     return;
   }
-  const file = new File([blob], `voice-${Date.now()}.webm`, { type: blob.type || "audio/webm" });
+  const file = new File([blob], `voice-${Date.now()}.${recordedVoiceExtension(blob.type)}`, { type: blob.type || "audio/webm" });
   let attachment;
   let pending;
   try {
@@ -5376,7 +5379,7 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
         return;
       }
     }
-    queueFailedVoiceUpload({
+    await queueFailedVoiceUpload({
       file,
       duration: String(Math.round(elapsed / 1000)),
       conversationId,
@@ -5385,7 +5388,7 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
   }
 }
 
-function queueFailedVoiceUpload({ file, duration, conversationId, error }) {
+async function queueFailedVoiceUpload({ file, duration, conversationId, error }) {
   const pending = buildPendingMessage({
     conversationId,
     user: state.user,
@@ -5393,11 +5396,42 @@ function queueFailedVoiceUpload({ file, duration, conversationId, error }) {
   });
   const failed = markMessageFailed(pending, error);
   state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), failed];
-  state.failedVoiceUploads.set(failed.id, { file, conversationId });
+  const retry = { file, conversationId, message: failed };
+  state.failedVoiceUploads.set(failed.id, retry);
+  try {
+    await failedVoiceUploadStorage.put({ id: failed.id, ...retry });
+  } catch (_) {}
   upsertConversationPreview(conversationId, failed);
   scheduleScrollToBottom();
   render();
   toast(uploadErrorMessage(error));
+}
+
+async function restoreFailedVoiceUploads() {
+  let records = [];
+  try {
+    records = await failedVoiceUploadStorage.getAll();
+  } catch (_) {
+    return;
+  }
+  for (const record of records) {
+    if (!record?.id || !record?.conversationId || !record?.file || record.message?.type !== "voice" || record.message?.sendStatus !== "failed" || !getConversation(record.conversationId)) continue;
+    state.failedVoiceUploads.set(record.id, { file: record.file, conversationId: record.conversationId, message: record.message });
+  }
+}
+
+function restoreFailedVoiceMessages(conversationId, messages) {
+  const restored = [...state.failedVoiceUploads.entries()]
+    .filter(([, retry]) => retry.conversationId === conversationId && retry.message?.sendStatus === "failed")
+    .map(([, retry]) => retry.message);
+  return restored.reduce((items, message) => appendMessageOnce(items, message), messages || []);
+}
+
+async function removeFailedVoiceUpload(messageId) {
+  state.failedVoiceUploads.delete(messageId);
+  try {
+    await failedVoiceUploadStorage.delete(messageId);
+  } catch (_) {}
 }
 
 async function pickAndUpload(kind) {
@@ -5569,7 +5603,7 @@ async function retryFailedVoiceUpload(messageId, retry) {
   const messages = state.data.messages[conversationId] || [];
   const failed = messages.find(message => message.id === messageId && message.sendStatus === "failed");
   if (!failed) {
-    state.failedVoiceUploads.delete(messageId);
+    await removeFailedVoiceUpload(messageId);
     return;
   }
   const retrying = { ...failed, sendStatus: "sending", sendError: "" };
@@ -5577,15 +5611,32 @@ async function retryFailedVoiceUpload(messageId, retry) {
   upsertConversationPreview(conversationId, retrying);
   render();
 
+  let attachment;
   try {
-    const attachment = await uploadFile(retry.file);
+    attachment = await uploadFile(retry.file);
     const payload = { ...retrying.retryPayload, attachment };
     const message = await persistOutgoingMessage(conversationId, payload);
     state.data.messages[conversationId] = replacePendingMessage(state.data.messages[conversationId] || [], messageId, message);
-    state.failedVoiceUploads.delete(messageId);
+    await removeFailedVoiceUpload(messageId);
     upsertConversationPreview(conversationId, message);
     toast("发送成功");
   } catch (error) {
+    const messagesAfterFailure = state.data.messages[conversationId] || [];
+    const deliveredVoice = messagesAfterFailure.find(message =>
+      message.id !== messageId &&
+      message.type === "voice" &&
+      String(message.senderId || "") === String(state.user?.id || "") &&
+      ((attachment?.id && message.attachment?.id === attachment.id) ||
+        (attachment?.url && message.attachment?.url === attachment.url))
+    );
+    if (deliveredVoice) {
+      state.data.messages[conversationId] = messagesAfterFailure.filter(message => message.id !== messageId);
+      await removeFailedVoiceUpload(messageId);
+      upsertConversationPreview(conversationId, deliveredVoice);
+      if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
+      render();
+      return;
+    }
     const failedAgain = markMessageFailed(retrying, error);
     state.data.messages[conversationId] = replacePendingMessage(state.data.messages[conversationId] || [], messageId, failedAgain);
     upsertConversationPreview(conversationId, failedAgain);
