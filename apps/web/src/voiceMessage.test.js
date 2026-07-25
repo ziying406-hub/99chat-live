@@ -69,7 +69,7 @@ test("renders attached voice messages as playback controls while retaining the l
   assert.match(appSource, /🎙 语音消息 \$\{duration\}/);
 });
 
-test("resolves persisted voice attachments through the API-aware media URL helper", async () => {
+test("renders a received persisted voice attachment as a player", async () => {
   const state = {
     activeVoiceMessageId: null,
     activeVoiceDuration: 0,
@@ -91,7 +91,9 @@ test("resolves persisted voice attachments through the API-aware media URL helpe
     attachment: { url: "/uploads/voice.webm" }
   });
 
+  assert.match(html, /data-play-voice="voice-1"/);
   assert.match(html, /data-voice-source="https:\/\/api\.example\.test\/uploads\/voice\.webm"/);
+  assert.doesNotMatch(html, /🎙 语音消息/);
 });
 
 test("passes the derived incoming flag into realtime voice autoplay", async () => {

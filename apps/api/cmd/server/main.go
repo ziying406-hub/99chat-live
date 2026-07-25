@@ -4956,7 +4956,7 @@ func (s *Store) normalizedMentionsForMessage(conversationID, senderID, body stri
 }
 
 func (s *Store) broadcastMessageCreated(msg Message) {
-	s.hub.Broadcast(map[string]any{"type": "message.created", "conversationId": msg.ConversationID, "payload": msg})
+	s.hub.Broadcast(messageCreatedEvent(msg))
 	for _, recipientID := range uniqueStrings(msg.Mentions) {
 		if recipientID == "" || recipientID == msg.SenderID {
 			continue
@@ -4970,6 +4970,10 @@ func (s *Store) broadcastMessageCreated(msg Message) {
 			},
 		})
 	}
+}
+
+func messageCreatedEvent(msg Message) map[string]any {
+	return map[string]any{"type": "message.created", "conversationId": msg.ConversationID, "payload": msg}
 }
 
 func groupHasUser(group Group, userID string) bool {

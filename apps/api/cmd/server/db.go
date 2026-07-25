@@ -3521,21 +3521,22 @@ func (s *Store) persistVoiceMessage(ctx context.Context, msg Message) (Message, 
 	if err != nil {
 		return Message{}, false, err
 	}
-	if !created {
-		msg, err = messageByOperationID(ctx, tx, msg.SenderID, msg.ConversationID, msg.OperationID)
-		if err != nil {
+	if created {
+		if _, err := tx.Exec(ctx, `UPDATE conversations SET last_text = $2, last_at = $3, unread = 0 WHERE id = $1`,
+			msg.ConversationID, displayMessage(msg), msg.CreatedAt); err != nil {
 			return Message{}, false, err
 		}
-		return msg, false, tx.Commit(ctx)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE conversations SET last_text = $2, last_at = $3, unread = 0 WHERE id = $1`,
-		msg.ConversationID, displayMessage(msg), msg.CreatedAt); err != nil {
+	// Always return the persisted row, including its attachment, so first sends
+	// and idempotent retries share the exact payload used by history and realtime.
+	msg, err = messageByOperationID(ctx, tx, msg.SenderID, msg.ConversationID, msg.OperationID)
+	if err != nil {
 		return Message{}, false, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return Message{}, false, err
 	}
-	return msg, true, nil
+	return msg, created, nil
 }
 
 func insertConversationIfMissing(ctx context.Context, tx pgx.Tx, conv Conversation, groupID string) error {

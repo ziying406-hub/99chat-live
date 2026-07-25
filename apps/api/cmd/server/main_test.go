@@ -1934,6 +1934,77 @@ func TestVoiceMessageCreateIsIdempotentForSameOperation(t *testing.T) {
 	if count != 1 {
 		t.Fatalf("expected one persisted operation, got %d messages: %+v", count, store.messages[conversationID])
 	}
+	if created.Attachment == nil || created.Attachment.URL != "/uploads/voice.webm" {
+		t.Fatalf("idempotent voice response lost attachment: %+v", created)
+	}
+}
+
+func TestReceivedVoiceMessageKeepsAttachmentInHistoryAndRealtime(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	first := registerTestUser(t, mux, "+60", "66070211", "Chat66Voice1", "语音发送方")
+	second := registerTestUser(t, mux, "+60", "66070212", "Chat66Voice2", "语音接收方")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/friend-requests", bytes.NewBufferString(`{"chatId":"`+second.User.ChatID+`","greeting":"hi"}`))
+	createReq.Header.Set("Authorization", "Bearer "+first.Token)
+	createRec := httptest.NewRecorder()
+	mux.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected friend request 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var createdRequest FriendRequest
+	if err := json.NewDecoder(createRec.Body).Decode(&createdRequest); err != nil {
+		t.Fatalf("decode friend request: %v", err)
+	}
+
+	acceptReq := httptest.NewRequest(http.MethodPatch, "/api/friend-requests/"+createdRequest.ID, bytes.NewBufferString(`{"status":"accepted"}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+second.Token)
+	acceptRec := httptest.NewRecorder()
+	mux.ServeHTTP(acceptRec, acceptReq)
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("expected accept 200, got %d: %s", acceptRec.Code, acceptRec.Body.String())
+	}
+
+	sendReq := httptest.NewRequest(http.MethodPost, "/api/conversations/session-"+second.User.ID+"/messages", bytes.NewBufferString(`{"type":"voice","body":"3","operationId":"receiver-voice-attachment","attachment":{"id":"voice-receiver-file","name":"voice.webm","url":"/uploads/voice.webm","mimeType":"audio/webm","size":8}}`))
+	sendReq.Header.Set("Authorization", "Bearer "+first.Token)
+	sendRec := httptest.NewRecorder()
+	mux.ServeHTTP(sendRec, sendReq)
+	if sendRec.Code != http.StatusCreated {
+		t.Fatalf("expected voice create 201, got %d: %s", sendRec.Code, sendRec.Body.String())
+	}
+	var sent Message
+	if err := json.NewDecoder(sendRec.Body).Decode(&sent); err != nil {
+		t.Fatalf("decode sent voice: %v", err)
+	}
+	if sent.Attachment == nil || sent.Attachment.URL != "/uploads/voice.webm" {
+		t.Fatalf("sent voice attachment = %+v", sent.Attachment)
+	}
+
+	conversationID := canonicalPrivateConversationID(first.User.ID, second.User.ID)
+	receiverMessagesReq := httptest.NewRequest(http.MethodGet, "/api/conversations/session-"+first.User.ID+"/messages", nil)
+	receiverMessagesReq.Header.Set("Authorization", "Bearer "+second.Token)
+	receiverMessagesRec := httptest.NewRecorder()
+	mux.ServeHTTP(receiverMessagesRec, receiverMessagesReq)
+	if receiverMessagesRec.Code != http.StatusOK {
+		t.Fatalf("expected receiver messages 200, got %d: %s", receiverMessagesRec.Code, receiverMessagesRec.Body.String())
+	}
+	var messages []Message
+	if err := json.NewDecoder(receiverMessagesRec.Body).Decode(&messages); err != nil {
+		t.Fatalf("decode receiver messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Attachment == nil || messages[0].Attachment.URL != "/uploads/voice.webm" {
+		t.Fatalf("receiver history lost voice attachment: %+v", messages)
+	}
+
+	realtime, err := json.Marshal(messageCreatedEvent(messages[0]))
+	if err != nil {
+		t.Fatalf("marshal voice realtime event: %v", err)
+	}
+	if !strings.Contains(string(realtime), `"conversationId":"`+conversationID+`"`) || !strings.Contains(string(realtime), `"url":"/uploads/voice.webm"`) {
+		t.Fatalf("receiver realtime event lost voice attachment: %s", realtime)
+	}
 }
 
 func TestVoiceMessageCreateDoesNotRetainCandidateWhenPersistenceFails(t *testing.T) {
