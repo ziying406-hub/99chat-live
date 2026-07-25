@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
+import { buildPendingMessage, replacePendingMessage } from "./pendingMessages.js";
 import { readFile } from "node:fs/promises";
 
 async function loadAppFunction(name, dependencies) {
@@ -81,6 +82,8 @@ test("keeps a completed recording with its original conversation after the user 
     toast: () => {},
     uploadFile: async () => ({ url: "/uploads/voice.webm" }),
     shouldSendVoiceMessage: () => true,
+    buildPendingMessage,
+    replacePendingMessage,
     persistOutgoingMessage: async (conversationId, payload) => {
       persisted.push([conversationId, payload]);
       return { id: "voice-1", conversationId, ...payload };
@@ -105,6 +108,59 @@ test("keeps a completed recording with its original conversation after the user 
     attachment: { url: "/uploads/voice.webm" }
   }]);
   assert.deepEqual(state.data.messages["conversation-b"], []);
+});
+
+test("replaces the pending voice message when realtime delivery arrives before persistence resolves", async () => {
+  const state = {
+    voiceRecorder: null,
+    voiceStartedAt: 1_000,
+    selectedConversationId: "conversation-a",
+    user: { id: "u1", nickname: "陈少" },
+    data: { messages: { "conversation-a": [] } }
+  };
+  const recorder = { mimeType: "audio/webm" };
+  state.voiceRecorder = recorder;
+  let beginPersistence;
+  let resolvePersistence;
+  const persistenceStarted = new Promise(resolve => { beginPersistence = resolve; });
+  const finishVoiceRecording = await loadAppFunction("finishVoiceRecording", {
+    state,
+    Date: { now: () => 3_000 },
+    Blob: class { constructor() { this.size = 8; this.type = "audio/webm"; } },
+    File: class { constructor() { return { name: "voice.webm", size: 8, type: "audio/webm" }; } },
+    resetVoiceRecordingState: () => { state.voiceRecorder = null; },
+    stopVoiceTracks: () => {},
+    render: () => {},
+    isRecordableVoiceDuration: () => true,
+    toast: () => {},
+    uploadFile: async () => ({ url: "/uploads/voice.webm" }),
+    shouldSendVoiceMessage: () => true,
+    buildPendingMessage,
+    replacePendingMessage,
+    persistOutgoingMessage: async () => {
+      beginPersistence();
+      return new Promise(resolve => { resolvePersistence = resolve; });
+    },
+    upsertConversationPreview: () => {},
+    scheduleScrollToBottom: () => {},
+    queueFailedVoiceUpload: () => assert.fail("a successful voice send must not enter the retry path")
+  });
+  const saved = {
+    id: "voice-1",
+    conversationId: "conversation-a",
+    senderId: "u1",
+    type: "voice",
+    body: "2",
+    attachment: { url: "/uploads/voice.webm" }
+  };
+
+  const completion = finishVoiceRecording(recorder, ["audio"], "conversation-a");
+  await persistenceStarted;
+  state.data.messages["conversation-a"] = [...state.data.messages["conversation-a"], saved];
+  resolvePersistence(saved);
+  await completion;
+
+  assert.deepEqual(state.data.messages["conversation-a"], [saved]);
 });
 
 test("cancelling an active recording stops every microphone track without producing a message", async () => {

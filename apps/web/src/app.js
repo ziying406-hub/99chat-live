@@ -5346,8 +5346,13 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
       isCurrentConversation: true
     })) return;
     const payload = { type: "voice", body: String(Math.round(elapsed / 1000)), attachment };
+    const pending = buildPendingMessage({ conversationId, user: state.user, payload });
+    state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), pending];
+    upsertConversationPreview(conversationId, pending);
+    if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
+    render();
     const message = await persistOutgoingMessage(conversationId, payload);
-    state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), message];
+    state.data.messages[conversationId] = replacePendingMessage(state.data.messages[conversationId] || [], pending.id, message);
     upsertConversationPreview(conversationId, message);
     if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
     render();
