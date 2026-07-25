@@ -242,7 +242,7 @@ async function init() {
   window.addEventListener("hashchange", handleSidePageHash);
   window.addEventListener("popstate", handleConversationRouteChange);
   window.addEventListener("focus", acknowledgeVisibleConversationRead);
-  window.addEventListener("beforeunload", cancelVoiceRecording);
+  bindVoiceRecordingLifecycle();
   document.addEventListener("visibilitychange", acknowledgeVisibleConversationRead);
   render();
   await handleSidePageHash();
@@ -257,6 +257,11 @@ async function init() {
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/src/sw.js").catch(() => {});
   }
+}
+
+function bindVoiceRecordingLifecycle() {
+  window.addEventListener("beforeunload", cancelVoiceRecording);
+  window.addEventListener("pagehide", cancelVoiceRecording);
 }
 
 async function recoverStaleAppShell() {
@@ -1803,7 +1808,7 @@ function renderMessageBody(message) {
       </a>`;
   }
   if (message.type === "voice") {
-    const source = message.attachment?.url;
+    const source = mediaURL(message.attachment?.url || "");
     const storedDuration = Number(message.body) || 0;
     const isActive = state.activeVoiceMessageId === message.id;
     const durationSeconds = isActive && state.activeVoiceDuration > 0 ? state.activeVoiceDuration : storedDuration;
@@ -1812,7 +1817,7 @@ function renderMessageBody(message) {
     if (!source) return `${quote}<div>🎙 语音消息 ${duration}</div>`;
     const playing = isActive && state.activeVoicePlaying;
     const progress = durationSeconds > 0 ? Math.min(100, (progressSeconds / durationSeconds) * 100) : 0;
-    return `${quote}<button class="voice-message ${playing ? "is-playing" : ""}" type="button" data-play-voice="${escapeAttr(message.id)}" aria-pressed="${playing}" aria-label="${playing ? "暂停" : "播放"}语音 ${formatVoiceDuration(progressSeconds)} / ${duration}"><span class="voice-message-icon">${playing ? "Ⅱ" : "▶"}</span><span class="voice-message-timing">${formatVoiceDuration(progressSeconds)} / ${duration}</span><span class="voice-message-progress" aria-hidden="true"><span style="width:${progress}%"></span></span></button>`;
+    return `${quote}<button class="voice-message ${playing ? "is-playing" : ""}" type="button" data-play-voice="${escapeAttr(message.id)}" data-voice-source="${escapeAttr(source)}" aria-pressed="${playing}" aria-label="${playing ? "暂停" : "播放"}语音 ${formatVoiceDuration(progressSeconds)} / ${duration}"><span class="voice-message-icon">${playing ? "Ⅱ" : "▶"}</span><span class="voice-message-timing">${formatVoiceDuration(progressSeconds)} / ${duration}</span><span class="voice-message-progress" aria-hidden="true"><span style="width:${progress}%"></span></span></button>`;
   }
   if (message.type === "contact") {
     const contact = findContactByName(message.body) || findContactByName(message.senderName);
@@ -4386,6 +4391,7 @@ function scheduleForwardSearchKeepAlive() {
 }
 
 async function openSidePage(sidePage) {
+  cancelVoiceRecording();
   const group = currentGroup();
   if (group && !canOpenGroupSidePage(sidePage, currentGroupMember(group))) {
     state.sidePage = "settings";
@@ -4466,6 +4472,7 @@ function bindEvents() {
   installNotificationSoundUnlock();
   document.querySelectorAll("[data-section]").forEach(el => el.addEventListener("click", async e => {
     e.preventDefault();
+    cancelVoiceRecording();
     clearKnownSidePageHash();
     state.section = el.dataset.section;
     if (state.section !== "messages") {
@@ -5096,7 +5103,7 @@ function voiceRecordingLabel() {
   if (state.voiceRecordingPending) return "正在请求麦克风权限…";
   if (!state.voiceRecording) return "按住录音";
   const elapsedSeconds = (Date.now() - state.voiceStartedAt) / 1000;
-  return `${formatVoiceDuration(elapsedSeconds)} 松开发送`;
+  return `${formatVoiceDuration(elapsedSeconds)} 松开发送，移出取消`;
 }
 
 function refreshVoiceRecordingLabel() {
@@ -5218,6 +5225,7 @@ function bindVoicePadEvents() {
           isPending: state.voiceRecordingPending
         });
         if (action === "stop" || action === "cancel-pending") stopVoiceRecording(event.pointerId);
+        if (action === "cancel") cancelVoiceRecording();
       });
     });
     pad.addEventListener("click", event => {
@@ -5229,7 +5237,9 @@ function bindVoicePadEvents() {
   }
   if (voicePointerLifecycleBound) return;
   window.addEventListener("pointerup", event => stopVoiceRecording(event.pointerId));
-  window.addEventListener("pointercancel", event => stopVoiceRecording(event.pointerId));
+  window.addEventListener("pointercancel", event => {
+    if (state.voicePointerId === event.pointerId) cancelVoiceRecording();
+  });
   voicePointerLifecycleBound = true;
 }
 
@@ -5257,7 +5267,7 @@ function playVoiceMessage(message) {
     return;
   }
   state.activeVoiceAudio?.pause();
-  const audio = new Audio(message.attachment.url);
+  const audio = new Audio(mediaURL(message.attachment?.url || ""));
   state.activeVoiceAudio = audio;
   state.activeVoiceMessageId = message.id;
   state.activeVoicePlaying = false;
@@ -5333,9 +5343,14 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
       isRecordable,
       hasAudio: blob.size > 0,
       hasAttachment: Boolean(attachment),
-      isCurrentConversation: state.selectedConversationId === conversationId
+      isCurrentConversation: true
     })) return;
-    await sendMessage({ type: "voice", body: String(Math.round(elapsed / 1000)), attachment });
+    const payload = { type: "voice", body: String(Math.round(elapsed / 1000)), attachment };
+    const message = await persistOutgoingMessage(conversationId, payload);
+    state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), message];
+    upsertConversationPreview(conversationId, message);
+    if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
+    render();
   } catch (error) {
     queueFailedVoiceUpload({
       file,

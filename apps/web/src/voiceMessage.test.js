@@ -69,6 +69,31 @@ test("renders attached voice messages as playback controls while retaining the l
   assert.match(appSource, /🎙 语音消息 \$\{duration\}/);
 });
 
+test("resolves persisted voice attachments through the API-aware media URL helper", async () => {
+  const state = {
+    activeVoiceMessageId: null,
+    activeVoiceDuration: 0,
+    activeVoiceProgress: 0,
+    activeVoicePlaying: false
+  };
+  const renderMessageBody = await loadAppFunction("renderMessageBody", {
+    renderQuotedMessage: () => "",
+    mediaURL: value => `https://api.example.test${value}`,
+    formatVoiceDuration: () => "00:02",
+    state,
+    escapeAttr: value => value
+  });
+
+  const html = renderMessageBody({
+    id: "voice-1",
+    type: "voice",
+    body: "2",
+    attachment: { url: "/uploads/voice.webm" }
+  });
+
+  assert.match(html, /data-voice-source="https:\/\/api\.example\.test\/uploads\/voice\.webm"/);
+});
+
 test("passes the derived incoming flag into realtime voice autoplay", async () => {
   const appSource = await readFile(new URL("./app.js", import.meta.url), "utf8");
 
@@ -118,6 +143,7 @@ test("clears and rerenders after voice playback is rejected", async () => {
   const playVoiceMessage = await loadAppFunction("playVoiceMessage", {
     state,
     Audio: FakeAudio,
+    mediaURL: value => value,
     render: () => rendered.push("render"),
     toast: message => toasts.push(message)
   });
@@ -157,6 +183,7 @@ test("keeps only the newest voice player active through its lifecycle", async ()
   const playVoiceMessage = await loadAppFunction("playVoiceMessage", {
     state,
     Audio: FakeAudio,
+    mediaURL: value => value,
     render: () => {},
     toast: () => {}
   });
@@ -207,6 +234,7 @@ test("pauses and resumes the same voice message while retaining playback progres
   const playVoiceMessage = await loadAppFunction("playVoiceMessage", {
     state,
     Audio: FakeAudio,
+    mediaURL: value => value,
     render: () => {},
     toast: () => {}
   });
@@ -259,6 +287,7 @@ test("cleans up playback state when a voice player emits an error", async () => 
   const playVoiceMessage = await loadAppFunction("playVoiceMessage", {
     state,
     Audio: FakeAudio,
+    mediaURL: value => value,
     render: () => {},
     toast: message => toasts.push(message)
   });

@@ -16,9 +16,10 @@ async function loadAppFunction(name, dependencies) {
   return new Function(...Object.keys(dependencies), `${source}; return ${name};`)(...Object.values(dependencies));
 }
 
-test("routes a held pointer leaving the voice pad to stop recording", () => {
+test("routes a held pointer leaving the voice pad to cancel recording", () => {
   assert.equal(voicePadEventAction({ type: "pointerdown" }), "start");
-  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: true }), "stop");
+  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: true }), "cancel");
+  assert.equal(voicePadEventAction({ type: "pointercancel", isRecording: true }), "cancel");
   assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: false }), "none");
   assert.equal(voicePadEventAction({ type: "pointerup", isPending: true }), "cancel-pending");
 });
@@ -56,6 +57,99 @@ test("permits a completed recording in its original conversation", () => {
     hasAttachment: true,
     isCurrentConversation: true
   }), true);
+});
+
+test("keeps a completed recording with its original conversation after the user switches chats", async () => {
+  const state = {
+    voiceRecorder: null,
+    voiceStartedAt: 1_000,
+    selectedConversationId: "conversation-b",
+    data: { messages: { "conversation-a": [], "conversation-b": [] } }
+  };
+  const recorder = { mimeType: "audio/webm" };
+  state.voiceRecorder = recorder;
+  const persisted = [];
+  const finishVoiceRecording = await loadAppFunction("finishVoiceRecording", {
+    state,
+    Date: { now: () => 3_000 },
+    Blob: class { constructor() { this.size = 8; this.type = "audio/webm"; } },
+    File: class { constructor() { return { name: "voice.webm", size: 8, type: "audio/webm" }; } },
+    resetVoiceRecordingState: () => { state.voiceRecorder = null; },
+    stopVoiceTracks: () => {},
+    render: () => {},
+    isRecordableVoiceDuration: () => true,
+    toast: () => {},
+    uploadFile: async () => ({ url: "/uploads/voice.webm" }),
+    shouldSendVoiceMessage: () => true,
+    persistOutgoingMessage: async (conversationId, payload) => {
+      persisted.push([conversationId, payload]);
+      return { id: "voice-1", conversationId, ...payload };
+    },
+    upsertConversationPreview: () => {},
+    scheduleScrollToBottom: () => {},
+    queueFailedVoiceUpload: () => assert.fail("a successful upload and send must not become a retry")
+  });
+
+  await finishVoiceRecording(recorder, ["audio"], "conversation-a");
+
+  assert.deepEqual(persisted, [["conversation-a", {
+    type: "voice",
+    body: "2",
+    attachment: { url: "/uploads/voice.webm" }
+  }]]);
+  assert.deepEqual(state.data.messages["conversation-a"], [{
+    id: "voice-1",
+    conversationId: "conversation-a",
+    type: "voice",
+    body: "2",
+    attachment: { url: "/uploads/voice.webm" }
+  }]);
+  assert.deepEqual(state.data.messages["conversation-b"], []);
+});
+
+test("cancelling an active recording stops every microphone track without producing a message", async () => {
+  const state = {
+    voiceRecorder: { state: "recording", stopCalls: 0, stop() { this.stopCalls++; } },
+    voiceRecording: true,
+    voiceRecordingPending: false,
+    voiceStream: { getTracks: () => [{ stopped: false, stop() { this.stopped = true; } }, { stopped: false, stop() { this.stopped = true; } }] }
+  };
+  const tracks = state.voiceStream.getTracks();
+  state.voiceStream.getTracks = () => tracks;
+  const cancelVoiceRecording = await loadAppFunction("cancelVoiceRecording", {
+    state,
+    resetVoiceRecordingState: () => {
+      state.voiceRecorder = null;
+      state.voiceRecording = false;
+      state.voiceRecordingPending = false;
+    },
+    stopVoiceTracks: () => {
+      state.voiceStream.getTracks().forEach(track => track.stop());
+      state.voiceStream = null;
+    },
+    refreshVoiceRecordingLabel: () => {}
+  });
+  const recorder = state.voiceRecorder;
+
+  cancelVoiceRecording();
+
+  assert.equal(recorder.stopCalls, 1);
+  assert.equal(tracks.every(track => track.stopped), true);
+  assert.equal(state.voiceStream, null);
+});
+
+test("page leave invokes the same microphone cancellation path", async () => {
+  const listeners = new Map();
+  const bindVoiceRecordingLifecycle = await loadAppFunction("bindVoiceRecordingLifecycle", {
+    window: { addEventListener: (type, listener) => listeners.set(type, listener) },
+    cancelVoiceRecording: () => listeners.set("cancelled", true)
+  });
+
+  bindVoiceRecordingLifecycle();
+  listeners.get("pagehide")();
+
+  assert.equal(typeof listeners.get("beforeunload"), "function");
+  assert.equal(listeners.get("cancelled"), true);
 });
 
 test("retains a failed voice upload for retry in its original conversation", async () => {
