@@ -219,6 +219,7 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 		)`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS mentions TEXT[] NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS burn_after_read BOOLEAN NOT NULL DEFAULT false`,
+		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS operation_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_message_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_conversation_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE messages ADD COLUMN IF NOT EXISTS quote_sender_name TEXT NOT NULL DEFAULT ''`,
@@ -337,6 +338,7 @@ func (pg *PostgresStore) ensureSchema(ctx context.Context) error {
 		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_by_admin_id TEXT`,
 		`ALTER TABLE feedback ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_conversation_created_at ON messages(conversation_id, created_at)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_sender_conversation_operation ON messages(sender_user_id, conversation_id, operation_id) WHERE operation_id <> ''`,
 		`CREATE INDEX IF NOT EXISTS idx_friend_requests_to_user ON friend_requests(to_user_id, status, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_collections_user_kind ON collections(user_id, kind, created_at)`,
@@ -1083,7 +1085,7 @@ func (pg *PostgresStore) loadVisibleConversations(ctx context.Context, userID st
 }
 
 func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string) ([]Message, error) {
-	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, u.avatar_url, m.type, m.body, m.mentions, m.burn_after_read, m.created_at,
+	rows, err := pg.pool.Query(ctx, `SELECT m.id, m.conversation_id, m.sender_user_id, u.nickname, u.avatar_url, m.type, m.body, m.mentions, m.burn_after_read, m.operation_id, m.created_at,
 			m.quote_message_id, m.quote_conversation_id, m.quote_sender_name, m.quote_preview, m.quote_type, m.quote_type_label,
 			a.id, a.name, a.object_key, a.mime_type, a.size_bytes
 		FROM messages m
@@ -1103,7 +1105,7 @@ func (pg *PostgresStore) loadMessages(ctx context.Context, conversationID string
 		var size *int64
 		var mentions []string
 		var quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel string
-		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.SenderAvatar, &msg.Type, &msg.Body, &mentions, &msg.BurnAfterRead, &msg.CreatedAt,
+		if err := rows.Scan(&msg.ID, &msg.ConversationID, &msg.SenderID, &msg.SenderName, &msg.SenderAvatar, &msg.Type, &msg.Body, &mentions, &msg.BurnAfterRead, &msg.OperationID, &msg.CreatedAt,
 			&quoteMessageID, &quoteConversationID, &quoteSenderName, &quotePreview, &quoteType, &quoteTypeLabel,
 			&attachmentID, &name, &objectKey, &mimeType, &size); err != nil {
 			return nil, err
@@ -4943,11 +4945,11 @@ func insertMessage(ctx context.Context, tx pgx.Tx, msg Message) error {
 		quoteTypeLabel = quote.TypeLabel
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO messages(
-			id, conversation_id, sender_user_id, type, body, mentions, burn_after_read, created_at,
+			id, conversation_id, sender_user_id, type, body, mentions, burn_after_read, operation_id, created_at,
 			quote_message_id, quote_conversation_id, quote_sender_name, quote_preview, quote_type, quote_type_label
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (id) DO NOTHING`,
-		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.BurnAfterRead, msg.CreatedAt,
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) ON CONFLICT (id) DO NOTHING`,
+		msg.ID, msg.ConversationID, msg.SenderID, msg.Type, msg.Body, msg.Mentions, msg.BurnAfterRead, msg.OperationID, msg.CreatedAt,
 		quoteMessageID, quoteConversationID, quoteSenderName, quotePreview, quoteType, quoteTypeLabel); err != nil {
 		return err
 	}

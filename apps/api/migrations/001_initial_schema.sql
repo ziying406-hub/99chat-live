@@ -132,6 +132,7 @@ CREATE TABLE messages (
   sender_user_id TEXT NOT NULL REFERENCES users(id),
   type TEXT NOT NULL CHECK (type IN ('text', 'image', 'video', 'file', 'voice', 'contact', 'collection')),
   body TEXT NOT NULL DEFAULT '',
+  operation_id TEXT NOT NULL DEFAULT '',
   quote_message_id TEXT NOT NULL DEFAULT '',
   quote_conversation_id TEXT NOT NULL DEFAULT '',
   quote_sender_name TEXT NOT NULL DEFAULT '',
@@ -149,6 +150,10 @@ CREATE TABLE message_attachments (
   mime_type TEXT NOT NULL,
   size_bytes BIGINT NOT NULL DEFAULT 0
 );
+
+CREATE UNIQUE INDEX idx_messages_sender_conversation_operation
+  ON messages(sender_user_id, conversation_id, operation_id)
+  WHERE operation_id <> '';
 
 CREATE TABLE message_reads (
   conversation_id TEXT NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,

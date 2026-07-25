@@ -1895,6 +1895,46 @@ func TestRegisteredUsersOnlySeeTheirFriendRequests(t *testing.T) {
 	}
 }
 
+func TestVoiceMessageCreateIsIdempotentForSameOperation(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	const conversationID = "group-21444"
+	const operationID = "voice-operation-1"
+	body := `{"type":"voice","body":"2","operationId":"` + operationID + `","attachment":{"id":"voice-file-1","name":"voice.webm","url":"/uploads/voice.webm","mimeType":"audio/webm","size":8}}`
+	var created Message
+	for attempt := 0; attempt < 2; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conversationID+"/messages", bytes.NewBufferString(body))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("attempt %d expected message create 201, got %d: %s", attempt+1, rec.Code, rec.Body.String())
+		}
+		var response Message
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatalf("decode attempt %d: %v", attempt+1, err)
+		}
+		if attempt == 0 {
+			created = response
+		} else if response.ID != created.ID {
+			t.Fatalf("retry created a different message: first=%s retry=%s", created.ID, response.ID)
+		}
+	}
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	count := 0
+	for _, message := range store.messages[conversationID] {
+		if message.OperationID == operationID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected one persisted operation, got %d messages: %+v", count, store.messages[conversationID])
+	}
+}
+
 func TestConversationListMarksMentionedUser(t *testing.T) {
 	store := seedStore()
 	mux := http.NewServeMux()

@@ -47,16 +47,18 @@ test("stores failed voice blobs and retry metadata across storage instances", as
   const record = {
     id: "pending-voice-1",
     conversationId: "conversation-a",
+    operationId: "voice-operation-1",
     file: new Blob(["audio"], { type: "audio/mp4" }),
-    message: { id: "pending-voice-1", type: "voice", body: "2", sendStatus: "failed", retryPayload: { type: "voice", body: "2" } }
+    message: { id: "pending-voice-1", type: "voice", body: "2", sendStatus: "failed", retryPayload: { type: "voice", body: "2", operationId: "voice-operation-1" } }
   };
 
   await first.put(record);
   const restored = await createFailedVoiceUploadStorage(indexedDB).getAll();
 
-  assert.deepEqual(restored.map(({ id, conversationId, message }) => ({ id, conversationId, message })), [{
+  assert.deepEqual(restored.map(({ id, conversationId, operationId, message }) => ({ id, conversationId, operationId, message })), [{
     id: "pending-voice-1",
     conversationId: "conversation-a",
+    operationId: "voice-operation-1",
     message: record.message
   }]);
   assert.equal(await restored[0].file.text(), "audio");

@@ -109,6 +109,7 @@ type Message struct {
 	Quote          *Quote      `json:"quote,omitempty"`
 	Mentions       []string    `json:"mentions,omitempty"`
 	BurnAfterRead  bool        `json:"burnAfterRead,omitempty"`
+	OperationID    string      `json:"-"`
 	CreatedAt      time.Time   `json:"createdAt"`
 	ReadCount      int         `json:"readCount"`
 	ReadTotal      int         `json:"readTotal"`
@@ -2409,11 +2410,12 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var req struct {
-			Type       string      `json:"type"`
-			Body       string      `json:"body"`
-			Attachment *Attachment `json:"attachment"`
-			Quote      *Quote      `json:"quote"`
-			Mentions   []string    `json:"mentions"`
+			Type        string      `json:"type"`
+			Body        string      `json:"body"`
+			Attachment  *Attachment `json:"attachment"`
+			Quote       *Quote      `json:"quote"`
+			Mentions    []string    `json:"mentions"`
+			OperationID string      `json:"operationId"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid json")
@@ -2421,6 +2423,10 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.Type == "" {
 			req.Type = "text"
+		}
+		operationID := ""
+		if req.Type == "voice" {
+			operationID = strings.TrimSpace(req.OperationID)
 		}
 		body := strings.TrimSpace(req.Body)
 		mentions, err := s.normalizedMentionsForMessage(conversationID, current.ID, body, req.Mentions)
@@ -2439,6 +2445,7 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			Attachment:     req.Attachment,
 			Quote:          sanitizeQuote(req.Quote),
 			Mentions:       mentions,
+			OperationID:    operationID,
 			CreatedAt:      time.Now(),
 		}
 		privateContact, ensurePrivateConversation, err := s.privateConversationContact(r.Context(), conversationID, current.ID)
@@ -2451,6 +2458,15 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.mu.Lock()
+		if operationID != "" {
+			for _, existing := range s.messages[conversationID] {
+				if existing.SenderID == current.ID && existing.OperationID == operationID {
+					s.mu.Unlock()
+					writeJSON(w, http.StatusCreated, existing)
+					return
+				}
+			}
+		}
 		if ensurePrivateConversation {
 			s.ensurePrivateConversationLocked(conversationID, privateContact, msg)
 		}

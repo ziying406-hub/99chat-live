@@ -5340,6 +5340,7 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
     return;
   }
   const file = new File([blob], `voice-${Date.now()}.${recordedVoiceExtension(blob.type)}`, { type: blob.type || "audio/webm" });
+  const operationId = `voice-operation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   let attachment;
   let pending;
   try {
@@ -5350,7 +5351,7 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
       hasAttachment: Boolean(attachment),
       isCurrentConversation: true
     })) return;
-    const payload = { type: "voice", body: String(Math.round(elapsed / 1000)), attachment };
+    const payload = { type: "voice", body: String(Math.round(elapsed / 1000)), attachment, operationId };
     pending = buildPendingMessage({ conversationId, user: state.user, payload });
     state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), pending];
     upsertConversationPreview(conversationId, pending);
@@ -5383,20 +5384,21 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
       file,
       duration: String(Math.round(elapsed / 1000)),
       conversationId,
+      operationId,
       error
     });
   }
 }
 
-async function queueFailedVoiceUpload({ file, duration, conversationId, error }) {
+async function queueFailedVoiceUpload({ file, duration, conversationId, operationId = `voice-operation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`, error }) {
   const pending = buildPendingMessage({
     conversationId,
     user: state.user,
-    payload: { type: "voice", body: duration }
+    payload: { type: "voice", body: duration, operationId }
   });
   const failed = markMessageFailed(pending, error);
   state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), failed];
-  const retry = { file, conversationId, message: failed };
+  const retry = { file, conversationId, operationId, message: failed };
   state.failedVoiceUploads.set(failed.id, retry);
   try {
     await failedVoiceUploadStorage.put({ id: failed.id, ...retry });
@@ -5416,7 +5418,18 @@ async function restoreFailedVoiceUploads() {
   }
   for (const record of records) {
     if (!record?.id || !record?.conversationId || !record?.file || record.message?.type !== "voice" || record.message?.sendStatus !== "failed" || !getConversation(record.conversationId)) continue;
-    state.failedVoiceUploads.set(record.id, { file: record.file, conversationId: record.conversationId, message: record.message });
+    const operationId = record.operationId || record.message?.retryPayload?.operationId || `voice-operation-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const message = {
+      ...record.message,
+      retryPayload: { ...record.message.retryPayload, operationId }
+    };
+    const retry = { file: record.file, conversationId: record.conversationId, operationId, message };
+    state.failedVoiceUploads.set(record.id, retry);
+    if (!record.operationId || record.message?.retryPayload?.operationId !== operationId) {
+      try {
+        await failedVoiceUploadStorage.put({ id: record.id, ...retry });
+      } catch (_) {}
+    }
   }
 }
 

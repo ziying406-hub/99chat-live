@@ -139,16 +139,21 @@ test("keeps a completed recording with its original conversation after the user 
 
   await finishVoiceRecording(recorder, ["audio"], "conversation-a");
 
-  assert.deepEqual(persisted, [["conversation-a", {
+  assert.equal(persisted.length, 1);
+  assert.equal(persisted[0][0], "conversation-a");
+  assert.deepEqual(persisted[0][1], {
     type: "voice",
     body: "2",
-    attachment: { url: "/uploads/voice.webm" }
-  }]]);
+    attachment: { url: "/uploads/voice.webm" },
+    operationId: persisted[0][1].operationId
+  });
+  assert.match(persisted[0][1].operationId, /^voice-operation-/);
   assert.deepEqual(state.data.messages["conversation-a"], [{
     id: "voice-1",
     conversationId: "conversation-a",
     type: "voice",
     body: "2",
+    operationId: persisted[0][1].operationId,
     attachment: { url: "/uploads/voice.webm" }
   }]);
   assert.deepEqual(state.data.messages["conversation-b"], []);
@@ -346,6 +351,7 @@ test("retains a failed voice upload for retry in its original conversation", asy
   assert.equal(failures[0].conversationId, "conversation-a");
   assert.strictEqual(failures[0].file, file, "the original file remains available for retry");
   assert.equal(failures[0].duration, "2");
+  assert.match(failures[0].operationId, /^voice-/);
 });
 
 test("retries a failed voice upload with the same file without duplicating or changing conversations", async () => {
@@ -356,12 +362,12 @@ test("retries a failed voice upload with the same file without duplicating or ch
     type: "voice",
     body: "2",
     sendStatus: "failed",
-    retryPayload: { type: "voice", body: "2" }
+    retryPayload: { type: "voice", body: "2", operationId: "voice-retry-1" }
   };
   const state = {
     selectedConversationId: "conversation-b",
     data: { messages: { "conversation-a": [failed], "conversation-b": [] } },
-    failedVoiceUploads: new Map([[failed.id, { file, conversationId: "conversation-a" }]])
+    failedVoiceUploads: new Map([[failed.id, { file, conversationId: "conversation-a", operationId: "voice-retry-1" }]])
   };
   const calls = [];
   const retryFailedVoiceUpload = await loadAppFunction("retryFailedVoiceUpload", {
@@ -389,13 +395,14 @@ test("retries a failed voice upload with the same file without duplicating or ch
   assert.deepEqual(calls.find(([kind]) => kind === "persist"), [
     "persist",
     "conversation-a",
-    { type: "voice", body: "2", attachment: { url: "/uploads/voice.webm" } }
+    { type: "voice", body: "2", operationId: "voice-retry-1", attachment: { url: "/uploads/voice.webm" } }
   ]);
   assert.deepEqual(state.data.messages["conversation-a"], [{
     id: "voice-1",
     conversationId: "conversation-a",
     type: "voice",
     body: "2",
+    operationId: "voice-retry-1",
     attachment: { url: "/uploads/voice.webm" }
   }]);
   assert.deepEqual(state.data.messages["conversation-b"], []);
