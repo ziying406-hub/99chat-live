@@ -156,6 +156,10 @@ const state = {
   voiceRecordingTimer: null,
   activeVoiceAudio: null,
   activeVoiceMessageId: null,
+  activeVoicePlaying: false,
+  activeVoiceProgress: 0,
+  activeVoiceDuration: 0,
+  failedVoiceUploads: new Map(),
   useMock: false,
   data: null,
   lastObservedUnreadCount: null,
@@ -1800,10 +1804,15 @@ function renderMessageBody(message) {
   }
   if (message.type === "voice") {
     const source = message.attachment?.url;
-    const duration = formatVoiceDuration(message.body);
+    const storedDuration = Number(message.body) || 0;
+    const isActive = state.activeVoiceMessageId === message.id;
+    const durationSeconds = isActive && state.activeVoiceDuration > 0 ? state.activeVoiceDuration : storedDuration;
+    const progressSeconds = isActive ? Math.min(state.activeVoiceProgress, durationSeconds) : 0;
+    const duration = formatVoiceDuration(durationSeconds);
     if (!source) return `${quote}<div>🎙 语音消息 ${duration}</div>`;
-    const playing = state.activeVoiceMessageId === message.id;
-    return `${quote}<button class="voice-message ${playing ? "is-playing" : ""}" type="button" data-play-voice="${escapeAttr(message.id)}" aria-pressed="${playing}">${playing ? "播放中..." : "▶"} ${duration}</button>`;
+    const playing = isActive && state.activeVoicePlaying;
+    const progress = durationSeconds > 0 ? Math.min(100, (progressSeconds / durationSeconds) * 100) : 0;
+    return `${quote}<button class="voice-message ${playing ? "is-playing" : ""}" type="button" data-play-voice="${escapeAttr(message.id)}" aria-pressed="${playing}" aria-label="${playing ? "暂停" : "播放"}语音 ${formatVoiceDuration(progressSeconds)} / ${duration}"><span class="voice-message-icon">${playing ? "Ⅱ" : "▶"}</span><span class="voice-message-timing">${formatVoiceDuration(progressSeconds)} / ${duration}</span><span class="voice-message-progress" aria-hidden="true"><span style="width:${progress}%"></span></span></button>`;
   }
   if (message.type === "contact") {
     const contact = findContactByName(message.body) || findContactByName(message.senderName);
@@ -5229,21 +5238,72 @@ function isVoiceAutoplayConversationOpen(conversationId) {
 }
 
 function playVoiceMessage(message) {
+  if (state.activeVoiceMessageId === message.id && state.activeVoiceAudio) {
+    if (state.activeVoicePlaying) {
+      state.activeVoiceAudio.pause();
+      return;
+    }
+    const audio = state.activeVoiceAudio;
+    audio.play().catch(() => {
+      if (state.activeVoiceAudio !== audio) return;
+      state.activeVoiceAudio = null;
+      state.activeVoiceMessageId = null;
+      state.activeVoicePlaying = false;
+      state.activeVoiceProgress = 0;
+      state.activeVoiceDuration = 0;
+      render();
+      toast("语音播放失败");
+    });
+    return;
+  }
   state.activeVoiceAudio?.pause();
   const audio = new Audio(message.attachment.url);
   state.activeVoiceAudio = audio;
   state.activeVoiceMessageId = message.id;
-  audio.addEventListener("ended", () => {
-    if (state.activeVoiceAudio !== audio) return;
+  state.activeVoicePlaying = false;
+  state.activeVoiceProgress = 0;
+  state.activeVoiceDuration = 0;
+  const clearActiveVoice = () => {
+    if (state.activeVoiceAudio !== audio) return false;
     state.activeVoiceAudio = null;
     state.activeVoiceMessageId = null;
+    state.activeVoicePlaying = false;
+    state.activeVoiceProgress = 0;
+    state.activeVoiceDuration = 0;
+    return true;
+  };
+  audio.addEventListener("play", () => {
+    if (state.activeVoiceAudio !== audio) return;
+    state.activeVoicePlaying = true;
     render();
   });
+  audio.addEventListener("pause", () => {
+    if (state.activeVoiceAudio !== audio) return;
+    state.activeVoicePlaying = false;
+    state.activeVoiceProgress = Number(audio.currentTime) || 0;
+    render();
+  });
+  audio.addEventListener("loadedmetadata", () => {
+    if (state.activeVoiceAudio !== audio) return;
+    state.activeVoiceDuration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    render();
+  });
+  audio.addEventListener("timeupdate", () => {
+    if (state.activeVoiceAudio !== audio) return;
+    state.activeVoiceProgress = Number(audio.currentTime) || 0;
+    state.activeVoiceDuration = Number.isFinite(audio.duration) ? audio.duration : state.activeVoiceDuration;
+    render();
+  });
+  audio.addEventListener("ended", () => {
+    if (clearActiveVoice()) render();
+  });
+  audio.addEventListener("error", () => {
+    if (!clearActiveVoice()) return;
+    render();
+    toast("语音播放失败");
+  });
   audio.play().catch(() => {
-    if (state.activeVoiceAudio === audio) {
-      state.activeVoiceAudio = null;
-      state.activeVoiceMessageId = null;
-    }
+    if (!clearActiveVoice()) return;
     render();
     toast("语音播放失败");
   });
@@ -5277,8 +5337,28 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
     })) return;
     await sendMessage({ type: "voice", body: String(Math.round(elapsed / 1000)), attachment });
   } catch (error) {
-    toast(uploadErrorMessage(error));
+    queueFailedVoiceUpload({
+      file,
+      duration: String(Math.round(elapsed / 1000)),
+      conversationId,
+      error
+    });
   }
+}
+
+function queueFailedVoiceUpload({ file, duration, conversationId, error }) {
+  const pending = buildPendingMessage({
+    conversationId,
+    user: state.user,
+    payload: { type: "voice", body: duration }
+  });
+  const failed = markMessageFailed(pending, error);
+  state.data.messages[conversationId] = [...(state.data.messages[conversationId] || []), failed];
+  state.failedVoiceUploads.set(failed.id, { file, conversationId });
+  upsertConversationPreview(conversationId, failed);
+  scheduleScrollToBottom();
+  render();
+  toast(uploadErrorMessage(error));
 }
 
 async function pickAndUpload(kind) {
@@ -5413,6 +5493,11 @@ async function sendMessage(payload, options = {}) {
 }
 
 async function retryMessage(messageId) {
+  const voiceRetry = state.failedVoiceUploads.get(messageId);
+  if (voiceRetry) {
+    await retryFailedVoiceUpload(messageId, voiceRetry);
+    return;
+  }
   const conversationId = state.selectedConversationId;
   const messages = state.data.messages[conversationId] || [];
   const failed = messages.find(message => message.id === messageId && message.sendStatus === "failed");
@@ -5435,6 +5520,37 @@ async function retryMessage(messageId) {
     state.data.messages[conversationId] = replacePendingMessage(state.data.messages[conversationId] || [], retrying.id, failedAgain);
     upsertConversationPreview(conversationId, failedAgain);
     toast(sendErrorMessage(error));
+  }
+  scheduleScrollToBottom();
+  render();
+}
+
+async function retryFailedVoiceUpload(messageId, retry) {
+  const conversationId = retry.conversationId;
+  const messages = state.data.messages[conversationId] || [];
+  const failed = messages.find(message => message.id === messageId && message.sendStatus === "failed");
+  if (!failed) {
+    state.failedVoiceUploads.delete(messageId);
+    return;
+  }
+  const retrying = { ...failed, sendStatus: "sending", sendError: "" };
+  state.data.messages[conversationId] = replacePendingMessage(messages, messageId, retrying);
+  upsertConversationPreview(conversationId, retrying);
+  render();
+
+  try {
+    const attachment = await uploadFile(retry.file);
+    const payload = { ...retrying.retryPayload, attachment };
+    const message = await persistOutgoingMessage(conversationId, payload);
+    state.data.messages[conversationId] = replacePendingMessage(state.data.messages[conversationId] || [], messageId, message);
+    state.failedVoiceUploads.delete(messageId);
+    upsertConversationPreview(conversationId, message);
+    toast("发送成功");
+  } catch (error) {
+    const failedAgain = markMessageFailed(retrying, error);
+    state.data.messages[conversationId] = replacePendingMessage(state.data.messages[conversationId] || [], messageId, failedAgain);
+    upsertConversationPreview(conversationId, failedAgain);
+    toast(uploadErrorMessage(error));
   }
   scheduleScrollToBottom();
   render();

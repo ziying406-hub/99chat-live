@@ -64,7 +64,8 @@ test("renders attached voice messages as playback controls while retaining the l
   const appSource = await readFile(new URL("./app.js", import.meta.url), "utf8");
 
   assert.match(appSource, /data-play-voice/);
-  assert.match(appSource, /const duration = formatVoiceDuration\(message\.body\)/);
+  assert.match(appSource, /voice-message-progress/);
+  assert.match(appSource, /formatVoiceDuration\(progressSeconds\)/);
   assert.match(appSource, /🎙 语音消息 \$\{duration\}/);
 });
 
@@ -171,4 +172,104 @@ test("keeps only the newest voice player active through its lifecycle", async ()
   players[1].listeners.ended();
   assert.equal(state.activeVoiceAudio, null);
   assert.equal(state.activeVoiceMessageId, null);
+});
+
+test("pauses and resumes the same voice message while retaining playback progress", async () => {
+  const state = {
+    activeVoiceAudio: null,
+    activeVoiceMessageId: null,
+    activeVoicePlaying: false,
+    activeVoiceProgress: 0,
+    activeVoiceDuration: 0
+  };
+  const players = [];
+  class FakeAudio {
+    constructor() {
+      this.listeners = {};
+      this.currentTime = 0;
+      this.duration = 12;
+      players.push(this);
+    }
+
+    addEventListener(name, listener) {
+      this.listeners[name] = listener;
+    }
+
+    pause() {
+      this.listeners.pause();
+    }
+
+    play() {
+      this.listeners.play();
+      return Promise.resolve();
+    }
+  }
+  const playVoiceMessage = await loadAppFunction("playVoiceMessage", {
+    state,
+    Audio: FakeAudio,
+    render: () => {},
+    toast: () => {}
+  });
+
+  const message = { id: "voice-1", attachment: { url: "/uploads/voice-1.webm" } };
+  playVoiceMessage(message);
+  players[0].currentTime = 4.5;
+  players[0].listeners.timeupdate();
+  playVoiceMessage(message);
+
+  assert.equal(players.length, 1, "pausing must retain the existing audio instance");
+  assert.equal(state.activeVoiceMessageId, "voice-1");
+  assert.equal(state.activeVoicePlaying, false);
+  assert.equal(state.activeVoiceProgress, 4.5);
+  assert.equal(state.activeVoiceDuration, 12);
+
+  playVoiceMessage(message);
+
+  assert.equal(players.length, 1, "resuming must not restart playback from a new audio instance");
+  assert.equal(players[0].currentTime, 4.5);
+  assert.equal(state.activeVoicePlaying, true);
+});
+
+test("cleans up playback state when a voice player emits an error", async () => {
+  const state = {
+    activeVoiceAudio: null,
+    activeVoiceMessageId: null,
+    activeVoicePlaying: false,
+    activeVoiceProgress: 0,
+    activeVoiceDuration: 0
+  };
+  class FakeAudio {
+    constructor() {
+      this.listeners = {};
+      this.currentTime = 3;
+      this.duration = 9;
+    }
+
+    addEventListener(name, listener) {
+      this.listeners[name] = listener;
+    }
+
+    pause() {}
+
+    play() {
+      return Promise.resolve();
+    }
+  }
+  const toasts = [];
+  const playVoiceMessage = await loadAppFunction("playVoiceMessage", {
+    state,
+    Audio: FakeAudio,
+    render: () => {},
+    toast: message => toasts.push(message)
+  });
+
+  playVoiceMessage({ id: "voice-1", attachment: { url: "/uploads/voice-1.webm" } });
+  state.activeVoiceAudio.listeners.error();
+
+  assert.equal(state.activeVoiceAudio, null);
+  assert.equal(state.activeVoiceMessageId, null);
+  assert.equal(state.activeVoicePlaying, false);
+  assert.equal(state.activeVoiceProgress, 0);
+  assert.equal(state.activeVoiceDuration, 0);
+  assert.deepEqual(toasts, ["语音播放失败"]);
 });

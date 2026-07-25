@@ -1563,6 +1563,7 @@ a {
 .voice-message {
   display: inline-flex;
   align-items: center;
+  gap: 8px;
   min-width: 112px;
   min-height: 34px;
   padding: 7px 11px;
@@ -1574,6 +1575,30 @@ a {
   font: inherit;
   font-variant-numeric: tabular-nums;
   text-align: left;
+}
+
+.voice-message-icon {
+  width: 14px;
+  text-align: center;
+}
+
+.voice-message-timing {
+  white-space: nowrap;
+}
+
+.voice-message-progress {
+  width: 34px;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: rgba(15, 23, 42, 0.16);
+}
+
+.voice-message-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
 }
 
 .voice-message:hover,
@@ -1588,6 +1613,10 @@ a {
 .message.me .voice-message:hover,
 .message.me .voice-message.is-playing {
   background: rgba(255, 255, 255, 0.28);
+}
+
+.message.me .voice-message-progress {
+  background: rgba(255, 255, 255, 0.32);
 }
 
 .message.me .bubble {
