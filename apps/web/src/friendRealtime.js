@@ -53,5 +53,8 @@ export function friendRealtimeUpdate(event, currentUserId) {
         : `你已拒绝 ${nicknameOf(payload.user)} 的好友申请`
     };
   }
+  if (event?.type === "friend.removed") {
+    return { refresh: true, toast: "你们已解除好友关系" };
+  }
   return { refresh: false, toast: "" };
 }

@@ -61,6 +61,7 @@ import { registerErrorMessage } from "./registerErrors.js";
 import { shouldPlayUnreadSnapshotSound } from "./notificationSoundState.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
+import { isFormerFriendSession } from "./friendRemoval.js?v=20260726-remove-friend";
 import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
 import { shouldKeepRealtimeSnapshotAtBottom, shouldReconnectRealtimeHeartbeat, shouldRefreshRealtimeSnapshotOnOpen } from "./realtimeConnection.js";
 import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
@@ -2167,6 +2168,7 @@ function renderSettingsPane(conv) {
       </section>
       <section class="section">
         ${settingButton("clear-chat", "清除聊天记录", "danger-btn inline")}
+        ${!group ? settingButton("remove-friend", "删除好友", "danger-btn inline") : ""}
         ${group && canLeaveGroup(currentGroupMember(group)) ? settingButton("leave-group", "退出群聊", "danger-btn inline") : ""}
         ${group && isCurrentUserOwner(group) ? settingButton("dissolve-group", "解散群", "danger-btn inline") : ""}
         ${settingLink("report", "检举", "提交违规原因")}
@@ -5947,6 +5949,9 @@ async function handleAction(event, action) {
       await clearCurrentConversationMessages();
     }
   }
+  if (action === "remove-friend") {
+    await removeFriendFromConversation();
+  }
   if (action === "dissolve-group") {
     if (confirm("确定解散该群？解散后所有成员都不能再进入该群。")) {
       await dissolveCurrentGroup();
@@ -5961,6 +5966,28 @@ async function handleAction(event, action) {
     localStorage.removeItem("chatlite-token");
     state.authed = false;
     render();
+  }
+}
+
+async function removeFriendFromConversation() {
+  const conversation = getConversation(state.selectedConversationId);
+  if (!conversation || conversation.kind !== "session") return;
+  const contactId = privateConversationPeerId(conversation.id);
+  if (!contactId || !confirm(`确定删除好友“${conversation.title}”？`)) return;
+  try {
+    if (state.useMock) {
+      state.data.contacts = state.data.contacts.filter(contact => contact.id !== contactId);
+    } else {
+      await api(`/api/contacts/${contactId}`, { method: "DELETE" });
+      await refreshFriendRealtimeState();
+    }
+    state.selectedConversationId = null;
+    state.sidePage = null;
+    syncConversationPath(null);
+    toast("已删除好友");
+    render();
+  } catch (error) {
+    toast("删除好友失败");
   }
 }
 
@@ -8074,6 +8101,9 @@ function getComposerBlockedReason(conversation) {
     const contactId = privateConversationPeerId(conversation.id);
     if ((state.user?.blockedContactIds || []).includes(contactId)) {
       return "已加入黑名单，无法发送消息";
+    }
+    if (isFormerFriendSession(conversation, state.user?.id, state.data?.contacts)) {
+      return "你们已不是好友，无法发送消息";
     }
     return "";
   }

@@ -42,6 +42,21 @@ test("accepted and rejected friend reviews refresh both participants", () => {
   });
 });
 
+test("friend removal refreshes both participants", () => {
+  const removed = {
+    type: "friend.removed",
+    payload: { fromUserId: "sender", toUserId: "recipient" }
+  };
+  assert.deepEqual(friendRealtimeUpdate(removed, "sender"), {
+    refresh: true,
+    toast: "你们已解除好友关系"
+  });
+  assert.deepEqual(friendRealtimeUpdate(removed, "recipient"), {
+    refresh: true,
+    toast: "你们已解除好友关系"
+  });
+});
+
 test("sync fallback reports new and reviewed friend requests", () => {
   const pending = { id: "fr-1", direction: "incoming", status: "pending", user: { nickname: "发送方" } };
   assert.equal(friendRequestSyncUpdate([], [pending]), "收到来自 发送方 的好友申请");
