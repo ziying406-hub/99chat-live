@@ -361,6 +361,9 @@ async function openConversationFromHash(value) {
     state.data?.conversations || []
   );
   await openConversation(conversationId);
+  // Deep links can restore a conversation before the normal selection render
+  // cycle completes, so explicitly acknowledge it after route navigation.
+  void acknowledgeConversationRead(conversationId);
 }
 
 function beginConversationSelection(conversationId, { push = false } = {}) {
