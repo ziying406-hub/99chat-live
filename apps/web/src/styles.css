@@ -2077,6 +2077,12 @@ a {
   color: #b91c1c;
 }
 
+.composer-voice-pad.is-cancel-armed {
+  border-color: rgba(190, 24, 93, 0.86);
+  background: rgba(255, 228, 230, 0.98);
+  color: #9f1239;
+}
+
 .composer-voice-pad.is-pending {
   border-color: rgba(14, 116, 144, 0.48);
   color: #0f766e;

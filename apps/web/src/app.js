@@ -24,7 +24,7 @@ import { findCollectionByMessageId } from "./collectionDedup.js";
 import { composerVoiceRecordAction } from "./composerActions.js";
 import { createFailedVoiceUploadStorage } from "./failedVoiceUploadStorage.js";
 import { formatVoiceDuration, isRecordableVoiceDuration, shouldAutoPlayIncomingVoice } from "./voiceMessage.js";
-import { recordedVoiceExtension, shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
+import { recordedVoiceExtension, shouldCancelVoiceRecording, shouldSendVoiceMessage, voicePadEventAction, voicePadReleaseAction } from "./voiceRecording.js";
 import { isConversationPreviewEnabled, shouldCollapseComposerToolsAfterSend } from "./chatPreferenceBehavior.js?v=20260725-chat-settings-behavior-v1";
 import { buildContactCardPayload } from "./contactCard.js";
 import { editorKeyAction } from "./editorKeyAction.js";
@@ -155,6 +155,8 @@ const state = {
   voiceRecordingPending: false,
   voiceRecordingConversationId: null,
   voicePointerId: null,
+  voicePointerStartY: null,
+  voiceRecordingCancelArmed: false,
   voiceRecordingTimer: null,
   activeVoiceAudio: null,
   activeVoiceMessageId: null,
@@ -267,6 +269,11 @@ async function init() {
 function bindVoiceRecordingLifecycle() {
   window.addEventListener("beforeunload", cancelVoiceRecording);
   window.addEventListener("pagehide", cancelVoiceRecording);
+  window.addEventListener("keydown", event => {
+    if (event.key === "Escape" && (state.voiceRecording || state.voiceRecordingPending)) {
+      cancelVoiceRecording();
+    }
+  });
 }
 
 async function recoverStaleAppShell() {
@@ -1699,7 +1706,7 @@ function renderChatPane(conv) {
           <form class="composer ${state.voiceMode ? "voice-mode" : "text-mode"}" id="composer">
             <button class="icon-btn composer-mode-btn ${state.voiceMode ? "active" : ""}" type="button" data-action="voice" title="${state.voiceMode ? "切换输入" : "语音"}" ${blockedReason ? "disabled" : ""}>${state.voiceMode ? "⌨" : icons.mic}</button>
             <div class="composer-input-stack">
-              ${state.voiceMode ? `<button class="ghost-btn composer-voice-pad ${state.voiceRecording ? "is-recording" : ""} ${state.voiceRecordingPending ? "is-pending" : ""}" type="button" data-action="${composerVoiceRecordAction()}" ${blockedReason ? "disabled" : ""} aria-pressed="${state.voiceRecording}" aria-busy="${state.voiceRecordingPending}"><span class="voice-dot"></span><span data-voice-recording-label>${escapeHTML(voiceRecordingLabel())}</span></button>` : `<textarea class="editor" id="editor" placeholder="${blockedReason ? escapeAttr(blockedReason) : "输入消息"}" ${blockedReason ? "disabled" : ""} ${state.pendingEditorAutofocus && !blockedReason ? "autofocus" : ""}>${escapeHTML(getCurrentDraftText())}</textarea>`}
+              ${state.voiceMode ? `<button class="ghost-btn composer-voice-pad ${state.voiceRecording ? "is-recording" : ""} ${state.voiceRecordingPending ? "is-pending" : ""} ${state.voiceRecordingCancelArmed ? "is-cancel-armed" : ""}" type="button" data-action="${composerVoiceRecordAction()}" ${blockedReason ? "disabled" : ""} aria-pressed="${state.voiceRecording}" aria-busy="${state.voiceRecordingPending}"><span class="voice-dot"></span><span data-voice-recording-label>${escapeHTML(voiceRecordingLabel())}</span></button>` : `<textarea class="editor" id="editor" placeholder="${blockedReason ? escapeAttr(blockedReason) : "输入消息"}" ${blockedReason ? "disabled" : ""} ${state.pendingEditorAutofocus && !blockedReason ? "autofocus" : ""}>${escapeHTML(getCurrentDraftText())}</textarea>`}
             </div>
             <div class="composer-tools">
               <button class="icon-btn composer-tool-btn" type="button" data-action="mention" title="提及成员" ${blockedReason ? "disabled" : ""}>@</button>
@@ -5180,6 +5187,7 @@ async function sendSynthetic(type) {
 
 function voiceRecordingLabel() {
   if (state.voiceRecordingPending) return "正在请求麦克风权限…";
+  if (state.voiceRecordingCancelArmed) return "松开取消";
   if (!state.voiceRecording) return "按住录音";
   const elapsedSeconds = (Date.now() - state.voiceStartedAt) / 1000;
   return `${formatVoiceDuration(elapsedSeconds)} 松开发送，移出取消`;
@@ -5192,6 +5200,7 @@ function refreshVoiceRecordingLabel() {
   if (!pad) return;
   pad.classList.toggle("is-recording", state.voiceRecording);
   pad.classList.toggle("is-pending", state.voiceRecordingPending);
+  pad.classList.toggle("is-cancel-armed", state.voiceRecordingCancelArmed);
   pad.setAttribute("aria-pressed", String(state.voiceRecording));
   pad.setAttribute("aria-busy", String(state.voiceRecordingPending));
 }
@@ -5214,6 +5223,8 @@ function resetVoiceRecordingState() {
   state.voiceRecordingPending = false;
   state.voiceRecordingConversationId = null;
   state.voicePointerId = null;
+  state.voicePointerStartY = null;
+  state.voiceRecordingCancelArmed = false;
 }
 
 function cancelVoiceRecording() {
@@ -5287,16 +5298,41 @@ function stopVoiceRecording(pointerId) {
   if (recorder?.state === "recording") recorder.stop();
 }
 
+function releaseVoiceRecording(pointerId) {
+  if (state.voicePointerId !== pointerId) return;
+  const action = voicePadReleaseAction({
+    isCancelArmed: state.voiceRecordingCancelArmed,
+    isRecording: state.voiceRecording,
+    isPending: state.voiceRecordingPending
+  });
+  if (action === "cancel") cancelVoiceRecording();
+  if (action === "stop" || action === "cancel-pending") stopVoiceRecording(pointerId);
+}
+
 function bindVoicePadEvents() {
   const pad = document.querySelector(".composer-voice-pad");
   if (pad) {
     pad.addEventListener("pointerdown", event => {
       event.preventDefault();
       if (voicePadEventAction({ type: event.type }) === "start") {
+        state.voicePointerStartY = event.clientY;
+        state.voiceRecordingCancelArmed = false;
         void startVoiceRecording(event.pointerId);
       }
     });
-    ["pointerup", "pointercancel", "pointerleave"].forEach(type => {
+    pad.addEventListener("pointermove", event => {
+      if (state.voicePointerId !== event.pointerId || !state.voiceRecording) return;
+      const isCancelArmed = shouldCancelVoiceRecording({
+        startY: state.voicePointerStartY,
+        currentY: event.clientY
+      });
+      if (isCancelArmed !== state.voiceRecordingCancelArmed) {
+        state.voiceRecordingCancelArmed = isCancelArmed;
+        refreshVoiceRecordingLabel();
+      }
+    });
+    pad.addEventListener("pointerup", event => releaseVoiceRecording(event.pointerId));
+    ["pointercancel", "pointerleave"].forEach(type => {
       pad.addEventListener(type, event => {
         const action = voicePadEventAction({
           type,
@@ -5315,7 +5351,7 @@ function bindVoicePadEvents() {
     });
   }
   if (voicePointerLifecycleBound) return;
-  window.addEventListener("pointerup", event => stopVoiceRecording(event.pointerId));
+  window.addEventListener("pointerup", event => releaseVoiceRecording(event.pointerId));
   window.addEventListener("pointercancel", event => {
     if (state.voicePointerId === event.pointerId) cancelVoiceRecording();
   });

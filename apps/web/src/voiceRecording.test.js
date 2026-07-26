@@ -35,6 +35,36 @@ async function loadAppFunction(name, dependencies) {
   return new Function(...Object.keys(dependencies), `${source}; return ${name};`)(...Object.values(dependencies));
 }
 
+async function loadAppSource() {
+  return readFile(new URL("./app.js", import.meta.url), "utf8");
+}
+
+test("shows the cancellation instruction while an upward gesture is armed", async () => {
+  const voiceRecordingLabel = await loadAppFunction("voiceRecordingLabel", {
+    state: {
+      voiceRecordingCancelArmed: true,
+      voiceRecordingPending: false,
+      voiceRecording: false
+    }
+  });
+
+  assert.equal(voiceRecordingLabel(), "松开取消");
+});
+
+test("routes pointer movement and an armed release through voice cancellation helpers", async () => {
+  const appSource = await loadAppSource();
+
+  assert.match(appSource, /pointermove[\s\S]*shouldCancelVoiceRecording/);
+  assert.match(appSource, /voicePadReleaseAction\(\{[\s\S]*isCancelArmed:[\s\S]*\}\)/);
+  assert.match(appSource, /action === "cancel"\) cancelVoiceRecording\(\)/);
+});
+
+test("cancels active voice operations when Escape is pressed", async () => {
+  const appSource = await loadAppSource();
+
+  assert.match(appSource, /event\.key === "Escape"[\s\S]*voiceRecording[\s\S]*voiceRecordingPending[\s\S]*cancelVoiceRecording\(\)/);
+});
+
 test("routes a held pointer leaving the voice pad to cancel recording", () => {
   assert.equal(voicePadEventAction({ type: "pointerdown" }), "start");
   assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: true }), "cancel");
