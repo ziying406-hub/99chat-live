@@ -2224,6 +2224,7 @@ function renderRegularGroupMemberSettingsPane(conv) {
       <section class="section">
         ${settingKeys.has("search") ? settingLink("search", "搜索聊天记录", "关键词查找") : ""}
         ${settingKeys.has("clear-chat") ? settingButton("clear-chat", "清除聊天记录", "danger-btn inline") : ""}
+        ${settingKeys.has("leave-group") ? settingButton("leave-group", "退出群聊", "danger-btn inline") : ""}
       </section>
       <section class="section">
         ${settingKeys.has("report") ? settingLink("report", "检举", "提交违规原因") : ""}

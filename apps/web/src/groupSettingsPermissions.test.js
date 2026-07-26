@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import { adminGroupSettingKeys, canManageGroupSettings, canOpenGroupSidePage, regularGroupMemberSettingKeys } from "./groupSettingsPermissions.js";
@@ -73,4 +74,13 @@ test("regular group members only receive the member-safe conversation settings",
     "leave-group",
     "report"
   ]);
+});
+
+test("regular member settings render a leave-group action", () => {
+  const appSource = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+
+  assert.match(
+    appSource,
+    /function renderRegularGroupMemberSettingsPane\(conv\)[\s\S]*settingKeys\.has\("leave-group"\)/
+  );
 });
