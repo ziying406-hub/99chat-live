@@ -452,6 +452,7 @@ async function loadData() {
         loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
         loadConversationGroup(state.selectedConversationId)
       ]);
+      void acknowledgeConversationRead(state.selectedConversationId);
     }
   } catch (error) {
     if (isNetworkFailure(error)) {
