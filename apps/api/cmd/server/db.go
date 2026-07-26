@@ -1063,12 +1063,10 @@ func (pg *PostgresStore) loadVisibleConversations(ctx context.Context, userID st
 			if !ok {
 				continue
 			}
-			contact, ok := contactsByID[targetID]
-			if !ok {
-				continue
+			if contact, ok := contactsByID[targetID]; ok {
+				conversation.Title = contact.Nickname
+				conversation.Avatar = contact.Avatar
 			}
-			conversation.Title = contact.Nickname
-			conversation.Avatar = contact.Avatar
 			items = append(items, conversation)
 		case "group":
 			groupID := groupIDFromConversationID(conversation.ID)
@@ -3401,7 +3399,7 @@ func (s *Store) contactByID(ctx context.Context, id string) (Contact, bool, erro
 func (s *Store) contactByIDForUser(ctx context.Context, userID, id string) (Contact, bool, error) {
 	s.mu.RLock()
 	for _, contact := range s.contacts {
-		if contact.ID == id {
+		if contact.ID == id && s.contactVisibleToUserLocked(contact, userID) {
 			s.mu.RUnlock()
 			return contact, true, nil
 		}
@@ -3441,7 +3439,7 @@ func (s *Store) persistUser(ctx context.Context, user User) error {
 func (s *Store) updateContact(ctx context.Context, userID, contactID, remark string, tags []string) (Contact, error) {
 	s.mu.Lock()
 	for i := range s.contacts {
-		if s.contacts[i].ID == contactID {
+		if s.contacts[i].ID == contactID && s.contactVisibleToUserLocked(s.contacts[i], userID) {
 			s.contacts[i].Remark = remark
 			s.contacts[i].Tags = append([]string(nil), tags...)
 			s.mu.Unlock()
@@ -3469,6 +3467,37 @@ func (s *Store) updateContact(ctx context.Context, userID, contactID, remark str
 		}
 	}
 	return Contact{}, errNotFound
+}
+
+func (s *Store) removeContact(ctx context.Context, userID, contactID string) (Contact, error) {
+	contact, found, err := s.contactByIDForUser(ctx, userID, contactID)
+	if err != nil {
+		return Contact{}, err
+	}
+	if !found {
+		return Contact{}, errNotFound
+	}
+	if s.pg != nil {
+		if _, err := s.pg.pool.Exec(ctx, `DELETE FROM contacts
+			WHERE (owner_user_id = $1 AND contact_user_id = $2)
+			   OR (owner_user_id = $2 AND contact_user_id = $1)`, userID, contactID); err != nil {
+			return Contact{}, err
+		}
+		return contact, nil
+	}
+	s.mu.Lock()
+	for i := range s.requests {
+		request := &s.requests[i]
+		if request.Status != "accepted" {
+			continue
+		}
+		if (request.FromUserID == userID && request.ToUserID == contactID) ||
+			(request.FromUserID == contactID && request.ToUserID == userID) {
+			request.Status = "removed"
+		}
+	}
+	s.mu.Unlock()
+	return contact, nil
 }
 
 func (s *Store) persistMessage(ctx context.Context, msg Message) error {

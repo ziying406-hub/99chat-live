@@ -2406,6 +2406,17 @@ func (s *Store) conversationRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "blacklist check failed")
 			return
 		}
+		if targetID, ok := privateConversationTargetID(conversationID, current.ID); ok {
+			friends, err := s.usersAreFriends(r.Context(), current.ID, targetID)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "friendship check failed")
+				return
+			}
+			if !friends {
+				writeError(w, http.StatusForbidden, "not friends")
+				return
+			}
+		}
 		if blocked {
 			writeError(w, http.StatusForbidden, "target blocked messages")
 			return
@@ -3017,6 +3028,26 @@ func (s *Store) contactRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, contact)
+	case http.MethodDelete:
+		current := s.currentUser(r)
+		contact, err := s.removeContact(r.Context(), current.ID, id)
+		if err != nil {
+			if errors.Is(err, errNotFound) {
+				writeError(w, http.StatusNotFound, "contact not found")
+				return
+			}
+			writeError(w, http.StatusInternalServerError, "contact removal failed")
+			return
+		}
+		s.hub.Broadcast(friendRequestRealtimeEvent("friend.removed", FriendRequest{
+			ID:         fmt.Sprintf("friend-removed-%d", time.Now().UnixNano()),
+			User:       contact,
+			Status:     "removed",
+			Direction:  "outgoing",
+			FromUserID: current.ID,
+			ToUserID:   contact.ID,
+		}, contactPointer(current.AsContact())))
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -4338,6 +4369,11 @@ func (s *Store) blocksPrivateMessage(ctx context.Context, conversationID, sender
 		return false, nil
 	}
 	return s.userBlocksContact(ctx, targetID, senderID)
+}
+
+func (s *Store) usersAreFriends(ctx context.Context, userID, contactID string) (bool, error) {
+	_, found, err := s.contactByIDForUser(ctx, userID, contactID)
+	return found, err
 }
 
 func privateConversationTargetID(conversationID, senderID string) (string, bool) {

@@ -6248,3 +6248,110 @@ func TestPrivateConversationGetsSequentialPublicChatID(t *testing.T) {
 		t.Fatalf("unexpected private conversation chat IDs: %#v", store.conversations)
 	}
 }
+
+func TestDeleteContactRemovesBothUsersAndPreservesMessages(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	first := registerTestUser(t, mux, "+60", "66070901", "Chat66Delete1", "删除好友甲")
+	second := registerTestUser(t, mux, "+60", "66070902", "Chat66Delete2", "删除好友乙")
+	request := httptest.NewRequest(http.MethodPost, "/api/friend-requests", bytes.NewBufferString(`{"chatId":"`+second.User.ChatID+`","greeting":"hi"}`))
+	request.Header.Set("Authorization", "Bearer "+first.Token)
+	requestRec := httptest.NewRecorder()
+	mux.ServeHTTP(requestRec, request)
+	if requestRec.Code != http.StatusCreated {
+		t.Fatalf("create friendship: %d %s", requestRec.Code, requestRec.Body.String())
+	}
+	var created FriendRequest
+	if err := json.NewDecoder(requestRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode friendship request: %v", err)
+	}
+	accept := httptest.NewRequest(http.MethodPatch, "/api/friend-requests/"+created.ID, bytes.NewBufferString(`{"status":"accepted"}`))
+	accept.Header.Set("Authorization", "Bearer "+second.Token)
+	acceptRec := httptest.NewRecorder()
+	mux.ServeHTTP(acceptRec, accept)
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("accept friendship: %d %s", acceptRec.Code, acceptRec.Body.String())
+	}
+
+	conversationID := canonicalPrivateConversationID(first.User.ID, second.User.ID)
+	send := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conversationID+"/messages", bytes.NewBufferString(`{"type":"text","body":"before removal"}`))
+	send.Header.Set("Authorization", "Bearer "+first.Token)
+	sendRec := httptest.NewRecorder()
+	mux.ServeHTTP(sendRec, send)
+	if sendRec.Code != http.StatusCreated {
+		t.Fatalf("send before removal: %d %s", sendRec.Code, sendRec.Body.String())
+	}
+
+	remove := httptest.NewRequest(http.MethodDelete, "/api/contacts/"+second.User.ID, nil)
+	remove.Header.Set("Authorization", "Bearer "+first.Token)
+	removeRec := httptest.NewRecorder()
+	mux.ServeHTTP(removeRec, remove)
+	if removeRec.Code != http.StatusNoContent {
+		t.Fatalf("remove contact: %d %s", removeRec.Code, removeRec.Body.String())
+	}
+
+	for _, token := range []string{first.Token, second.Token} {
+		contactsReq := httptest.NewRequest(http.MethodGet, "/api/contacts", nil)
+		contactsReq.Header.Set("Authorization", "Bearer "+token)
+		contactsRec := httptest.NewRecorder()
+		mux.ServeHTTP(contactsRec, contactsReq)
+		var contacts []Contact
+		if err := json.NewDecoder(contactsRec.Body).Decode(&contacts); err != nil {
+			t.Fatalf("decode contacts: %v", err)
+		}
+		if len(contacts) != 0 {
+			t.Fatalf("contacts after removal = %+v", contacts)
+		}
+	}
+
+	history := httptest.NewRequest(http.MethodGet, "/api/conversations/"+conversationID+"/messages", nil)
+	history.Header.Set("Authorization", "Bearer "+second.Token)
+	historyRec := httptest.NewRecorder()
+	mux.ServeHTTP(historyRec, history)
+	if historyRec.Code != http.StatusOK || !strings.Contains(historyRec.Body.String(), "before removal") {
+		t.Fatalf("history after removal: %d %s", historyRec.Code, historyRec.Body.String())
+	}
+}
+
+func TestPrivateMessageRequiresCurrentFriendship(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	first := registerTestUser(t, mux, "+60", "66070911", "Chat66Former1", "前好友甲")
+	second := registerTestUser(t, mux, "+60", "66070912", "Chat66Former2", "前好友乙")
+	request := httptest.NewRequest(http.MethodPost, "/api/friend-requests", bytes.NewBufferString(`{"chatId":"`+second.User.ChatID+`","greeting":"hi"}`))
+	request.Header.Set("Authorization", "Bearer "+first.Token)
+	requestRec := httptest.NewRecorder()
+	mux.ServeHTTP(requestRec, request)
+	if requestRec.Code != http.StatusCreated {
+		t.Fatalf("create friendship: %d %s", requestRec.Code, requestRec.Body.String())
+	}
+	var created FriendRequest
+	if err := json.NewDecoder(requestRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode friendship request: %v", err)
+	}
+	accept := httptest.NewRequest(http.MethodPatch, "/api/friend-requests/"+created.ID, bytes.NewBufferString(`{"status":"accepted"}`))
+	accept.Header.Set("Authorization", "Bearer "+second.Token)
+	acceptRec := httptest.NewRecorder()
+	mux.ServeHTTP(acceptRec, accept)
+	if acceptRec.Code != http.StatusOK {
+		t.Fatalf("accept friendship: %d %s", acceptRec.Code, acceptRec.Body.String())
+	}
+
+	remove := httptest.NewRequest(http.MethodDelete, "/api/contacts/"+second.User.ID, nil)
+	remove.Header.Set("Authorization", "Bearer "+first.Token)
+	removeRec := httptest.NewRecorder()
+	mux.ServeHTTP(removeRec, remove)
+
+	conversationID := canonicalPrivateConversationID(first.User.ID, second.User.ID)
+	send := httptest.NewRequest(http.MethodPost, "/api/conversations/"+conversationID+"/messages", bytes.NewBufferString(`{"type":"text","body":"not allowed"}`))
+	send.Header.Set("Authorization", "Bearer "+second.Token)
+	sendRec := httptest.NewRecorder()
+	mux.ServeHTTP(sendRec, send)
+	if sendRec.Code != http.StatusForbidden || !strings.Contains(sendRec.Body.String(), "not friends") {
+		t.Fatalf("former friend post: %d %s", sendRec.Code, sendRec.Body.String())
+	}
+}
