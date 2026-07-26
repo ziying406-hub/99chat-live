@@ -10143,8 +10143,7 @@ function canAcknowledgeConversationRead(conversationId) {
     state.section === "messages" &&
     state.selectedConversationId === conversationId &&
     !state.sidePage &&
-    document.visibilityState === "visible" &&
-    (typeof document.hasFocus !== "function" || document.hasFocus())
+    document.visibilityState === "visible"
   );
 }
 
