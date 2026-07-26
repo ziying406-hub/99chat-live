@@ -397,6 +397,7 @@ async function openConversation(conversationId, { push = false } = {}) {
   const { alreadyOpen, token } = beginConversationSelection(conversationId, { push });
   if (alreadyOpen) {
     acknowledgeUnreadBoundaryAtBottom();
+    void acknowledgeConversationRead(conversationId);
     return;
   }
   await Promise.all([
