@@ -45,6 +45,53 @@ test("captures the active pointer before starting voice recording", async () => 
   assert.match(appSource, /pointerdown[\s\S]*?pad\.setPointerCapture\(event\.pointerId\)[\s\S]*?startVoiceRecording\(event\.pointerId\)/);
 });
 
+test("tracks cancellation gestures while recording or microphone permission is pending", async () => {
+  const appSource = await loadAppSource();
+
+  assert.match(appSource, /state\.voicePointerId !== event\.pointerId \|\| \(!state\.voiceRecording && !state\.voiceRecordingPending\)/);
+});
+
+test("shows an armed cancellation label before the pending-permission label", async () => {
+  const appSource = await loadAppSource();
+  const cancelLabelOffset = appSource.indexOf('if (state.voiceRecordingCancelArmed) return "松开取消";');
+  const pendingLabelOffset = appSource.indexOf('if (state.voiceRecordingPending) return "正在请求麦克风权限…";');
+
+  assert.notEqual(cancelLabelOffset, -1, "the cancellation label check should exist");
+  assert.notEqual(pendingLabelOffset, -1, "the pending-permission label check should exist");
+  assert.ok(cancelLabelOffset < pendingLabelOffset, "the cancellation label must take priority");
+});
+
+test("ignores a second pointerdown before voice pad pointer capture or state writes", async () => {
+  const appSource = await loadAppSource();
+  const pointerdownStart = appSource.indexOf('pad.addEventListener("pointerdown", event => {');
+  const pointerdownEnd = appSource.indexOf('    pad.addEventListener("pointermove"', pointerdownStart);
+  const pointerdownSource = appSource.slice(pointerdownStart, pointerdownEnd);
+
+  assert.notEqual(pointerdownStart, -1, "the voice pad pointerdown handler should exist");
+  assert.match(pointerdownSource, /if \(state\.voicePointerId !== null \|\| state\.voiceRecording \|\| state\.voiceRecordingPending\) return;/);
+  assert.ok(
+    pointerdownSource.indexOf('if (state.voicePointerId !== null || state.voiceRecording || state.voiceRecordingPending) return;') < pointerdownSource.indexOf('pad.setPointerCapture(event.pointerId)'),
+    "the active-operation guard must run before pointer capture"
+  );
+});
+
+test("ignores pointercancel events from non-active voice pad pointers", async () => {
+  const appSource = await loadAppSource();
+  const pointercancelStart = appSource.indexOf('["pointercancel"].forEach(type => {');
+  const pointercancelEnd = appSource.indexOf('    pad.addEventListener("click"', pointercancelStart);
+  const pointercancelSource = appSource.slice(pointercancelStart, pointercancelEnd);
+
+  assert.notEqual(pointercancelStart, -1, "the voice pad pointercancel handler should exist");
+  assert.match(pointercancelSource, /if \(event\.pointerId !== state\.voicePointerId\) return;/);
+});
+
+test("uses upward-slide wording for the normal voice recording instruction", async () => {
+  const appSource = await loadAppSource();
+
+  assert.match(appSource, /松开发送，上滑取消/);
+  assert.doesNotMatch(appSource, /松开发送，移出取消/);
+});
+
 test("does not include pointerleave in the voice pad immediate-cancellation list", async () => {
   const appSource = await loadAppSource();
 

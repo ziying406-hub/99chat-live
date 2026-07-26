@@ -5186,11 +5186,11 @@ async function sendSynthetic(type) {
 }
 
 function voiceRecordingLabel() {
-  if (state.voiceRecordingPending) return "正在请求麦克风权限…";
   if (state.voiceRecordingCancelArmed) return "松开取消";
+  if (state.voiceRecordingPending) return "正在请求麦克风权限…";
   if (!state.voiceRecording) return "按住录音";
   const elapsedSeconds = (Date.now() - state.voiceStartedAt) / 1000;
-  return `${formatVoiceDuration(elapsedSeconds)} 松开发送，移出取消`;
+  return `${formatVoiceDuration(elapsedSeconds)} 松开发送，上滑取消`;
 }
 
 function refreshVoiceRecordingLabel() {
@@ -5315,6 +5315,7 @@ function bindVoicePadEvents() {
     pad.addEventListener("pointerdown", event => {
       event.preventDefault();
       if (voicePadEventAction({ type: event.type }) === "start") {
+        if (state.voicePointerId !== null || state.voiceRecording || state.voiceRecordingPending) return;
         if (typeof pad.setPointerCapture === "function") pad.setPointerCapture(event.pointerId);
         state.voicePointerStartY = event.clientY;
         state.voiceRecordingCancelArmed = false;
@@ -5322,7 +5323,7 @@ function bindVoicePadEvents() {
       }
     });
     pad.addEventListener("pointermove", event => {
-      if (state.voicePointerId !== event.pointerId || !state.voiceRecording) return;
+      if (state.voicePointerId !== event.pointerId || (!state.voiceRecording && !state.voiceRecordingPending)) return;
       const isCancelArmed = shouldCancelVoiceRecording({
         startY: state.voicePointerStartY,
         currentY: event.clientY
@@ -5335,6 +5336,7 @@ function bindVoicePadEvents() {
     pad.addEventListener("pointerup", event => releaseVoiceRecording(event.pointerId));
     ["pointercancel"].forEach(type => {
       pad.addEventListener(type, event => {
+        if (event.pointerId !== state.voicePointerId) return;
         const action = voicePadEventAction({
           type,
           isRecording: state.voiceRecording,
