@@ -402,6 +402,10 @@ async function openConversation(conversationId, { push = false } = {}) {
   ]);
   if (!isCurrentConversationSelection(conversationId, token)) return;
   render();
+  // Opening an existing unread conversation must advance its shared read pointer.
+  // Realtime messages already use scheduleRealtimeReadReceipt, but historical
+  // messages loaded here otherwise remain unread to the sender.
+  void acknowledgeConversationRead(conversationId);
 }
 
 async function loadData() {
