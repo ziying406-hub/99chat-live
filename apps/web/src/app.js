@@ -5979,11 +5979,11 @@ async function removeFriendFromConversation() {
       state.data.contacts = state.data.contacts.filter(contact => contact.id !== contactId);
     } else {
       await api(`/api/contacts/${contactId}`, { method: "DELETE" });
-      await refreshFriendRealtimeState();
     }
     state.selectedConversationId = null;
     state.sidePage = null;
     syncConversationPath(null);
+    if (!state.useMock) await refreshFriendRealtimeState();
     toast("已删除好友");
     render();
   } catch (error) {
