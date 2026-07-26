@@ -70,6 +70,7 @@ test("regular group members only receive the member-safe conversation settings",
     "pin",
     "search",
     "clear-chat",
+    "leave-group",
     "report"
   ]);
 });

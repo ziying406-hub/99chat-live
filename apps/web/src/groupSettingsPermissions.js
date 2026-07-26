@@ -55,6 +55,7 @@ const REGULAR_GROUP_MEMBER_SETTING_KEYS = [
   "pin",
   "search",
   "clear-chat",
+  "leave-group",
   "report"
 ];
 
