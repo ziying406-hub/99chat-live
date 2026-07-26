@@ -35,6 +35,7 @@ const ADMIN_GROUP_SETTING_KEYS = [
   "media",
   "search",
   "clear-chat",
+  "leave-group",
   "mute",
   "pin",
   "report"

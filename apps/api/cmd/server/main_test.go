@@ -55,6 +55,32 @@ func TestUniqueGroupChatIDStartsAtSequentialPublicNumber(t *testing.T) {
 	}
 }
 
+func TestGroupsRouteReturnsTheCurrentMembersNickname(t *testing.T) {
+	store := seedStore()
+	store.users["u2"] = User{ID: "u2", Nickname: "管理员昵称"}
+	group := store.groups["21444"]
+	group.MyNickname = "群主昵称"
+	group.Members = append(group.Members, Member{UserID: "u2", Nickname: "管理员昵称", Role: "admin"})
+	store.groups[group.ID] = group
+
+	token := store.issueToken("u2")
+	req := httptest.NewRequest(http.MethodGet, "/api/groups", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	store.groupsRoute(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected groups 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var groups []Group
+	if err := json.NewDecoder(rec.Body).Decode(&groups); err != nil {
+		t.Fatalf("decode groups: %v", err)
+	}
+	if len(groups) != 1 || groups[0].MyNickname != "管理员昵称" {
+		t.Fatalf("expected current member nickname, got %+v", groups)
+	}
+}
+
 func TestProfileAvatarUpdateForGroupOwnerDoesNotBlock(t *testing.T) {
 	store := seedStore()
 	store.groups["avatar-sync"] = Group{

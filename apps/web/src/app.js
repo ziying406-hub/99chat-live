@@ -67,6 +67,7 @@ import { groupJoinReviewErrorMessage } from "./groupJoinReviewErrors.js";
 import { findPendingJoinRequest, groupJoinCode, groupJoinErrorMessage, groupJoinLinkState, pendingGroupJoinRequestCount } from "./groupJoinLink.js";
 import { groupMemberActionErrorMessage } from "./groupMemberActionErrors.js";
 import { canManageMember, memberStatusText } from "./groupMemberPermissions.js";
+import { groupNicknameForMember } from "./groupNickname.js";
 import { adminGroupSettingKeys, canManageGroupSettings, canOpenGroupSidePage, regularGroupMemberSettingKeys } from "./groupSettingsPermissions.js";
 import { isKnownSidePage } from "./sidePageRegistry.js";
 import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.js";
@@ -2201,6 +2202,7 @@ function renderAdminGroupSettingsPane(conv, group) {
       </section>
       <section class="section">
         ${settingKeys.has("clear-chat") ? settingButton("clear-chat", "清除聊天记录", "danger-btn inline") : ""}
+        ${settingKeys.has("leave-group") && canLeaveGroup(currentGroupMember(group)) ? settingButton("leave-group", "退出群聊", "danger-btn inline") : ""}
         ${settingKeys.has("mute") ? `<button class="setting-row setting-toggle-row" type="button" data-conversation-quick="mute"><span>消息免打扰</span><span class="switch ${conv.muted ? "on" : "off"}"></span></button>` : ""}
         ${settingKeys.has("pin") ? `<button class="setting-row setting-toggle-row" type="button" data-conversation-quick="pin"><span>置顶聊天</span><span class="switch ${conv.pinned ? "on" : "off"}"></span></button>` : ""}
         ${settingKeys.has("report") ? settingLink("report", "检举", "提交违规原因") : ""}
@@ -7911,8 +7913,7 @@ function groupNicknameForConversation(conversation) {
     if (explicitNickname) return explicitNickname;
     return state.user?.nickname || "你";
   }
-  const member = group?.members?.find(item => item.userId === state.user?.id);
-  return group?.myNickname || member?.nickname || state.user?.nickname || "你";
+  return groupNicknameForMember(group, state.user?.id, state.user?.nickname || "你");
 }
 
 function outgoingSenderName(conversationId = state.selectedConversationId) {

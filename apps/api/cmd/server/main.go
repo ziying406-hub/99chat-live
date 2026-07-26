@@ -3346,7 +3346,7 @@ func (s *Store) groupsRoute(w http.ResponseWriter, r *http.Request) {
 		groups := make([]Group, 0, len(s.groups))
 		for _, g := range s.groups {
 			if groupHasUser(g, current.ID) {
-				groups = append(groups, g)
+				groups = append(groups, groupForUser(g, current.ID))
 			}
 		}
 		s.mu.RUnlock()
@@ -3414,7 +3414,7 @@ func (s *Store) groupsRoute(w http.ResponseWriter, r *http.Request) {
 			group = updated
 		}
 		s.hub.Broadcast(map[string]any{"type": "group.member.updated", "conversationId": convID, "payload": group})
-		writeJSON(w, http.StatusCreated, group)
+		writeJSON(w, http.StatusCreated, groupForUser(group, current.ID))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -3490,7 +3490,7 @@ func (s *Store) groupRoute(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusNotFound, "group not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, group)
+		writeJSON(w, http.StatusOK, groupForUser(group, s.currentUser(r).ID))
 		return
 	}
 	if len(parts) == 2 && parts[1] == "members" {
@@ -3597,7 +3597,7 @@ func (s *Store) groupRoute(w http.ResponseWriter, r *http.Request) {
 				},
 			})
 		}
-		writeJSON(w, http.StatusOK, group)
+		writeJSON(w, http.StatusOK, groupForUser(group, current.ID))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -4248,6 +4248,16 @@ func (s *Store) groupForRead(groupID string) (Group, bool) {
 		}
 	}
 	return Group{}, false
+}
+
+func groupForUser(group Group, userID string) Group {
+	for _, member := range group.Members {
+		if member.UserID == userID && member.Nickname != "" {
+			group.MyNickname = member.Nickname
+			break
+		}
+	}
+	return group
 }
 
 func (s *Store) isGroupOwner(groupID, userID string) bool {

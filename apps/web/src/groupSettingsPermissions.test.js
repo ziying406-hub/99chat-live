@@ -55,6 +55,7 @@ test("admin settings match the supported management menu", () => {
     "media",
     "search",
     "clear-chat",
+    "leave-group",
     "mute",
     "pin",
     "report"
