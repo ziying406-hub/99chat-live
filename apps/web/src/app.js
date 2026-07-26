@@ -5315,6 +5315,7 @@ function bindVoicePadEvents() {
     pad.addEventListener("pointerdown", event => {
       event.preventDefault();
       if (voicePadEventAction({ type: event.type }) === "start") {
+        if (typeof pad.setPointerCapture === "function") pad.setPointerCapture(event.pointerId);
         state.voicePointerStartY = event.clientY;
         state.voiceRecordingCancelArmed = false;
         void startVoiceRecording(event.pointerId);
@@ -5332,7 +5333,7 @@ function bindVoicePadEvents() {
       }
     });
     pad.addEventListener("pointerup", event => releaseVoiceRecording(event.pointerId));
-    ["pointercancel", "pointerleave"].forEach(type => {
+    ["pointercancel"].forEach(type => {
       pad.addEventListener(type, event => {
         const action = voicePadEventAction({
           type,

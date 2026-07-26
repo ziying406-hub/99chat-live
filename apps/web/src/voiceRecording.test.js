@@ -39,6 +39,24 @@ async function loadAppSource() {
   return readFile(new URL("./app.js", import.meta.url), "utf8");
 }
 
+test("captures the active pointer before starting voice recording", async () => {
+  const appSource = await loadAppSource();
+
+  assert.match(appSource, /pointerdown[\s\S]*?pad\.setPointerCapture\(event\.pointerId\)[\s\S]*?startVoiceRecording\(event\.pointerId\)/);
+});
+
+test("does not include pointerleave in the voice pad immediate-cancellation list", async () => {
+  const appSource = await loadAppSource();
+
+  assert.doesNotMatch(appSource, /\["pointercancel", "pointerleave"\]\.forEach/);
+});
+
+test("keeps pointercancel in the voice pad immediate-cancellation list", async () => {
+  const appSource = await loadAppSource();
+
+  assert.match(appSource, /\["pointercancel"\]\.forEach/);
+});
+
 test("shows the cancellation instruction while an upward gesture is armed", async () => {
   const voiceRecordingLabel = await loadAppFunction("voiceRecordingLabel", {
     state: {
