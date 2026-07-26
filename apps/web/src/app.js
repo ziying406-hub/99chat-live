@@ -10563,6 +10563,7 @@ function flushUnreadBoundaryFocus() {
   requestAnimationFrame(() => {
     focusBoundary();
     requestAnimationFrame(focusBoundary);
+    setTimeout(focusBoundary, 120);
   });
 }
 
