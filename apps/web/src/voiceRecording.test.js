@@ -5,6 +5,18 @@ import { recordedVoiceExtension, shouldSendVoiceMessage, voicePadEventAction } f
 import { buildPendingMessage, replacePendingMessage } from "./pendingMessages.js";
 import { readFile } from "node:fs/promises";
 
+function findDeliveredVoiceForFailure(messages, conversationId, candidate) {
+  const attachment = candidate?.attachment || {};
+  return (messages || []).find(message =>
+    message.id !== candidate?.id &&
+    message.type === "voice" &&
+    message.conversationId === conversationId &&
+    String(message.senderId || "") === String(candidate?.senderId || "") &&
+    ((attachment.id && message.attachment?.id === attachment.id) ||
+      (attachment.url && message.attachment?.url === attachment.url))
+  );
+}
+
 async function loadAppFunction(name, dependencies) {
   const appSource = await readFile(new URL("./app.js", import.meta.url), "utf8");
   const start = appSource.indexOf(`async function ${name}(`) >= 0
@@ -187,6 +199,7 @@ test("replaces the pending voice message when realtime delivery arrives before p
     shouldSendVoiceMessage: () => true,
     buildPendingMessage,
     replacePendingMessage,
+    findDeliveredVoiceForFailure,
     persistOutgoingMessage: async () => {
       beginPersistence();
       return new Promise(resolve => { resolvePersistence = resolve; });
@@ -242,6 +255,7 @@ test("does not queue a retry when realtime delivery arrives before voice persist
     shouldSendVoiceMessage: () => true,
     buildPendingMessage,
     replacePendingMessage,
+    findDeliveredVoiceForFailure,
     persistOutgoingMessage: async () => {
       beginPersistence();
       return new Promise((resolve, reject) => { rejectPersistence = reject; });
@@ -432,6 +446,7 @@ test("does not recreate a failed retry when realtime delivery wins its persisten
   const retryFailedVoiceUpload = await loadAppFunction("retryFailedVoiceUpload", {
     state,
     replacePendingMessage,
+    findDeliveredVoiceForFailure,
     upsertConversationPreview: () => {},
     render: () => {},
     uploadFile: async () => ({ id: "file-1", url: "/uploads/voice.webm" }),

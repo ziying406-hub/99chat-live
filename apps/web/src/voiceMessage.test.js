@@ -99,7 +99,7 @@ test("renders a received persisted voice attachment as a player", async () => {
 test("passes the derived incoming flag into realtime voice autoplay", async () => {
   const appSource = await readFile(new URL("./app.js", import.meta.url), "utf8");
 
-  assert.match(appSource, /const incoming = String\(message\.senderId \|\| ""\) !== String\(state\.user\?\.id \|\| ""\)/);
+  assert.match(appSource, /const incoming = !isOwnRealtimeEcho\(/);
   assert.match(appSource, /shouldAutoPlayIncomingVoice\(\{[\s\S]*isIncoming: incoming/);
 });
 

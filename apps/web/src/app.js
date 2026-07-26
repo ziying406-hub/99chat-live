@@ -55,7 +55,7 @@ import { messagePreviewText, messageTypeLabel, quotePreviewText, searchPreviewTe
 import { messageMatchesQuery } from "./messageSearch.js";
 import { collectMentionIdsFromText, findMentionTargetByName, mentionCandidatesFromGroup } from "./mentionTargets.js?v=20260708-mention-menu-click";
 import { ALL_MEMBERS_MENTION_ID, groupAllMentionCandidate, groupAllMentionIds } from "./groupMentionAll.js";
-import { appendMessageOnce, buildPendingMessage, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
+import { appendMessageOnce, buildPendingMessage, isOwnRealtimeEcho, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
 import { shouldPlayUnreadSnapshotSound } from "./notificationSoundState.js";
@@ -73,7 +73,7 @@ import { buildGroupBotPatch, buildNewGroupBotPayload } from "./groupBotSettings.
 import { canLeaveGroup } from "./groupMembership.js";
 import { applyOwnerTransfer, canTransferOwner, ownerTransferConfirmText, ownerTransferErrorMessage, ownerTransferHint } from "./groupOwnerTransfer.js";
 import { sendErrorMessage } from "./messageSendErrors.js";
-import { applyMessageReadReceipt, canShowReadDetailAction, readStateControl, shouldAcknowledgeRealtimeMessage } from "./messageReadActions.js";
+import { applyMessageReadReceipt, canShowReadDetailAction, readStateControl, shouldAcknowledgeRealtimeMessage, shouldRenderReadReceipt } from "./messageReadActions.js";
 import { selectBatchConversationIds } from "./batchTargets.js";
 import { passwordActionTarget, validateForgotPasswordReset, validatePasswordChange } from "./passwordChange.js";
 import { chatReturnPath, profileCenterPath } from "./profileNavigation.js";
@@ -217,6 +217,9 @@ const state = {
 const mock = createMockData();
 let sidePageDelegateBound = false;
 let voicePointerLifecycleBound = false;
+const voicePlaybackUiState = new Map();
+let voicePlaybackUiFrame = 0;
+const pendingVoicePlaybackUiMessageIds = new Set();
 
 const icons = {
   chat: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M4 5.8C4 4.25 5.25 3 6.8 3h10.4C18.75 3 20 4.25 20 5.8v6.4c0 1.55-1.25 2.8-2.8 2.8H11l-5 4v-4.1A2.8 2.8 0 0 1 4 12.2V5.8Z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>`,
@@ -517,19 +520,25 @@ function renderConversationMessages(messages, conversationId) {
 }
 
 async function loadMessages(conversationId, { restoreUnreadBoundary = false } = {}) {
+  const previousMessages = state.data.messages[conversationId] || [];
   if (state.useMock) {
-    if (!state.data.messages[conversationId]) {
-      state.data.messages[conversationId] = restoreFailedVoiceMessages(conversationId, mock.messages[conversationId] || []);
-    }
+    const mergedMessages = mergeConversationMessagesWithLocalPending(
+      conversationId,
+      mock.messages[conversationId] || []
+    );
+    const changed = !areMessageArraysEqual(previousMessages, mergedMessages);
+    state.data.messages[conversationId] = mergedMessages;
     if (restoreUnreadBoundary) {
       delete state.unreadBoundaryByConversation[conversationId];
       scheduleScrollToBottom();
     }
-    return;
+    return changed;
   }
   // Loading messages is read-only. A separate request confirms that the visible conversation was read.
   const { data: messages, response } = await api(`/api/conversations/${conversationId}/messages`, { withResponseMeta: true });
-  state.data.messages[conversationId] = restoreFailedVoiceMessages(conversationId, messages);
+  const mergedMessages = mergeConversationMessagesWithLocalPending(conversationId, messages);
+  const changed = !areMessageArraysEqual(previousMessages, mergedMessages);
+  state.data.messages[conversationId] = mergedMessages;
   if (restoreUnreadBoundary) {
     const hasUnreadBoundary = updateUnreadBoundary(
       conversationId,
@@ -539,6 +548,7 @@ async function loadMessages(conversationId, { restoreUnreadBoundary = false } = 
     );
     if (!hasUnreadBoundary) scheduleScrollToBottom();
   }
+  return changed;
 }
 
 function scheduleRealtimeReadReceipt(conversationId, incoming) {
@@ -669,14 +679,54 @@ function startRealtimeHeartbeat(ws) {
 
 async function syncRealtimeSnapshot() {
   if (state.useMock || !state.data) return;
+  const previousDataSnapshot = snapshotConversationsAndGroups(state.data);
   const keepSelectedConversationAtBottom = shouldKeepRealtimeSnapshotAtBottom({
     wasAtBottom: messageListIsAtBottom()
   });
   await refreshGroupsAndConversations();
   observeUnreadSnapshotForSound();
-  if (state.selectedConversationId) await loadMessages(state.selectedConversationId);
+  const didMessagesChange = state.selectedConversationId ? await loadMessages(state.selectedConversationId) : false;
+  const nextDataSnapshot = snapshotConversationsAndGroups(state.data);
   if (keepSelectedConversationAtBottom) scheduleScrollToBottom();
-  render();
+  if (didMessagesChange || previousDataSnapshot !== nextDataSnapshot) {
+    render();
+  }
+}
+
+function snapshotConversationsAndGroups(data) {
+  return JSON.stringify({
+    conversations: data?.conversations || [],
+    groups: data?.groups || [],
+    directoryGroups: data?.directoryGroups || []
+  });
+}
+
+function mergeConversationMessagesWithLocalPending(conversationId, messages) {
+  const restoredServerMessages = restoreFailedVoiceMessages(conversationId, messages || []);
+  const localMessages = state.data.messages?.[conversationId] || [];
+  const restoredMessageIds = new Set(
+    (restoredServerMessages || []).map(message => String(message?.id || "").trim())
+  );
+  const localPendingMessages = (localMessages || []).filter(message => {
+    if (message?.sendStatus !== "sending" && message?.sendStatus !== "failed") return false;
+    const messageId = String(message?.id || "").trim();
+    if (!messageId) return false;
+    return !restoredMessageIds.has(messageId);
+  });
+  const nextMessages = [...restoredServerMessages];
+  const nextMessageIds = new Set(nextMessages.map(message => String(message?.id || "").trim()));
+  for (const message of localPendingMessages) {
+    const messageId = String(message?.id || "").trim();
+    if (!nextMessageIds.has(messageId)) {
+      nextMessages.push(message);
+      nextMessageIds.add(messageId);
+    }
+  }
+  return nextMessages;
+}
+
+function areMessageArraysEqual(previousMessages, nextMessages) {
+  return JSON.stringify(previousMessages || []) === JSON.stringify(nextMessages || []);
 }
 
 function connectRealtime() {
@@ -701,49 +751,61 @@ function connectRealtime() {
           currentUserId: state.user?.id,
           contactIds: (state.data.contacts || []).map(contact => contact.id)
         })) return;
-        const incoming = String(message.senderId || "") !== String(state.user?.id || "");
+        const incoming = !isOwnRealtimeEcho(
+          state.data.messages[id],
+          message,
+          state.user?.id
+        );
         const conv = ensureRealtimeConversation(id, message) || getConversation(id);
         const previousMessages = state.data.messages[id];
-        const nextMessages = appendMessageOnce(previousMessages, message);
-        const isNewRealtimeMessage = nextMessages !== previousMessages;
+        const nextMessages = incoming
+          ? appendMessageOnce(previousMessages, message)
+          : replacePendingMessage(previousMessages || [], message.id, message);
+        const isNewRealtimeMessage = !areMessageArraysEqual(previousMessages, nextMessages);
         state.data.messages[id] = nextMessages;
         // WebSocket delivery is at-least-once. The message list is already
         // de-duplicated by id, so keep unread counters and notifications on
         // that same path instead of counting a replay a second time.
         if (!isNewRealtimeMessage) return;
-        const keepUnreadBoundary = incoming && id === state.selectedConversationId && (
-          Boolean(state.unreadBoundaryByConversation[id]) || !messageListIsAtBottom()
-        );
-        if (keepUnreadBoundary) {
-          const boundary = state.unreadBoundaryByConversation[id];
-          if (boundary) {
-            boundary.count += 1;
-          } else {
-            state.unreadBoundaryByConversation[id] = { firstMessageId: message.id, count: 1 };
+        if (incoming) {
+          const keepUnreadBoundary = (
+            id === state.selectedConversationId && (Boolean(state.unreadBoundaryByConversation[id]) || !messageListIsAtBottom())
+          );
+          if (keepUnreadBoundary) {
+            const boundary = state.unreadBoundaryByConversation[id];
+            if (boundary) {
+              boundary.count += 1;
+            } else {
+              state.unreadBoundaryByConversation[id] = { firstMessageId: message.id, count: 1 };
+            }
           }
+          const mentionedMe = messageMentionsCurrentUser(message);
+          const shouldNotify = shouldNotifyConversation(conv) || mentionedMe;
+          upsertConversationPreview(id, message, {
+            bumpUnread: shouldNotify && (!canAcknowledgeConversationRead(id) || keepUnreadBoundary),
+            mentionMe: mentionedMe
+          });
+          state.lastObservedUnreadCount = effectiveUnreadCount(state.data.conversations || []);
+          if (mentionedMe) {
+            rememberMentionNotification(message.id);
+            toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
+          }
+          playInAppNotificationSound({ incoming, shouldNotify, mentionedMe });
+          showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
+          scheduleRealtimeReadReceipt(id, incoming);
+          if (id === state.selectedConversationId && !keepUnreadBoundary) scheduleScrollToBottom();
+          if (shouldAutoPlayIncomingVoice({
+            message,
+            isIncoming: incoming,
+            isCurrentConversation: isVoiceAutoplayConversationOpen(id),
+            isVisible: document.visibilityState === "visible",
+            enabled: ensureUserSettings().autoPlayVoice
+          })) playVoiceMessage(message);
+        } else {
+          upsertConversationPreview(id, message);
+          state.lastObservedUnreadCount = effectiveUnreadCount(state.data.conversations || []);
+          if (id === state.selectedConversationId) scheduleScrollToBottom();
         }
-        const mentionedMe = incoming && messageMentionsCurrentUser(message);
-        const shouldNotify = shouldNotifyConversation(conv) || mentionedMe;
-        upsertConversationPreview(id, message, {
-          bumpUnread: shouldNotify && incoming && (!canAcknowledgeConversationRead(id) || keepUnreadBoundary),
-          mentionMe: mentionedMe
-        });
-        state.lastObservedUnreadCount = effectiveUnreadCount(state.data.conversations || []);
-        if (mentionedMe) {
-          rememberMentionNotification(message.id);
-          toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
-        }
-        playInAppNotificationSound({ incoming, shouldNotify, mentionedMe });
-        showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
-        scheduleRealtimeReadReceipt(id, incoming);
-        if (id === state.selectedConversationId && !keepUnreadBoundary) scheduleScrollToBottom();
-        if (shouldAutoPlayIncomingVoice({
-          message,
-          isIncoming: incoming,
-          isCurrentConversation: isVoiceAutoplayConversationOpen(id),
-          isVisible: document.visibilityState === "visible",
-          enabled: ensureUserSettings().autoPlayVoice
-        })) playVoiceMessage(message);
         render();
       }
       if (envelope.type === "message.mentioned") {
@@ -763,18 +825,32 @@ function connectRealtime() {
       if (envelope.type === "message.read") {
         const id = envelope.conversationId;
         if (id) {
+          const previousMessages = state.data.messages[id];
+          const wasUnread = Boolean(
+            state.unreadBoundaryByConversation[id] ||
+            getConversation(id)?.unread ||
+            getConversation(id)?.mentionedMe
+          );
           const keepSelectedConversationAtBottom =
             id === state.selectedConversationId &&
             (state.readAcknowledgementInFlight.has(id) || messageListIsAtBottom());
-          if (state.data.messages[id]) {
-            state.data.messages[id] = applyMessageReadReceipt(state.data.messages[id], envelope.payload);
+          if (previousMessages) {
+            state.data.messages[id] = applyMessageReadReceipt(previousMessages, envelope.payload);
           }
+          let unreadChanged = false;
           if (String(envelope.payload?.userId || "") === String(state.user?.id || "")) {
             markConversationRead(id);
             delete state.unreadBoundaryByConversation[id];
+            unreadChanged = wasUnread;
           }
-          if (keepSelectedConversationAtBottom) scheduleScrollToBottom();
-          render();
+          if (shouldRenderReadReceipt({
+            previousMessages,
+            nextMessages: state.data.messages[id],
+            unreadChanged
+          })) {
+            if (keepSelectedConversationAtBottom) scheduleScrollToBottom();
+            render();
+          }
         }
       }
       if (envelope.type === "group.join.requested") {
@@ -5251,9 +5327,27 @@ function isVoiceAutoplayConversationOpen(conversationId) {
 }
 
 function syncVoicePlaybackUI(messageId) {
-  if (typeof document === "undefined" || !messageId) return;
-  const control = [...document.querySelectorAll("[data-play-voice]")]
-    .find(element => element.dataset.playVoice === messageId);
+  if (!messageId) return;
+  pendingVoicePlaybackUiMessageIds.add(messageId);
+  if (voicePlaybackUiFrame) return;
+  voicePlaybackUiFrame = window.requestAnimationFrame(() => {
+    voicePlaybackUiFrame = 0;
+    const messageIds = [...pendingVoicePlaybackUiMessageIds];
+    pendingVoicePlaybackUiMessageIds.clear();
+    for (const id of messageIds) {
+      syncVoicePlaybackUIFrame(id);
+    }
+  });
+}
+
+function syncVoicePlaybackUIFrame(messageId) {
+  if (typeof document === "undefined") return;
+  const escapedMessageId = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(messageId)
+    : messageId;
+  const control = document.querySelector(`[data-play-voice="${escapedMessageId}"]`)
+    ?? [...document.querySelectorAll("[data-play-voice]")]
+      .find(element => element.dataset.playVoice === messageId);
   if (!control) return;
   const isActive = state.activeVoiceMessageId === messageId;
   const playing = isActive && state.activeVoicePlaying;
@@ -5263,16 +5357,50 @@ function syncVoicePlaybackUI(messageId) {
   const percent = duration > 0 ? Math.min(100, (progress / duration) * 100) : 0;
   const current = formatVoiceDuration(progress);
   const total = formatVoiceDuration(duration);
+  const roundedPercent = `${Math.round(percent)}%`;
+  const iconText = playing ? "Ⅱ" : "▶";
+  const ariaLabel = `${playing ? "暂停" : "播放"}语音 ${current} / ${total}`;
+  const nextState = `
+    ${playing ? 1 : 0}|${total}|${current}|${roundedPercent}|${iconText}
+  `;
+  if (voicePlaybackUiState.get(messageId) === nextState) return;
+  voicePlaybackUiState.set(messageId, nextState);
 
   control.classList.toggle("is-playing", playing);
   control.setAttribute("aria-pressed", String(playing));
-  control.setAttribute("aria-label", `${playing ? "暂停" : "播放"}语音 ${current} / ${total}`);
+  control.setAttribute("aria-label", ariaLabel);
   const icon = control.querySelector(".voice-message-icon");
-  if (icon) icon.textContent = playing ? "Ⅱ" : "▶";
+  if (icon) icon.textContent = iconText;
   const timing = control.querySelector(".voice-message-timing");
   if (timing) timing.textContent = `${current} / ${total}`;
   const progressBar = control.querySelector(".voice-message-progress > span");
-  if (progressBar) progressBar.style.width = `${percent}%`;
+  if (progressBar) progressBar.style.width = roundedPercent;
+}
+
+function voiceOperationId(value) {
+  return String(value?.operationId || value?.retryPayload?.operationId || "").trim();
+}
+
+function findDeliveredVoiceForFailure(messages, conversationId, candidate) {
+  if (!Array.isArray(messages) || !candidate) return undefined;
+  const candidateConversationId = String(candidate.conversationId || conversationId || "").trim();
+  const candidateOperationId = voiceOperationId(candidate);
+  const attachment = candidate.attachment || {};
+  const candidateAttachmentId = String(attachment.id || "").trim();
+  const candidateAttachmentUrl = String(attachment.url || "").trim();
+
+  return messages.find(message => {
+    if (message.id === candidate.id) return false;
+    if (message.type !== "voice") return false;
+    if (String(message.senderId || "") !== String(state.user?.id || "")) return false;
+    if (message.conversationId && candidateConversationId && String(message.conversationId) !== candidateConversationId) return false;
+    if (voiceOperationId(message) && candidateOperationId) {
+      if (voiceOperationId(message) === candidateOperationId) return true;
+    }
+    if (message.attachment && candidateAttachmentId && String(message.attachment.id || "") === candidateAttachmentId) return true;
+    if (message.attachment && candidateAttachmentUrl && String(message.attachment.url || "") === candidateAttachmentUrl) return true;
+    return false;
+  });
 }
 
 function playVoiceMessage(message) {
@@ -5392,15 +5520,14 @@ async function finishVoiceRecording(recorder, chunks, conversationId) {
   } catch (error) {
     if (pending && attachment) {
       const messages = state.data.messages[conversationId] || [];
-      const deliveredVoice = messages.find(message =>
-        message.id !== pending.id &&
-        message.type === "voice" &&
-        String(message.senderId || "") === String(state.user?.id || "") &&
-        ((attachment.id && message.attachment?.id === attachment.id) ||
-          (attachment.url && message.attachment?.url === attachment.url))
-      );
+      const deliveredVoice = findDeliveredVoiceForFailure(messages, conversationId, {
+        ...pending,
+        conversationId,
+        attachment,
+        operationId
+      });
       if (deliveredVoice) {
-        state.data.messages[conversationId] = messages.filter(message => message.id !== pending.id);
+        state.data.messages[conversationId] = replacePendingMessage(messages, pending.id, deliveredVoice);
         upsertConversationPreview(conversationId, deliveredVoice);
         if (state.selectedConversationId === conversationId) scheduleScrollToBottom();
         render();
@@ -5662,15 +5789,15 @@ async function retryFailedVoiceUpload(messageId, retry) {
     toast("发送成功");
   } catch (error) {
     const messagesAfterFailure = state.data.messages[conversationId] || [];
-    const deliveredVoice = messagesAfterFailure.find(message =>
-      message.id !== messageId &&
-      message.type === "voice" &&
-      String(message.senderId || "") === String(state.user?.id || "") &&
-      ((attachment?.id && message.attachment?.id === attachment.id) ||
-        (attachment?.url && message.attachment?.url === attachment.url))
-    );
+    const deliveredVoice = findDeliveredVoiceForFailure(messagesAfterFailure, conversationId, {
+      ...retrying,
+      id: retrying.id,
+      conversationId,
+      attachment,
+      operationId: retrying.retryPayload?.operationId
+    });
     if (deliveredVoice) {
-      state.data.messages[conversationId] = messagesAfterFailure.filter(message => message.id !== messageId);
+      state.data.messages[conversationId] = replacePendingMessage(messagesAfterFailure, messageId, deliveredVoice);
       await removeFailedVoiceUpload(messageId);
       upsertConversationPreview(conversationId, deliveredVoice);
       if (state.selectedConversationId === conversationId) scheduleScrollToBottom();

@@ -5,6 +5,7 @@ import {
   applyMessageReadReceipt,
   canShowReadDetailAction,
   readStateControl,
+  shouldRenderReadReceipt,
   shouldAcknowledgeRealtimeMessage
 } from "./messageReadActions.js";
 
@@ -64,6 +65,21 @@ test("read receipt uses server counts for matching cached messages", () => {
       { id: "m1", readCount: 1, readTotal: 1 },
       { id: "m2", readCount: 0, readTotal: 3 }
     ]
+  );
+});
+
+test("unchanged read receipt does not need a chat rerender", () => {
+  const messages = [{ id: "m1", readCount: 1, readTotal: 1 }];
+
+  assert.equal(
+    shouldRenderReadReceipt({
+      previousMessages: messages,
+      nextMessages: applyMessageReadReceipt(messages, {
+        messages: [{ messageId: "m1", readCount: 1, readTotal: 1 }]
+      }),
+      unreadChanged: false
+    }),
+    false
   );
 });
 

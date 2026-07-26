@@ -40,6 +40,10 @@ export function applyMessageReadReceipt(messages, payload) {
   return changed ? nextMessages : messages;
 }
 
+export function shouldRenderReadReceipt({ previousMessages, nextMessages, unreadChanged = false }) {
+  return Boolean(unreadChanged || previousMessages !== nextMessages);
+}
+
 export function shouldAcknowledgeRealtimeMessage({ conversationId, selectedConversationId, incoming, section = "messages" }) {
   return Boolean(
     incoming &&
