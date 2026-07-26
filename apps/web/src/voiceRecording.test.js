@@ -83,11 +83,11 @@ test("cancels active voice operations when Escape is pressed", async () => {
   assert.match(appSource, /event\.key === "Escape"[\s\S]*voiceRecording[\s\S]*voiceRecordingPending[\s\S]*cancelVoiceRecording\(\)/);
 });
 
-test("routes a held pointer leaving the voice pad to cancel recording", () => {
+test("continues tracking after pointerleave but cancels on pointercancel", () => {
   assert.equal(voicePadEventAction({ type: "pointerdown" }), "start");
-  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: true }), "cancel");
+  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: true }), "none");
   assert.equal(voicePadEventAction({ type: "pointercancel", isRecording: true }), "cancel");
-  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: false, isPending: true }), "cancel-pending");
+  assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: false, isPending: true }), "none");
   assert.equal(voicePadEventAction({ type: "pointercancel", isRecording: false, isPending: true }), "cancel-pending");
   assert.equal(voicePadEventAction({ type: "pointerup", isPending: true }), "cancel-pending");
 });
