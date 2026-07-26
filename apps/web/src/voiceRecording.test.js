@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { recordedVoiceExtension, shouldSendVoiceMessage, voicePadEventAction } from "./voiceRecording.js";
+import {
+  recordedVoiceExtension,
+  shouldCancelVoiceRecording,
+  shouldSendVoiceMessage,
+  voicePadEventAction,
+  voicePadReleaseAction
+} from "./voiceRecording.js";
 import { buildPendingMessage, replacePendingMessage } from "./pendingMessages.js";
 import { readFile } from "node:fs/promises";
 
@@ -36,6 +42,18 @@ test("routes a held pointer leaving the voice pad to cancel recording", () => {
   assert.equal(voicePadEventAction({ type: "pointerleave", isRecording: false, isPending: true }), "cancel-pending");
   assert.equal(voicePadEventAction({ type: "pointercancel", isRecording: false, isPending: true }), "cancel-pending");
   assert.equal(voicePadEventAction({ type: "pointerup", isPending: true }), "cancel-pending");
+});
+
+test("arms voice cancellation only after an upward gesture crosses the threshold", () => {
+  assert.equal(shouldCancelVoiceRecording({ startY: 300, currentY: 253 }), false);
+  assert.equal(shouldCancelVoiceRecording({ startY: 300, currentY: 252 }), true);
+  assert.equal(shouldCancelVoiceRecording({ startY: 300, currentY: 360 }), false);
+});
+
+test("releasing an armed voice recording cancels instead of sending", () => {
+  assert.equal(voicePadReleaseAction({ isCancelArmed: true, isRecording: true }), "cancel");
+  assert.equal(voicePadReleaseAction({ isCancelArmed: false, isRecording: true }), "stop");
+  assert.equal(voicePadReleaseAction({ isCancelArmed: false, isPending: true }), "cancel-pending");
 });
 
 test("uses an m4a extension for Safari audio/mp4 recordings", () => {

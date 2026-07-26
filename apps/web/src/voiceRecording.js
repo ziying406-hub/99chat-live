@@ -16,3 +16,13 @@ export function recordedVoiceExtension(mimeType = "") {
 export function shouldSendVoiceMessage({ isRecordable, hasAudio, hasAttachment, isCurrentConversation }) {
   return Boolean(isRecordable && hasAudio && hasAttachment && isCurrentConversation);
 }
+
+export function shouldCancelVoiceRecording({ startY, currentY, threshold = 48 }) {
+  return Number.isFinite(startY) && Number.isFinite(currentY) && startY - currentY >= threshold;
+}
+
+export function voicePadReleaseAction({ isCancelArmed = false, isRecording = false, isPending = false }) {
+  if (isCancelArmed && isRecording) return "cancel";
+  if (isRecording) return "stop";
+  return isPending ? "cancel-pending" : "none";
+}
