@@ -1008,7 +1008,7 @@ func (pg *PostgresStore) loadContacts(ctx context.Context, userID string) ([]Con
 		return nil, err
 	}
 	defer rows.Close()
-	var contacts []Contact
+	contacts := make([]Contact, 0)
 	for rows.Next() {
 		var contact Contact
 		if err := rows.Scan(&contact.ID, &contact.Nickname, &contact.Signature, &contact.ChatID, &contact.Avatar, &contact.Remark, &contact.Tags); err != nil {

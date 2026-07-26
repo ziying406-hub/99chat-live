@@ -6297,12 +6297,19 @@ func TestDeleteContactRemovesBothUsersAndPreservesMessages(t *testing.T) {
 		contactsReq.Header.Set("Authorization", "Bearer "+token)
 		contactsRec := httptest.NewRecorder()
 		mux.ServeHTTP(contactsRec, contactsReq)
+		if contactsRec.Code != http.StatusOK {
+			t.Fatalf("contacts after removal: %d %s", contactsRec.Code, contactsRec.Body.String())
+		}
+		rawContacts := contactsRec.Body.String()
 		var contacts []Contact
 		if err := json.NewDecoder(contactsRec.Body).Decode(&contacts); err != nil {
 			t.Fatalf("decode contacts: %v", err)
 		}
 		if len(contacts) != 0 {
 			t.Fatalf("contacts after removal = %+v", contacts)
+		}
+		if got := rawContacts; got != "[]\n" {
+			t.Fatalf("empty contacts response = %q, want []", got)
 		}
 	}
 
