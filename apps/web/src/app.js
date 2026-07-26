@@ -490,6 +490,9 @@ async function api(path, options = {}) {
     error.status = res.status;
     throw error;
   }
+  if (res.status === 204) {
+    return withResponseMeta ? { data: null, response: res } : null;
+  }
   const data = await res.json();
   return withResponseMeta ? { data, response: res } : data;
 }
