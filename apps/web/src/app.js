@@ -58,7 +58,6 @@ import { ALL_MEMBERS_MENTION_ID, groupAllMentionCandidate, groupAllMentionIds } 
 import { appendMessageOnce, buildPendingMessage, isOwnRealtimeEcho, markMessageFailed, replacePendingMessage } from "./pendingMessages.js";
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
-import { shouldPlayUnreadSnapshotSound } from "./notificationSoundState.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { isFormerFriendSession } from "./friendRemoval.js?v=20260726-remove-friend";
@@ -1175,12 +1174,9 @@ function playUnreadNotificationSound({ mentionedMe = false } = {}) {
 }
 
 function observeUnreadSnapshotForSound() {
-  const nextUnreadCount = effectiveUnreadCount(state.data?.conversations || []);
-  const previousUnreadCount = state.lastObservedUnreadCount;
-  state.lastObservedUnreadCount = nextUnreadCount;
-  if (shouldPlayUnreadSnapshotSound({ previousUnreadCount, nextUnreadCount })) {
-    playUnreadNotificationSound();
-  }
+  // A refreshed snapshot can contain older unread messages. It must establish
+  // a baseline only; real-time incoming events are the sole source of sounds.
+  state.lastObservedUnreadCount = effectiveUnreadCount(state.data?.conversations || []);
 }
 
 function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}) {
