@@ -90,7 +90,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260727-unread-jump-v6";
+const APP_VERSION = "20260727-unread-jump-v7";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -99,22 +99,7 @@ const MOCK_REGISTERED_ACCOUNT_KEY = "chatlite-mock-registered-account";
 const failedVoiceUploadStorage = createFailedVoiceUploadStorage();
 
 installStructuredCloneFallback();
-
-document.addEventListener("click", event => {
-  const target = event.target;
-  if (!(target instanceof Element) || !target.closest("[data-jump-unread-to-latest]")) return;
-  event.preventDefault();
-  event.stopImmediatePropagation();
-  jumpToLatestUnreadMessages();
-  const forceLatest = () => {
-    const messages = document.querySelector(".messages");
-    if (messages) messages.scrollTop = messages.scrollHeight;
-  };
-  requestAnimationFrame(forceLatest);
-  setTimeout(forceLatest, 120);
-  setTimeout(forceLatest, 360);
-  setTimeout(forceLatest, 720);
-}, true);
+window.__99ChatJumpToLatestUnreadMessages = jumpToLatestUnreadMessages;
 
 function installStructuredCloneFallback() {
   if (typeof globalThis.structuredClone === "function") return;
@@ -550,7 +535,7 @@ function renderConversationMessages(messages, conversationId) {
   const boundary = state.unreadBoundaryByConversation[conversationId];
   return (messages || []).map(message => {
     const divider = boundary?.firstMessageId === message.id
-      ? `<div class="unread-message-boundary" role="status"><button class="unread-message-jump" type="button" data-jump-unread-to-latest aria-label="跳到最新 ${boundary.count} 则未读消息"><span aria-hidden="true">⌃</span>${boundary.count}则未读消息</button></div>`
+      ? `<div class="unread-message-boundary" role="status"><button class="unread-message-jump" type="button" onclick="window.__99ChatJumpToLatestUnreadMessages()" aria-label="跳到最新 ${boundary.count} 则未读消息"><span aria-hidden="true">⌃</span>${boundary.count}则未读消息</button></div>`
       : "";
     return `${divider}${renderMessage(message)}`;
   }).join("");
