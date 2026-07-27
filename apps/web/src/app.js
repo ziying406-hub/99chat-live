@@ -10218,6 +10218,7 @@ function acknowledgeUnreadBoundaryAtBottom() {
 function jumpToLatestUnreadMessages() {
   const conversationId = state.selectedConversationId;
   const unreadBoundary = state.unreadBoundaryByConversation[conversationId];
+  window.__chatUnreadJumpDebug = { conversationId, hasUnreadBoundary: Boolean(unreadBoundary) };
   if (!conversationId || !unreadBoundary) return;
 
   cancelUnreadBoundaryFocus();
