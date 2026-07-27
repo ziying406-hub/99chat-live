@@ -813,6 +813,7 @@ function connectRealtime() {
             toast(`有人 @ 你${conv ? ` · ${conv.title}` : ""}`);
           }
           playInAppNotificationSound({ incoming, shouldNotify, mentionedMe });
+          vibrateForIncomingMessage({ incoming, shouldNotify, mentionedMe });
           showBrowserMessageNotification(conv, message, { incoming, mentionedMe });
           scheduleRealtimeReadReceipt(id, incoming);
           if (id === state.selectedConversationId && !keepUnreadBoundary) scheduleScrollToBottom();
@@ -842,6 +843,7 @@ function connectRealtime() {
         // Mentions have a dedicated event. It is the fallback when the matching
         // message-created event was missed during a reconnect.
         playInAppNotificationSound({ incoming: true, shouldNotify: true, mentionedMe: true });
+        vibrateForIncomingMessage({ incoming: true, shouldNotify: true, mentionedMe: true });
         showBrowserMessageNotification(conv, message, { incoming: true, mentionedMe: true });
       }
       if (envelope.type === "message.read") {
@@ -1185,6 +1187,15 @@ function playInAppNotificationSound({ incoming, shouldNotify, mentionedMe } = {}
   const settings = ensureUserSettings();
   if (!incoming || !shouldNotify || !settings.notificationsEnabled || !settings.notificationSound) return;
   playUnreadNotificationSound({ mentionedMe });
+}
+
+function vibrateForIncomingMessage({ incoming, shouldNotify, mentionedMe } = {}) {
+  const settings = ensureUserSettings();
+  if (!incoming || !shouldNotify || !mentionedMe || !settings.notificationsEnabled || !settings.mentionAlerts) return;
+  if (typeof navigator.vibrate !== "function") return;
+  try {
+    navigator.vibrate([150, 90, 150]);
+  } catch (_) {}
 }
 
 function previewNotificationSound() {
