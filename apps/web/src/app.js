@@ -90,7 +90,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260727-unread-jump-v5";
+const APP_VERSION = "20260727-unread-jump-v6";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -106,6 +106,14 @@ document.addEventListener("click", event => {
   event.preventDefault();
   event.stopImmediatePropagation();
   jumpToLatestUnreadMessages();
+  const forceLatest = () => {
+    const messages = document.querySelector(".messages");
+    if (messages) messages.scrollTop = messages.scrollHeight;
+  };
+  requestAnimationFrame(forceLatest);
+  setTimeout(forceLatest, 120);
+  setTimeout(forceLatest, 360);
+  setTimeout(forceLatest, 720);
 }, true);
 
 function installStructuredCloneFallback() {
