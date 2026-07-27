@@ -10210,9 +10210,15 @@ function acknowledgeUnreadBoundaryAtBottom() {
 
 function jumpToLatestUnreadMessages() {
   const conversationId = state.selectedConversationId;
-  if (!conversationId || !state.unreadBoundaryByConversation[conversationId]) return;
+  const unreadBoundary = state.unreadBoundaryByConversation[conversationId];
+  if (!conversationId || !unreadBoundary) return;
 
   cancelUnreadBoundaryFocus();
+  // Remove the divider before scrolling so its scroll listener cannot race the
+  // explicit read request and restore the previous message position.
+  delete state.unreadBoundaryByConversation[conversationId];
+  scheduleScrollToBottom();
+  render();
   const scrollToLatest = () => {
     if (conversationId !== state.selectedConversationId) return;
     const messages = document.querySelector(".messages");
@@ -10221,16 +10227,15 @@ function jumpToLatestUnreadMessages() {
     return true;
   };
 
-  scrollToLatest();
+  requestAnimationFrame(() => {
+    scrollToLatest();
+    requestAnimationFrame(scrollToLatest);
+    setTimeout(scrollToLatest, 120);
+  });
   void acknowledgeConversationRead(conversationId).then(acknowledged => {
-    if (!acknowledged || conversationId !== state.selectedConversationId) return;
-    scheduleScrollToBottom();
+    if (acknowledged || conversationId !== state.selectedConversationId) return;
+    state.unreadBoundaryByConversation[conversationId] = unreadBoundary;
     render();
-    requestAnimationFrame(() => {
-      scrollToLatest();
-      requestAnimationFrame(scrollToLatest);
-      setTimeout(scrollToLatest, 120);
-    });
   });
 }
 
