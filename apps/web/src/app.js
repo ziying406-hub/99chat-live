@@ -10213,13 +10213,24 @@ function jumpToLatestUnreadMessages() {
   if (!conversationId || !state.unreadBoundaryByConversation[conversationId]) return;
 
   cancelUnreadBoundaryFocus();
-  scheduleScrollToBottom();
-  render();
-  requestAnimationFrame(() => {
+  const scrollToLatest = () => {
+    if (conversationId !== state.selectedConversationId) return;
     const messages = document.querySelector(".messages");
-    if (!messages) return;
+    if (!messages) return false;
     messages.scrollTop = messages.scrollHeight;
-    requestAnimationFrame(() => acknowledgeUnreadBoundaryAtBottom());
+    return true;
+  };
+
+  scrollToLatest();
+  void acknowledgeConversationRead(conversationId).then(acknowledged => {
+    if (!acknowledged || conversationId !== state.selectedConversationId) return;
+    scheduleScrollToBottom();
+    render();
+    requestAnimationFrame(() => {
+      scrollToLatest();
+      requestAnimationFrame(scrollToLatest);
+      setTimeout(scrollToLatest, 120);
+    });
   });
 }
 
