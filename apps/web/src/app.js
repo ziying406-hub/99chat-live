@@ -90,7 +90,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260727-unread-jump-v4";
+const APP_VERSION = "20260727-unread-jump-v5";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -10218,7 +10218,6 @@ function acknowledgeUnreadBoundaryAtBottom() {
 function jumpToLatestUnreadMessages() {
   const conversationId = state.selectedConversationId;
   const unreadBoundary = state.unreadBoundaryByConversation[conversationId];
-  window.__chatUnreadJumpDebug = { conversationId, hasUnreadBoundary: Boolean(unreadBoundary) };
   if (!conversationId || !unreadBoundary) return;
 
   cancelUnreadBoundaryFocus();
