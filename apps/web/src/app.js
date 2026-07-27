@@ -10263,6 +10263,8 @@ async function acknowledgeConversationRead(conversationId) {
   if (state.useMock) {
     markConversationRead(conversationId);
     delete state.unreadBoundaryByConversation[conversationId];
+    delete state.messageScrollTopByConversation[conversationId];
+    if (state.pendingMessageScrollRestore?.conversationId === conversationId) state.pendingMessageScrollRestore = null;
     return true;
   }
   try {
@@ -10271,6 +10273,8 @@ async function acknowledgeConversationRead(conversationId) {
     // was accepted by the server. A failed request must remain unread locally.
     markConversationRead(conversationId);
     delete state.unreadBoundaryByConversation[conversationId];
+    delete state.messageScrollTopByConversation[conversationId];
+    if (state.pendingMessageScrollRestore?.conversationId === conversationId) state.pendingMessageScrollRestore = null;
     return true;
   } catch (_) {
     return false;
