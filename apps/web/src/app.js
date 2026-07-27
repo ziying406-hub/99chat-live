@@ -90,7 +90,7 @@ import { uploadErrorMessage, validateSignedUpload } from "./uploadErrors.js";
 
 const API_BASE = resolveApiBase();
 const WS_BASE = resolveWebSocketBase(API_BASE);
-const APP_VERSION = "20260727-unread-jump-v3";
+const APP_VERSION = "20260727-unread-jump-v4";
 const APP_VERSION_KEY = "chatlite-app-version";
 const MOCK_GROUP_NICKNAMES_KEY = "chatlite-mock-group-nicknames";
 const MOCK_GROUP_TITLES_KEY = "chatlite-mock-group-titles";
@@ -99,6 +99,14 @@ const MOCK_REGISTERED_ACCOUNT_KEY = "chatlite-mock-registered-account";
 const failedVoiceUploadStorage = createFailedVoiceUploadStorage();
 
 installStructuredCloneFallback();
+
+document.addEventListener("click", event => {
+  const target = event.target;
+  if (!(target instanceof Element) || !target.closest("[data-jump-unread-to-latest]")) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  jumpToLatestUnreadMessages();
+}, true);
 
 function installStructuredCloneFallback() {
   if (typeof globalThis.structuredClone === "function") return;
@@ -4782,7 +4790,6 @@ function bindEvents() {
   document.querySelector(".messages")?.addEventListener("scroll", () => {
     acknowledgeUnreadBoundaryAtBottom();
   }, { passive: true });
-  document.querySelectorAll("[data-jump-unread-to-latest]").forEach(el => el.addEventListener("click", jumpToLatestUnreadMessages));
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
   document.querySelectorAll("[data-profile-action]").forEach(el => el.addEventListener("click", () => handleProfileAction(el.dataset.profileAction)));
