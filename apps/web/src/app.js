@@ -10230,7 +10230,11 @@ function jumpToLatestUnreadMessages() {
   requestAnimationFrame(() => {
     scrollToLatest();
     requestAnimationFrame(scrollToLatest);
+    // The composer can restore focus after render and trigger a late layout
+    // pass, so keep the explicit jump pinned until that work has settled.
     setTimeout(scrollToLatest, 120);
+    setTimeout(scrollToLatest, 360);
+    setTimeout(scrollToLatest, 720);
   });
   void acknowledgeConversationRead(conversationId).then(acknowledged => {
     if (acknowledged || conversationId !== state.selectedConversationId) return;
