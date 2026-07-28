@@ -1447,7 +1447,7 @@ function renderApp() {
       <section class="workspace ${state.section !== "messages" || !state.sidePage ? "single" : ""} ${state.sidePage ? "with-detail" : ""} ${mobileActive}">
         ${renderWorkspace()}
       </section>
-      <input class="hidden" id="filePicker" type="file">
+      <input class="file-picker-hidden" id="filePicker" type="file">
       ${renderConversationContextMenu()}
       ${renderMessageContextMenu()}
       ${renderModal()}

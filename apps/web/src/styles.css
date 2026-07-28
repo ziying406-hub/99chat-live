@@ -6357,6 +6357,15 @@ button:disabled,
   display: none !important;
 }
 
+.file-picker-hidden {
+  position: fixed;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+  inset: 0 auto auto -9999px;
+}
+
 @media (max-width: 980px) {
   .auth-stage {
     grid-template-columns: minmax(0, 1fr);
