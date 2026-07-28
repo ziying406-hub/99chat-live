@@ -61,6 +61,7 @@ import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { applyProfileRealtimeUpdate } from "./profileRealtime.js?v=20260728-profile-realtime";
+import { qrScannerSupport } from "./qrScannerSupport.js?v=20260728-qr-scanner";
 import { isFormerFriendSession } from "./friendRemoval.js?v=20260726-remove-friend";
 import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
 import { shouldKeepRealtimeSnapshotAtBottom, shouldReconnectRealtimeHeartbeat, shouldRefreshRealtimeSnapshotOnOpen } from "./realtimeConnection.js";
@@ -166,6 +167,10 @@ const state = {
   activeVoicePlaying: false,
   activeVoiceProgress: 0,
   activeVoiceDuration: 0,
+  qrScannerOpen: false,
+  qrScannerStream: null,
+  qrScannerFrame: null,
+  qrScannerSession: 0,
   failedVoiceUploads: new Map(),
   useMock: false,
   data: null,
@@ -4290,6 +4295,11 @@ function renderModal() {
           <strong>创建群聊</strong>
           <small>选择联系人快速建群</small>
         </button>
+        <button class="quick-add-card" type="button" data-scan-qr>
+          <span class="quick-add-icon">扫</span>
+          <strong>扫一扫</strong>
+          <small>扫描群二维码加入群聊</small>
+        </button>
       </div>`,
     "add-friend": `
       <div class="add-friend-panel">
@@ -4323,6 +4333,11 @@ function renderModal() {
           <span>群二维码链接 / 群号</span>
           <input class="input" id="joinGroupInput" placeholder="例如 http://.../?joinGroup=...&code=...">
         </label>
+        <div class="qr-scan-actions">
+          <button class="ghost-btn inline" type="button" data-scan-qr>打开相机扫一扫</button>
+          <button class="ghost-btn inline" type="button" data-pick-qr>从相册识别二维码</button>
+        </div>
+        ${state.qrScannerOpen ? `<div class="qr-scanner-panel"><video id="qrScannerVideo" playsinline muted aria-label="群二维码扫描画面"></video><div class="qr-scanner-frame" aria-hidden="true"></div><p>将群二维码放入框内即可识别</p><button class="ghost-btn inline" type="button" data-stop-qr-scan>停止扫码</button></div>` : ""}
       </div>`,
     "create-group": renderCreateGroupBody(),
     invite: `<p>选择联络人加入群聊。</p>${state.data.contacts.map(c => `<label class="setting-row"><span>${escapeHTML(c.nickname)}</span><input type="checkbox" name="inviteMember" value="${escapeAttr(c.id)}"></label>`).join("")}`,
@@ -4832,6 +4847,7 @@ function bindEvents() {
   }));
   document.querySelectorAll("[data-modal]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
+    stopQrScanner();
     state.modal = el.dataset.modal;
     if (state.modal === "create-group") {
       state.createGroupSelection = [];
@@ -4845,6 +4861,7 @@ function bindEvents() {
     render();
   }));
   document.querySelectorAll("[data-close-modal]").forEach(el => el.addEventListener("click", () => {
+    stopQrScanner();
     state.modal = null;
     state.preview = null;
     state.createGroupSelection = [];
@@ -4858,6 +4875,12 @@ function bindEvents() {
     render();
   }));
   document.querySelectorAll("[data-confirm-modal]").forEach(el => el.addEventListener("click", () => confirmModal(el.dataset.confirmModal)));
+  document.querySelectorAll("[data-scan-qr]").forEach(el => el.addEventListener("click", () => openQrScanner()));
+  document.querySelectorAll("[data-stop-qr-scan]").forEach(el => el.addEventListener("click", () => {
+    stopQrScanner();
+    render();
+  }));
+  document.querySelectorAll("[data-pick-qr]").forEach(el => el.addEventListener("click", () => pickQrImage()));
   const friendChatIdInput = document.querySelector("#friendChatId");
   const friendGreetingInput = document.querySelector("#friendGreeting");
   friendChatIdInput?.addEventListener("input", () => {
@@ -6535,22 +6558,7 @@ async function confirmModal(kind) {
   }
   if (kind === "join-group") {
     const raw = document.querySelector("#joinGroupInput")?.value?.trim() || "";
-    const parsed = parseJoinInput(raw);
-    if (!parsed.groupId) {
-      toast("请输入群二维码链接或群号");
-      return;
-    }
-    state.pendingJoin = {
-      groupId: parsed.groupId,
-      code: parsed.code || "",
-      status: "",
-      group: null
-    };
-    await preparePendingJoin();
-    state.modal = null;
-    state.section = "messages";
-    state.sidePage = null;
-    render();
+    await beginJoinFromQrText(raw);
     return;
   }
   if (kind === "create-group") {
@@ -7419,6 +7427,106 @@ async function simulateScanCurrentGroup() {
   state.section = "messages";
   state.sidePage = null;
   render();
+}
+
+async function beginJoinFromQrText(raw) {
+  const parsed = parseJoinInput(raw);
+  if (!parsed.groupId) {
+    toast("未识别到有效的群二维码");
+    return false;
+  }
+  stopQrScanner();
+  state.pendingJoin = {
+    groupId: parsed.groupId,
+    code: parsed.code || "",
+    status: "",
+    group: null
+  };
+  await preparePendingJoin();
+  state.modal = null;
+  state.section = "messages";
+  state.sidePage = null;
+  render();
+  return true;
+}
+
+function stopQrScanner() {
+  state.qrScannerSession += 1;
+  if (state.qrScannerFrame) cancelAnimationFrame(state.qrScannerFrame);
+  state.qrScannerFrame = null;
+  state.qrScannerStream?.getTracks?.().forEach(track => track.stop());
+  state.qrScannerStream = null;
+  state.qrScannerOpen = false;
+}
+
+async function openQrScanner() {
+  stopQrScanner();
+  state.modal = "join-group";
+  state.qrScannerOpen = true;
+  render();
+  const support = qrScannerSupport();
+  if (!support.canScanWithCamera) {
+    state.qrScannerOpen = false;
+    render();
+    toast(support.canScanImage ? "当前浏览器无法调用相机，可从相册识别二维码" : "当前浏览器不支持二维码识别，请粘贴群链接或使用 Chrome");
+    return;
+  }
+  const session = state.qrScannerSession;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: "environment" } }, audio: false });
+    if (session !== state.qrScannerSession) {
+      stream.getTracks().forEach(track => track.stop());
+      return;
+    }
+    state.qrScannerStream = stream;
+    const video = document.querySelector("#qrScannerVideo");
+    if (!video) return;
+    video.srcObject = stream;
+    await video.play();
+    const detector = new BarcodeDetector({ formats: ["qr_code"] });
+    const scanFrame = async () => {
+      if (session !== state.qrScannerSession || !state.qrScannerOpen) return;
+      try {
+        const codes = await detector.detect(video);
+        const rawValue = String(codes?.[0]?.rawValue || "").trim();
+        if (rawValue && await beginJoinFromQrText(rawValue)) return;
+      } catch (_) {
+        // Keep scanning while the camera finishes warming up.
+      }
+      state.qrScannerFrame = requestAnimationFrame(scanFrame);
+    };
+    state.qrScannerFrame = requestAnimationFrame(scanFrame);
+  } catch (_) {
+    state.qrScannerOpen = false;
+    toast("无法打开相机，请检查浏览器相机权限");
+    render();
+  }
+}
+
+async function pickQrImage() {
+  const support = qrScannerSupport();
+  if (!support.canScanImage) {
+    toast("当前浏览器不支持图片二维码识别，请使用 Chrome 或粘贴群链接");
+    return;
+  }
+  const picker = document.querySelector("#filePicker");
+  if (!picker) return;
+  picker.accept = "image/*";
+  picker.value = "";
+  picker.onchange = async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    try {
+      const detector = new BarcodeDetector({ formats: ["qr_code"] });
+      const image = await createImageBitmap(file);
+      const codes = await detector.detect(image);
+      image.close?.();
+      if (!await beginJoinFromQrText(codes?.[0]?.rawValue || "")) toast("未在图片中识别到有效的群二维码");
+    } catch (_) {
+      toast("图片二维码识别失败，请换一张清晰图片重试");
+    }
+  };
+  picker.click();
 }
 
 async function scanGroupFromExplore(groupId) {

@@ -5363,6 +5363,53 @@ button.setting-row {
   font-weight: 850;
 }
 
+.qr-scan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.qr-scanner-panel {
+  position: relative;
+  overflow: hidden;
+  min-height: 260px;
+  border: 1px solid rgba(221, 231, 244, 0.82);
+  border-radius: 16px;
+  background: #0f172a;
+}
+
+.qr-scanner-panel video {
+  width: 100%;
+  min-height: 260px;
+  display: block;
+  object-fit: cover;
+}
+
+.qr-scanner-frame {
+  position: absolute;
+  inset: 50% auto auto 50%;
+  width: min(52vw, 190px);
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  border: 3px solid rgba(255, 255, 255, 0.92);
+  border-radius: 8px;
+  box-shadow: 0 0 0 999px rgba(2, 6, 23, 0.3);
+}
+
+.qr-scanner-panel p,
+.qr-scanner-panel .ghost-btn {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  margin: 0;
+  color: white;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.qr-scanner-panel p { bottom: 52px; }
+.qr-scanner-panel .ghost-btn { bottom: 10px; }
+
 .add-friend-panel {
   display: grid;
   gap: 14px;
