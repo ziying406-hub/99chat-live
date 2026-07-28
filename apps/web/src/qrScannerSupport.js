@@ -4,7 +4,7 @@ export function qrScannerSupport(browser = globalThis) {
   return {
     barcodeDetector,
     camera,
-    canScanWithCamera: barcodeDetector && camera,
-    canScanImage: barcodeDetector
+    canScanWithCamera: camera,
+    canScanImage: true
   };
 }

@@ -62,6 +62,7 @@ import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./fr
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
 import { applyProfileRealtimeUpdate } from "./profileRealtime.js?v=20260728-profile-realtime";
 import { qrScannerSupport } from "./qrScannerSupport.js?v=20260728-qr-scanner";
+import { jsQR } from "/public/vendor/jsqr-bundle.js";
 import { isFormerFriendSession } from "./friendRemoval.js?v=20260726-remove-friend";
 import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
 import { shouldKeepRealtimeSnapshotAtBottom, shouldReconnectRealtimeHeartbeat, shouldRefreshRealtimeSnapshotOnOpen } from "./realtimeConnection.js";
@@ -170,6 +171,7 @@ const state = {
   qrScannerOpen: false,
   qrScannerStream: null,
   qrScannerFrame: null,
+  qrScannerCanvas: null,
   qrScannerSession: 0,
   failedVoiceUploads: new Map(),
   useMock: false,
@@ -7456,7 +7458,40 @@ function stopQrScanner() {
   state.qrScannerFrame = null;
   state.qrScannerStream?.getTracks?.().forEach(track => track.stop());
   state.qrScannerStream = null;
+  state.qrScannerCanvas = null;
   state.qrScannerOpen = false;
+}
+
+function decodeQrFromVisual(source, sourceWidth, sourceHeight) {
+  if (!sourceWidth || !sourceHeight) return "";
+  const longestSide = Math.max(sourceWidth, sourceHeight);
+  const scale = longestSide > 960 ? 960 / longestSide : 1;
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
+  const canvas = state.qrScannerCanvas || document.createElement("canvas");
+  state.qrScannerCanvas = canvas;
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) return "";
+  context.drawImage(source, 0, 0, width, height);
+  const imageData = context.getImageData(0, 0, width, height);
+  return String(jsQR(imageData.data, width, height, { inversionAttempts: "attemptBoth" })?.data || "").trim();
+}
+
+async function decodeQrFromFile(file) {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const image = new Image();
+    await new Promise((resolve, reject) => {
+      image.onload = resolve;
+      image.onerror = reject;
+      image.src = objectUrl;
+    });
+    return decodeQrFromVisual(image, image.naturalWidth || image.width, image.naturalHeight || image.height);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 async function openQrScanner() {
@@ -7483,15 +7518,17 @@ async function openQrScanner() {
     if (!video) return;
     video.srcObject = stream;
     await video.play();
-    const detector = new BarcodeDetector({ formats: ["qr_code"] });
-    const scanFrame = async () => {
+    let lastScanAt = 0;
+    const scanFrame = async (timestamp) => {
       if (session !== state.qrScannerSession || !state.qrScannerOpen) return;
-      try {
-        const codes = await detector.detect(video);
-        const rawValue = String(codes?.[0]?.rawValue || "").trim();
-        if (rawValue && await beginJoinFromQrText(rawValue)) return;
-      } catch (_) {
-        // Keep scanning while the camera finishes warming up.
+      if (timestamp - lastScanAt >= 180) {
+        lastScanAt = timestamp;
+        try {
+          const rawValue = decodeQrFromVisual(video, video.videoWidth, video.videoHeight);
+          if (rawValue && await beginJoinFromQrText(rawValue)) return;
+        } catch (_) {
+          // Keep the camera preview open while the stream warms up or a frame is incomplete.
+        }
       }
       state.qrScannerFrame = requestAnimationFrame(scanFrame);
     };
@@ -7506,7 +7543,7 @@ async function openQrScanner() {
 async function pickQrImage() {
   const support = qrScannerSupport();
   if (!support.canScanImage) {
-    toast("当前浏览器不支持图片二维码识别，请使用 Chrome 或粘贴群链接");
+    toast("当前浏览器不支持图片二维码识别，请粘贴群链接");
     return;
   }
   const picker = document.querySelector("#filePicker");
@@ -7517,11 +7554,8 @@ async function pickQrImage() {
     const file = picker.files?.[0];
     if (!file) return;
     try {
-      const detector = new BarcodeDetector({ formats: ["qr_code"] });
-      const image = await createImageBitmap(file);
-      const codes = await detector.detect(image);
-      image.close?.();
-      if (!await beginJoinFromQrText(codes?.[0]?.rawValue || "")) toast("未在图片中识别到有效的群二维码");
+      const rawValue = await decodeQrFromFile(file);
+      if (!await beginJoinFromQrText(rawValue)) toast("未在图片中识别到有效的群二维码");
     } catch (_) {
       toast("图片二维码识别失败，请换一张清晰图片重试");
     }

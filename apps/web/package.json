@@ -9,6 +9,7 @@
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "i18next": "latest",
+    "jsqr": "^1.4.0",
     "qrcode": "^1.5.4",
     "quill": "latest",
     "react": "latest",
