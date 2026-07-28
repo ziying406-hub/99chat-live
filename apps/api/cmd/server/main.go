@@ -2116,6 +2116,24 @@ func (s *Store) meForUser(w http.ResponseWriter, r *http.Request, current User) 
 		if s.users != nil {
 			s.users[current.ID] = current
 		}
+		for i := range s.contacts {
+			if s.contacts[i].ID == current.ID {
+				s.contacts[i].Nickname = current.Nickname
+				s.contacts[i].Signature = current.Signature
+				s.contacts[i].ChatID = current.ChatID
+				s.contacts[i].Avatar = current.Avatar
+			}
+		}
+		s.hub.Broadcast(map[string]any{
+			"type": "profile.updated",
+			"payload": map[string]any{
+				"id":        current.ID,
+				"nickname":  current.Nickname,
+				"signature": current.Signature,
+				"chatId":    current.ChatID,
+				"avatar":    current.Avatar,
+			},
+		})
 		writeJSON(w, http.StatusOK, publicUserResponse(current))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")

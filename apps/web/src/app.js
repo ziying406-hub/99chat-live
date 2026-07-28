@@ -60,6 +60,7 @@ import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
 import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
+import { applyProfileRealtimeUpdate } from "./profileRealtime.js?v=20260728-profile-realtime";
 import { isFormerFriendSession } from "./friendRemoval.js?v=20260726-remove-friend";
 import { canReceiveRealtimeConversation } from "./realtimeConversationVisibility.js";
 import { shouldKeepRealtimeSnapshotAtBottom, shouldReconnectRealtimeHeartbeat, shouldRefreshRealtimeSnapshotOnOpen } from "./realtimeConnection.js";
@@ -762,6 +763,10 @@ function connectRealtime() {
         await refreshFriendRealtimeState().catch(() => {});
         if (friendUpdate.toast) toast(friendUpdate.toast);
         render();
+        return;
+      }
+      if (envelope.type === "profile.updated") {
+        if (applyProfileRealtimeUpdate(state.data, state.user, envelope.payload)) render();
         return;
       }
       if (envelope.type === "message.created") {
