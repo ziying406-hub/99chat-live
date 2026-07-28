@@ -757,15 +757,15 @@ func (pg *PostgresStore) backfillGroupOwnerMemberships(ctx context.Context) erro
 	return err
 }
 
-// syncGroupAvatarsWithOwners repairs groups created before profile-avatar
-// synchronization was introduced, and keeps their conversation rows aligned.
+// syncGroupAvatarsWithOwners fills only missing legacy group avatars. Group
+// avatars are independent from a group owner's personal profile avatar.
 func (pg *PostgresStore) syncGroupAvatarsWithOwners(ctx context.Context) error {
 	if _, err := pg.pool.Exec(ctx, `UPDATE groups AS g
 		SET avatar_url = u.avatar_url
 		FROM users AS u
 		WHERE u.id = g.owner_user_id
 			AND BTRIM(u.avatar_url) <> ''
-			AND g.avatar_url IS DISTINCT FROM u.avatar_url`); err != nil {
+			AND BTRIM(COALESCE(g.avatar_url, '')) = ''`); err != nil {
 		return err
 	}
 	_, err := pg.pool.Exec(ctx, `UPDATE conversations AS c

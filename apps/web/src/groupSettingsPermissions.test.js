@@ -42,7 +42,8 @@ test("admins can use their listed group controls but not owner-only pages", () =
   assert.equal(canOpenGroupSidePage("group-bots", { role: "admin" }), false);
   assert.equal(canOpenGroupSidePage("rate-limit", { role: "admin" }), false);
   assert.equal(canOpenGroupSidePage("transfer-owner", { role: "admin" }), false);
-  assert.equal(canOpenGroupSidePage("rename", { role: "admin" }), false);
+  assert.equal(canOpenGroupSidePage("rename", { role: "admin" }), true);
+  assert.equal(canOpenGroupSidePage("group-avatar", { role: "admin" }), true);
 });
 
 test("admin settings match the supported management menu", () => {
@@ -50,6 +51,8 @@ test("admin settings match the supported management menu", () => {
     "admin",
     "applications",
     "join-mode",
+    "rename",
+    "group-avatar",
     "announcement",
     "qrcode",
     "nickname",

@@ -2112,6 +2112,7 @@ function renderDetailPane(conv) {
   if (state.sidePage === "announcement") return renderGroupAnnouncementPane();
   if (state.sidePage === "nickname") return renderGroupNicknamePane();
   if (state.sidePage === "rename") return renderGroupNamePane();
+  if (state.sidePage === "group-avatar") return renderGroupAvatarPane();
   if (state.sidePage === "qrcode") return renderGroupQRCodePane();
   if (state.sidePage === "media") return renderMediaPane();
   if (state.sidePage === "search") return renderSearchPane();
@@ -2167,6 +2168,7 @@ function renderSettingsPane(conv) {
           ${canManage ? settingLink("admin", "群组管理", "管理员与权限") : ""}
           ${canManage ? settingLink("applications", "入群申请", pendingApplications ? `${pendingApplications} 条待处理` : "近期请求") : ""}
           ${canManage ? settingLink("rename", "群组名称", group.title) : ""}
+          ${canManage ? settingLink("group-avatar", "群头像", "点击更换") : ""}
           ${settingLink("announcement", "群公告", group.announcement || "未设置")}
           ${settingLink("qrcode", "群二维码", `群号 ${group.chatId}`)}
           ${settingLink("nickname", "我在本群的昵称", groupNicknameForConversation(conv))}
@@ -2213,6 +2215,8 @@ function renderAdminGroupSettingsPane(conv, group) {
         ${settingKeys.has("admin") ? settingLink("admin", "群组管理", "管理员与权限") : ""}
         ${settingKeys.has("applications") ? settingLink("applications", "入群申请", pendingApplications ? `${pendingApplications} 条待处理` : "近期请求") : ""}
         ${settingKeys.has("join-mode") ? settingLink("join-mode", "入群方式", joinModeLabel(group.joinMode)) : ""}
+        ${settingKeys.has("rename") ? settingLink("rename", "群组名称", group.title) : ""}
+        ${settingKeys.has("group-avatar") ? settingLink("group-avatar", "群头像", "点击更换") : ""}
         ${settingKeys.has("announcement") ? settingLink("announcement", "群公告", group.announcement || "未设置") : ""}
         ${settingKeys.has("qrcode") ? settingLink("qrcode", "群二维码", `群号 ${group.chatId}`) : ""}
         ${settingKeys.has("nickname") ? settingLink("nickname", "我在本群的昵称", groupNicknameForConversation(conv)) : ""}
@@ -2757,6 +2761,24 @@ function renderGroupNamePane() {
         <p class="group-setting-help">修改后会同步到左侧会话列表、聊天顶部和群设置标题。</p>
         <input class="input" id="groupNameInput" value="${escapeAttr(group.title)}" placeholder="群组名称" ${canManage ? "" : "disabled"}>
         ${canManage ? `<button class="primary-btn inline group-name-save" type="button" data-group-save="name">保存群名称</button>` : `<div class="item-meta">只有群主和管理员可以修改群组名称。</div>`}
+      </section>
+    </aside>`;
+}
+
+function renderGroupAvatarPane() {
+  const group = currentGroup();
+  if (!group) return renderSettingsPane(getConversation(state.selectedConversationId));
+  const canManage = canManageGroup(group);
+  return `
+    <aside class="detail-pane">
+      <header class="panel-header"><button class="icon-btn" data-sidepage="settings">${icons.back}</button><h3>群头像</h3></header>
+      <section class="section profile-avatar-editor">
+        <img class="avatar profile-avatar-large" src="${avatarFor(group, "群")}" alt="">
+        <div class="item-title">${escapeHTML(group.title)}</div>
+        <div class="item-preview">修改后会同步显示在会话列表、聊天顶部和群资料中。</div>
+      </section>
+      <section class="section">
+        ${canManage ? `<button class="primary-btn inline" type="button" data-group-action="avatar">上传群头像</button>` : `<div class="item-meta">只有群主和管理员可以修改群头像。</div>`}
       </section>
     </aside>`;
 }
@@ -4793,6 +4815,9 @@ function bindEvents() {
   document.querySelectorAll("[data-send-type]").forEach(el => el.addEventListener("click", () => sendSynthetic(el.dataset.sendType)));
   document.querySelectorAll("[data-pick-file]").forEach(el => el.addEventListener("click", () => pickAndUpload(el.dataset.pickFile)));
   document.querySelectorAll("[data-profile-action]").forEach(el => el.addEventListener("click", () => handleProfileAction(el.dataset.profileAction)));
+  document.querySelectorAll("[data-group-action]").forEach(el => el.addEventListener("click", () => {
+    if (el.dataset.groupAction === "avatar") pickGroupAvatar();
+  }));
   document.querySelectorAll("[data-profile-back]").forEach(el => el.addEventListener("click", e => {
     e.preventDefault();
     state.section = "me";
@@ -5707,6 +5732,31 @@ function pickProfileAvatar() {
     } catch (error) {
       state.user.avatar = previous;
       toast("头像保存失败");
+      render();
+    }
+  };
+  picker.click();
+}
+
+function pickGroupAvatar() {
+  const group = currentGroup();
+  const picker = document.querySelector("#filePicker");
+  if (!group || !canManageGroup(group) || !picker) return;
+  picker.accept = "image/*";
+  picker.value = "";
+  picker.onchange = async () => {
+    const file = picker.files?.[0];
+    if (!file) return;
+    const previous = group.avatar;
+    try {
+      const upload = await uploadFile(file);
+      const nextAvatar = persistentProfileAvatarUrl(upload);
+      await patchCurrentGroup({ avatar: nextAvatar });
+      toast("群头像已更新");
+      render();
+    } catch (error) {
+      group.avatar = previous;
+      toast(uploadErrorMessage(error));
       render();
     }
   };

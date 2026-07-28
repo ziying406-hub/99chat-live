@@ -7,6 +7,7 @@ const MANAGER_GROUP_SIDE_PAGES = new Set([
   "transfer-owner",
   "invite-members",
   "rename",
+  "group-avatar",
   "group-bots",
   "rate-limit",
   "group-blacklist",
@@ -22,13 +23,17 @@ const ADMIN_GROUP_SIDE_PAGES = new Set([
   "announcement",
   "qrcode",
   "nickname",
-  "members"
+  "members",
+  "rename",
+  "group-avatar"
 ]);
 
 const ADMIN_GROUP_SETTING_KEYS = [
   "admin",
   "applications",
   "join-mode",
+  "rename",
+  "group-avatar",
   "announcement",
   "qrcode",
   "nickname",

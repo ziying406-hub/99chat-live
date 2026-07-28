@@ -106,13 +106,13 @@ func TestProfileAvatarUpdateForGroupOwnerDoesNotBlock(t *testing.T) {
 	select {
 	case <-finished:
 	case <-time.After(250 * time.Millisecond):
-		t.Fatal("profile avatar update blocked while syncing owned groups")
+		t.Fatal("profile avatar update blocked")
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected avatar update 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := store.groups["avatar-sync"].Avatar; got != "/uploads/avatar.png" {
-		t.Fatalf("expected group avatar to sync, got %q", got)
+	if got := store.groups["avatar-sync"].Avatar; got != avatar("群") {
+		t.Fatalf("group avatar changed with the profile avatar: %q", got)
 	}
 }
 
@@ -2737,8 +2737,9 @@ func TestMePatchPersistsProfileFields(t *testing.T) {
 	}
 }
 
-func TestMePatchUpdatesOwnedGroupAvatar(t *testing.T) {
+func TestMePatchDoesNotOverwriteGroupAvatar(t *testing.T) {
 	store := seedStore()
+	before := store.groups["21444"].Avatar
 	token := store.issueToken(store.user.ID)
 	mux := http.NewServeMux()
 	registerRoutes(mux, store)
@@ -2751,11 +2752,11 @@ func TestMePatchUpdatesOwnedGroupAvatar(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected profile patch 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := store.groups["21444"].Avatar; got != "https://example.com/owner-avatar.png" {
-		t.Fatalf("group avatar = %q", got)
+	if got := store.groups["21444"].Avatar; got != before {
+		t.Fatalf("group avatar = %q, want %q", got, before)
 	}
-	if got := conversationByID(store.conversations, "group-21444").Avatar; got != "https://example.com/owner-avatar.png" {
-		t.Fatalf("conversation avatar = %q", got)
+	if got := conversationByID(store.conversations, "group-21444").Avatar; got != before {
+		t.Fatalf("conversation avatar = %q, want %q", got, before)
 	}
 }
 
@@ -3142,6 +3143,28 @@ func TestGroupSettingsPatchPersistsManagementFlags(t *testing.T) {
 	}
 	if !group.AllMuted {
 		t.Fatal("allMuted was not persisted")
+	}
+}
+
+func TestGroupSettingsPatchPersistsTitleAndAvatar(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	body := bytes.NewBufferString(`{"title":"更新后的群名","avatar":"/uploads/group-avatar.png"}`)
+	req := httptest.NewRequest(http.MethodPatch, "/api/groups/21444", body)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected patch 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	group := store.groups["21444"]
+	if group.Title != "更新后的群名" {
+		t.Fatalf("title = %q", group.Title)
+	}
+	if group.Avatar != "/uploads/group-avatar.png" {
+		t.Fatalf("avatar = %q", group.Avatar)
 	}
 }
 

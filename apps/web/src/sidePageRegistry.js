@@ -4,7 +4,7 @@ const KNOWN_SIDE_PAGES = new Set([
   "collections", "notifications", "messaging", "messaging-batch", "messaging-batch-history", "messaging-batch-draft", "messaging-batch-targets",
   "stickers", "stickers-manage", "privacy", "blacklist", "blacklist-add", "security", "security-devices", "security-password-step2",
   "general", "general-language", "general-display", "general-feedback", "feedback-history", "general-about", "general-about-version", "general-debug", "switch-user",
-  "members", "settings", "join-mode", "applications", "admin", "rename", "announcement", "qrcode", "nickname", "media", "search", "report",
+  "members", "settings", "join-mode", "applications", "admin", "rename", "group-avatar", "announcement", "qrcode", "nickname", "media", "search", "report",
   "group-blacklist", "invite-members", "audit-logs", "group-bots", "rate-limit", "group-admins", "admin-add", "transfer-owner"
 ]);
 

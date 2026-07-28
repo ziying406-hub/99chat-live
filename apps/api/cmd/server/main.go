@@ -2116,44 +2116,10 @@ func (s *Store) meForUser(w http.ResponseWriter, r *http.Request, current User) 
 		if s.users != nil {
 			s.users[current.ID] = current
 		}
-		if patch.Avatar != nil {
-			for _, group := range s.syncOwnedGroupAvatarsLocked(current.ID, current.Avatar) {
-				if err := s.persistGroupFor(r.Context(), current.ID, group, "group-"+group.ID); err != nil {
-					writeError(w, http.StatusInternalServerError, "group avatar update failed")
-					return
-				}
-			}
-		}
 		writeJSON(w, http.StatusOK, publicUserResponse(current))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
-}
-
-func (s *Store) syncOwnedGroupAvatarsLocked(ownerID, avatarURL string) []Group {
-	if strings.TrimSpace(ownerID) == "" || strings.TrimSpace(avatarURL) == "" {
-		return nil
-	}
-	updated := make([]Group, 0)
-	for groupID, group := range s.groups {
-		// The caller holds s.mu. Calling groupMemberRole here would try to take
-		// the same lock again and block the profile update forever.
-		if group.OwnerUserID != ownerID && groupRoleFor(group, ownerID) != "owner" {
-			continue
-		}
-		if group.Avatar == avatarURL {
-			continue
-		}
-		group.Avatar = avatarURL
-		s.groups[groupID] = group
-		for i := range s.conversations {
-			if s.conversations[i].ID == "group-"+group.ID {
-				s.conversations[i].Avatar = avatarURL
-			}
-		}
-		updated = append(updated, group)
-	}
-	return updated
 }
 
 func (s *Store) changePassword(w http.ResponseWriter, r *http.Request) {
@@ -3547,6 +3513,7 @@ func (s *Store) groupRoute(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPatch:
 		var patch struct {
 			Title                  *string         `json:"title"`
+			Avatar                 *string         `json:"avatar"`
 			Announcement           *string         `json:"announcement"`
 			MyNickname             *string         `json:"myNickname"`
 			JoinMode               *string         `json:"joinMode"`
@@ -3560,7 +3527,7 @@ func (s *Store) groupRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		role := groupRoleFor(group, current.ID)
-		managementPatch := patch.Title != nil || patch.Announcement != nil || patch.JoinMode != nil || patch.DisableMemberAddFriend != nil || patch.AllMuted != nil || patch.RateLimit != nil || patch.AutoMuteNewMembers != nil
+		managementPatch := patch.Title != nil || patch.Avatar != nil || patch.Announcement != nil || patch.JoinMode != nil || patch.DisableMemberAddFriend != nil || patch.AllMuted != nil || patch.RateLimit != nil || patch.AutoMuteNewMembers != nil
 		if managementPatch && !canManageGroupRole(role) {
 			writeError(w, http.StatusForbidden, "admin permission required")
 			return
@@ -3572,6 +3539,14 @@ func (s *Store) groupRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			group.Title = v
+		}
+		if patch.Avatar != nil {
+			v := strings.TrimSpace(*patch.Avatar)
+			if v == "" {
+				writeError(w, http.StatusBadRequest, "avatar required")
+				return
+			}
+			group.Avatar = v
 		}
 		if patch.Announcement != nil {
 			group.Announcement = strings.TrimSpace(*patch.Announcement)
@@ -3619,6 +3594,7 @@ func (s *Store) groupRoute(w http.ResponseWriter, r *http.Request) {
 				"payload": map[string]any{
 					"id":                     group.ID,
 					"title":                  group.Title,
+					"avatar":                 group.Avatar,
 					"announcement":           group.Announcement,
 					"joinMode":               group.JoinMode,
 					"disableMemberAddFriend": group.DisableMemberAddFriend,
