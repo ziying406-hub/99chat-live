@@ -7444,10 +7444,20 @@ async function beginJoinFromQrText(raw) {
     status: "",
     group: null
   };
-  await preparePendingJoin();
   state.modal = null;
   state.section = "messages";
   state.sidePage = null;
+  render();
+  const url = new URL(window.location.href);
+  url.searchParams.set("joinGroup", parsed.groupId);
+  if (parsed.code) url.searchParams.set("code", parsed.code);
+  else url.searchParams.delete("code");
+  window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  try {
+    await preparePendingJoin();
+  } catch (_) {
+    if (state.pendingJoin?.groupId === parsed.groupId) state.pendingJoin.status = "群信息读取失败，请重试";
+  }
   render();
   return true;
 }
