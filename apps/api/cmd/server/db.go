@@ -4097,28 +4097,36 @@ func (s *Store) updateFriendRequest(ctx context.Context, currentUserID, requestI
 	if s.pg == nil {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		var updated FriendRequest
-		var found bool
-		for i, request := range s.requests {
+		var incoming *FriendRequest
+		for i := range s.requests {
+			request := &s.requests[i]
 			if request.ID != requestID {
 				continue
 			}
-			s.requests[i].Status = status
-			if !found && (s.isSeedUser(currentUserID) || s.friendRequestVisibleToUser(request, currentUserID)) {
-				s.requests[i].Status = status
-				updated = s.requests[i]
-				found = true
-			}
-			if status == "accepted" && !contactExists(s.contacts, request.User.ID) {
-				s.contacts = append(s.contacts, request.User)
-			}
-			if status == "accepted" {
-				s.ensureAcceptedFriendConversationLocked(currentUserID, request.User)
+			if s.isSeedUser(currentUserID) || request.ToUserID == currentUserID {
+				incoming = request
+				break
 			}
 		}
-		if !found {
+		if incoming == nil {
 			return FriendRequest{}, errNotFound
 		}
+		for i := range s.requests {
+			if s.requests[i].ID != requestID {
+				continue
+			}
+			s.requests[i].Status = status
+		}
+		if status == "accepted" && !contactExists(s.contacts, incoming.User.ID) {
+			s.contacts = append(s.contacts, incoming.User)
+		}
+		if status == "accepted" {
+			s.ensureAcceptedFriendConversationLocked(currentUserID, incoming.User)
+		}
+		updated := *incoming
+		updated.Status = status
+		updated.Direction = "incoming"
+		updated.ToUserID = currentUserID
 		return updated, nil
 	}
 	tx, err := s.pg.pool.Begin(ctx)

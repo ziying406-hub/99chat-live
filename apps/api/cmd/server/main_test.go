@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -3840,6 +3844,190 @@ func TestFriendRequestAcceptAddsContactOnce(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("accepted contact count = %d, contacts=%+v", count, store.contacts)
+	}
+}
+
+func TestFriendRequestRejectDoesNotAddContact(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	sender := registerTestUser(t, mux, "+60", "66070301", "Chat66Test1", "申请发送方")
+	recipient := registerTestUser(t, mux, "+60", "66070302", "Chat66Test2", "申请接收方")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/friend-requests", bytes.NewBufferString(`{"chatId":"`+recipient.User.ChatID+`","greeting":"hi"}`))
+	createReq.Header.Set("Authorization", "Bearer "+sender.Token)
+	createRec := httptest.NewRecorder()
+	mux.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected friend request 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created FriendRequest
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode friend request: %v", err)
+	}
+
+	rejectReq := httptest.NewRequest(http.MethodPatch, "/api/friend-requests/"+created.ID, bytes.NewBufferString(`{"status":"rejected"}`))
+	rejectReq.Header.Set("Authorization", "Bearer "+recipient.Token)
+	rejectRec := httptest.NewRecorder()
+	mux.ServeHTTP(rejectRec, rejectReq)
+	if rejectRec.Code != http.StatusOK {
+		t.Fatalf("expected reject 200, got %d: %s", rejectRec.Code, rejectRec.Body.String())
+	}
+	var updated FriendRequest
+	if err := json.NewDecoder(rejectRec.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode rejected request: %v", err)
+	}
+	if updated.Status != "rejected" {
+		t.Fatalf("rejected status = %q", updated.Status)
+	}
+
+	contactsReq := httptest.NewRequest(http.MethodGet, "/api/contacts", nil)
+	contactsReq.Header.Set("Authorization", "Bearer "+recipient.Token)
+	contactsRec := httptest.NewRecorder()
+	mux.ServeHTTP(contactsRec, contactsReq)
+	if contactsRec.Code != http.StatusOK {
+		t.Fatalf("expected contacts 200, got %d: %s", contactsRec.Code, contactsRec.Body.String())
+	}
+	var contacts []Contact
+	if err := json.NewDecoder(contactsRec.Body).Decode(&contacts); err != nil {
+		t.Fatalf("decode contacts: %v", err)
+	}
+	if len(contacts) != 0 {
+		t.Fatalf("expected no contacts after rejecting friend request, got %+v", contacts)
+	}
+}
+
+func TestFriendRequestSenderCannotReview(t *testing.T) {
+	store := seedStore()
+	mux := http.NewServeMux()
+	registerRoutes(mux, store)
+
+	sender := registerTestUser(t, mux, "+60", "66070311", "Chat66Test1", "申请发送方")
+	recipient := registerTestUser(t, mux, "+60", "66070312", "Chat66Test2", "申请接收方")
+
+	createReq := httptest.NewRequest(http.MethodPost, "/api/friend-requests", bytes.NewBufferString(`{"chatId":"`+recipient.User.ChatID+`","greeting":"hi"}`))
+	createReq.Header.Set("Authorization", "Bearer "+sender.Token)
+	createRec := httptest.NewRecorder()
+	mux.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("expected friend request 201, got %d: %s", createRec.Code, createRec.Body.String())
+	}
+	var created FriendRequest
+	if err := json.NewDecoder(createRec.Body).Decode(&created); err != nil {
+		t.Fatalf("decode friend request: %v", err)
+	}
+
+	acceptReq := httptest.NewRequest(http.MethodPatch, "/api/friend-requests/"+created.ID, bytes.NewBufferString(`{"status":"accepted"}`))
+	acceptReq.Header.Set("Authorization", "Bearer "+sender.Token)
+	acceptRec := httptest.NewRecorder()
+	mux.ServeHTTP(acceptRec, acceptReq)
+	if acceptRec.Code != http.StatusNotFound {
+		t.Fatalf("expected sender review 404, got %d: %s", acceptRec.Code, acceptRec.Body.String())
+	}
+}
+
+func TestFriendRequestRealtimeEventOmitsReviewerWhenNil(t *testing.T) {
+	request := FriendRequest{
+		ID:         "fr-live",
+		Status:     "pending",
+		User:       Contact{ID: "sender", Nickname: "发送方"},
+		FromUserID: "sender",
+		ToUserID:   "recipient",
+	}
+
+	event := friendRequestRealtimeEvent("friend.requested", request, nil)
+	payload, ok := event["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("event payload = %#v", event["payload"])
+	}
+	if _, ok := payload["reviewer"]; ok {
+		t.Fatalf("did not expect reviewer for friend.requested: %#v", payload)
+	}
+}
+
+func TestHubBroadcastDeliversToAllClients(t *testing.T) {
+	parseFrame := func(conn net.Conn) (map[string]any, error) {
+		header := make([]byte, 2)
+		if _, err := io.ReadFull(conn, header); err != nil {
+			return nil, err
+		}
+		length := int64(header[1] & 0x7f)
+		switch length {
+		case 126:
+			var b [2]byte
+			if _, err := io.ReadFull(conn, b[:]); err != nil {
+				return nil, err
+			}
+			length = int64(binary.BigEndian.Uint16(b[:]))
+		case 127:
+			var b [8]byte
+			if _, err := io.ReadFull(conn, b[:]); err != nil {
+				return nil, err
+			}
+			length = int64(binary.BigEndian.Uint64(b[:]))
+		}
+		payload := make([]byte, length)
+		if _, err := io.ReadFull(conn, payload); err != nil {
+			return nil, err
+		}
+		var envelope map[string]any
+		if err := json.Unmarshal(payload, &envelope); err != nil {
+			return nil, err
+		}
+		return envelope, nil
+	}
+
+	hub := &Hub{clients: map[*WSConn]bool{}}
+
+	server1, client1 := net.Pipe()
+	defer client1.Close()
+	defer server1.Close()
+	c1 := &WSConn{conn: server1, rw: bufio.NewReadWriter(bufio.NewReader(server1), bufio.NewWriter(server1))}
+
+	server2, client2 := net.Pipe()
+	defer client2.Close()
+	defer server2.Close()
+	c2 := &WSConn{conn: server2, rw: bufio.NewReadWriter(bufio.NewReader(server2), bufio.NewWriter(server2))}
+
+	hub.Add(c1)
+	hub.Add(c2)
+
+	_ = client1.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer client1.SetReadDeadline(time.Time{})
+	_ = client2.SetReadDeadline(time.Now().Add(2 * time.Second))
+	defer client2.SetReadDeadline(time.Time{})
+
+	type result struct {
+		env map[string]any
+		err error
+	}
+	ch1 := make(chan result, 1)
+	ch2 := make(chan result, 1)
+	go func() {
+		env, err := parseFrame(client1)
+		ch1 <- result{env: env, err: err}
+	}()
+	go func() {
+		env, err := parseFrame(client2)
+		ch2 <- result{env: env, err: err}
+	}()
+
+	msg := map[string]any{"type": "friend.requested", "payload": map[string]any{"id": "fr-1"}}
+	hub.Broadcast(msg)
+
+	r1 := <-ch1
+	if r1.err != nil {
+		t.Fatalf("client1 read: %v", r1.err)
+	}
+	r2 := <-ch2
+	if r2.err != nil {
+		t.Fatalf("client2 read: %v", r2.err)
+	}
+	got1 := r1.env
+	got2 := r2.env
+	if got1["type"] != "friend.requested" || got2["type"] != "friend.requested" {
+		t.Fatalf("broadcast types = %#v %#v", got1, got2)
 	}
 }
 

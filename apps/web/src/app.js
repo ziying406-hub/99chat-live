@@ -59,7 +59,12 @@ import { appendMessageOnce, buildPendingMessage, isOwnRealtimeEcho, markMessageF
 import { nextNetworkLine } from "./networkLine.js";
 import { registerErrorMessage } from "./registerErrors.js";
 import { friendRequestErrorMessage, friendRequestReviewErrorMessage } from "./friendRequestErrors.js?v=20260708-friend-request-live";
-import { friendRealtimeUpdate, friendRequestSyncUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
+import { friendRealtimeUpdate } from "./friendRealtime.js?v=20260712-friend-realtime";
+import {
+  FRIEND_REALTIME_SYNC_INTERVAL_MS,
+  friendRealtimeSyncDecision,
+  shouldSkipFriendRealtimeSync
+} from "./friendRealtimeSync.js";
 import { applyProfileRealtimeUpdate } from "./profileRealtime.js?v=20260728-profile-realtime";
 import { qrScannerSupport } from "./qrScannerSupport.js?v=20260728-qr-scanner";
 import { jsQR } from "/public/vendor/jsqr-bundle.js";
@@ -636,24 +641,34 @@ async function refreshFriendRealtimeState() {
 }
 
 async function syncFriendRealtimeState() {
-  if (state.useMock || !state.data || state.ws || document.visibilityState === "hidden") return;
+  if (shouldSkipFriendRealtimeSync({
+    useMock: state.useMock,
+    data: state.data,
+    ws: state.ws,
+    visibilityState: document.visibilityState
+  })) return;
   const previousRequests = state.friendSyncSnapshot;
-  const previousState = JSON.stringify({
+  const previousState = {
     requests: state.data.requests,
     contacts: state.data.contacts,
     conversations: state.data.conversations
-  });
+  };
   await refreshFriendRealtimeState();
   const nextRequests = state.data.requests || [];
-  const message = friendRequestSyncUpdate(previousRequests, nextRequests);
-  state.friendSyncSnapshot = nextRequests.map(request => ({ ...request }));
-  const nextState = JSON.stringify({
+  const nextState = {
     requests: state.data.requests,
     contacts: state.data.contacts,
     conversations: state.data.conversations
+  };
+  const decision = friendRealtimeSyncDecision({
+    previousRequests,
+    nextRequests,
+    previousState,
+    nextState
   });
-  if (message) toast(message);
-  if (message || previousState !== nextState) render();
+  state.friendSyncSnapshot = decision.nextSnapshot;
+  if (decision.toastMessage) toast(decision.toastMessage);
+  if (decision.shouldRender) render();
 }
 
 function startFriendRealtimeSync() {
@@ -661,7 +676,7 @@ function startFriendRealtimeSync() {
   state.friendSyncSnapshot = (state.data?.requests || []).map(request => ({ ...request }));
   state.friendSyncTimer = window.setInterval(() => {
     syncFriendRealtimeState().catch(() => {});
-  }, 5000);
+  }, FRIEND_REALTIME_SYNC_INTERVAL_MS);
   window.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "visible" && !state.ws) syncFriendRealtimeState().catch(() => {});
   });
