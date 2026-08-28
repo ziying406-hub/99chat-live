@@ -414,12 +414,13 @@ async function openConversation(conversationId, { push = false } = {}) {
     void acknowledgeConversationRead(conversationId);
     return;
   }
-  await Promise.all([
-    loadMessages(conversationId, { restoreUnreadBoundary: true }),
-    loadConversationGroup(conversationId)
-  ]);
-  if (!isCurrentConversationSelection(conversationId, token)) return;
-  render();
+	await Promise.all([
+		loadMessages(conversationId, { restoreUnreadBoundary: true }),
+		loadConversationGroup(conversationId)
+	]);
+	if (!isCurrentConversationSelection(conversationId, token)) return;
+	scheduleScrollToBottom();
+	render();
   // Opening an existing unread conversation must advance its shared read pointer.
   // Realtime messages already use scheduleRealtimeReadReceipt, but historical
   // messages loaded here otherwise remain unread to the sender.
@@ -460,15 +461,16 @@ async function loadData() {
       ? routeConversationId
       : null;
     if (routeConversationId && !state.selectedConversationId) syncConversationPath(null);
-    if (state.selectedConversationId) {
-      syncConversationPath(state.selectedConversationId);
-      await Promise.all([
-        loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
-        loadConversationGroup(state.selectedConversationId)
-      ]);
-      void acknowledgeConversationRead(state.selectedConversationId);
-    }
-  } catch (error) {
+		if (state.selectedConversationId) {
+			syncConversationPath(state.selectedConversationId);
+			await Promise.all([
+				loadMessages(state.selectedConversationId, { restoreUnreadBoundary: true }),
+				loadConversationGroup(state.selectedConversationId)
+			]);
+			scheduleScrollToBottom();
+			void acknowledgeConversationRead(state.selectedConversationId);
+		}
+	} catch (error) {
     if (isNetworkFailure(error)) {
       localStorage.removeItem("chatlite-token");
       state.authed = false;
@@ -574,15 +576,15 @@ async function loadMessages(conversationId, { restoreUnreadBoundary = false } = 
   const changed = !areMessageArraysEqual(previousMessages, mergedMessages);
   state.data.messages[conversationId] = mergedMessages;
   if (restoreUnreadBoundary) {
-    const hasUnreadBoundary = updateUnreadBoundary(
-      conversationId,
-      messages,
-      response.headers.get("X-Chat-Previous-Read-At"),
-      true
-    );
-    if (!hasUnreadBoundary) scheduleScrollToBottom();
-  }
-  return changed;
+	const hasUnreadBoundary = updateUnreadBoundary(
+		conversationId,
+		messages,
+		response.headers.get("X-Chat-Previous-Read-At"),
+		false
+	);
+	if (!hasUnreadBoundary) scheduleScrollToBottom();
+	}
+	return changed;
 }
 
 function scheduleRealtimeReadReceipt(conversationId, incoming) {
@@ -4804,12 +4806,13 @@ function bindEvents() {
       updateMentionSuggestions();
     });
     editor.addEventListener("select", captureEditorSelection);
-    editor.addEventListener("focus", () => {
-      captureEditorSelection();
-      updateMentionSuggestions();
-    });
-    editor.addEventListener("keydown", handleEditorKeydown);
-  }
+	  editor.addEventListener("focus", () => {
+	    captureEditorSelection();
+	    updateMentionSuggestions();
+	  });
+	  editor.addEventListener("paste", handleEditorPaste);
+	  editor.addEventListener("keydown", handleEditorKeydown);
+	}
   document.querySelectorAll("[data-tool]").forEach(el => {
     if (el.dataset.tool === "emoji") {
       el.addEventListener("pointerdown", event => {
@@ -9415,6 +9418,39 @@ function handleEditorKeydown(event) {
   if (editorKeyAction(event, ensureUserSettings().enterToSend) === "send") {
     event.preventDefault();
     document.querySelector("#composer")?.requestSubmit();
+  }
+}
+
+async function handleEditorPaste(event) {
+  const items = event.clipboardData?.items;
+  if (!items?.length) return;
+  const images = [];
+  for (const item of items) {
+    if (item.kind !== "file") continue;
+    if (!String(item.type || "").startsWith("image/")) continue;
+    const file = item.getAsFile();
+    if (file) images.push(file);
+  }
+  if (!images.length) return;
+  event.preventDefault();
+  for (const file of images) {
+    const type = String(file.type || "image/png");
+    const extension = type.split("/").slice(1).join("/").replace(/[^a-z0-9]+/gi, "").toLowerCase() || "png";
+    const namedFile = file.name
+      ? file
+      : new File([file], `screenshot-${Date.now()}.${extension}`, { type });
+    try {
+      const result = buildAttachmentMessagePayload("image", buildAttachmentDescriptor(namedFile));
+      if (!result.ok) {
+        toast(result.message);
+        continue;
+      }
+      const attachment = await uploadFile(namedFile);
+      await sendMessage({ ...result.payload, attachment });
+    } catch (error) {
+      toast(uploadErrorMessage(error));
+      break;
+    }
   }
 }
 
