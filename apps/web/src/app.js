@@ -1318,9 +1318,10 @@ function render() {
 		state.selectedConversationId &&
 		!state.unreadBoundaryFocusConversationId
 	);
-	const shouldScrollToBottom = state.scrollToBottom || shouldStickToBottom;
 	const shouldFocusUnreadBoundary = state.unreadBoundaryFocusConversationId === state.selectedConversationId;
 	if (shouldFocusUnreadBoundary) state.scrollToBottom = false;
+	if (shouldStickToBottom && !shouldFocusUnreadBoundary) scheduleScrollToBottom();
+	const shouldScrollToBottom = state.scrollToBottom;
 	rememberMessageScrollPosition();
 	rememberTransientFocus();
 	syncSidePageFromHash();
