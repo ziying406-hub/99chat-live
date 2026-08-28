@@ -1311,22 +1311,29 @@ function isConversationOpenForNotification(conversation) {
 }
 
 function render() {
-  const shouldScrollToBottom = state.scrollToBottom;
-  const shouldFocusUnreadBoundary = state.unreadBoundaryFocusConversationId === state.selectedConversationId;
-  if (shouldFocusUnreadBoundary) state.scrollToBottom = false;
-  rememberMessageScrollPosition();
-  rememberTransientFocus();
-  syncSidePageFromHash();
+	const wasAtBottom = messageListIsAtBottom();
+	const shouldStickToBottom = Boolean(
+		wasAtBottom &&
+		state.section === "messages" &&
+		state.selectedConversationId &&
+		!state.unreadBoundaryFocusConversationId
+	);
+	const shouldScrollToBottom = state.scrollToBottom || shouldStickToBottom;
+	const shouldFocusUnreadBoundary = state.unreadBoundaryFocusConversationId === state.selectedConversationId;
+	if (shouldFocusUnreadBoundary) state.scrollToBottom = false;
+	rememberMessageScrollPosition();
+	rememberTransientFocus();
+	syncSidePageFromHash();
   const app = document.querySelector("#app");
   app.innerHTML = state.showSplash ? renderSplash() : state.authed ? renderApp() : renderAuth();
   bindAvatarFallbacks();
   bindEvents();
   flushScrollToBottom();
   flushUnreadBoundaryFocus();
-  restoreMessageScrollPosition({ skip: shouldScrollToBottom || shouldFocusUnreadBoundary });
-  restoreTransientFocus();
-  syncHighlightedMessage();
-  hydrateQrCodes();
+	restoreMessageScrollPosition({ skip: shouldScrollToBottom || shouldFocusUnreadBoundary || shouldStickToBottom });
+	restoreTransientFocus();
+	syncHighlightedMessage();
+	hydrateQrCodes();
 }
 
 function bindAvatarFallbacks() {
