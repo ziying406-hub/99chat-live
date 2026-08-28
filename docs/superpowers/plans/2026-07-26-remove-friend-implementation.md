@@ -36,7 +36,7 @@ Run `go test ./apps/api/cmd/server -run 'Test(DeleteContactRemovesBothUsersAndPr
 
 - [ ] **Step 3: Write minimal implementation**
 
-Handle `DELETE` in `contactRoute`, delete both contact rows through a `removeContact` helper, broadcast contact-refresh events for both users, and return `204`. Require the intended private-message recipient to remain a current contact before accepting a post.
+Handle `DELETE` in `contactRoute`, delete both contact rows through a `removeContact` helper, broadcast a `friend.removed` realtime event for both users, and return `204`. Require the intended private-message recipient to remain a current contact before accepting a post.
 
 - [ ] **Step 4: Run test to verify it passes**
 
