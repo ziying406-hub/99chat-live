@@ -2334,20 +2334,20 @@ function renderMembersPane() {
           <span><strong>${mutedCount}</strong><small>禁言</small></span>
         </div>
       </section>
-      <div class="list members-list">
-        ${members.map(m => {
-          const mentionCount = mentionStats[m.userId] || 0;
-          const manageable = canManage && canManageMember(currentMember, m);
-          return `
-          <article class="list-item member-card ${m.muted ? "muted" : ""}">
-            <img class="avatar" src="${avatarSrc(avatar(m.nickname[0] || "成"))}" alt="">
-            <div class="member-copy">
-              <div class="member-title-row">
-                <div class="item-title">${escapeHTML(m.nickname)}</div>
-                <span class="member-role ${escapeAttr(m.role || "member")}">${escapeHTML(memberRoleLabel(m.role))}</span>
-              </div>
-              <div class="item-preview">${escapeHTML(memberStatusText(m, mentionCount))}</div>
-            </div>
+	      <div class="list members-list">
+	        ${members.map(m => {
+	          const mentionCount = mentionStats[m.userId] || 0;
+	          const manageable = canManage && canManageMember(currentMember, m);
+	          return `
+	          <article class="list-item member-card ${m.muted ? "muted" : ""}">
+	            ${renderEntityAvatar({ avatar: m.avatar, nickname: m.nickname }, "成")}
+	            <div class="member-copy">
+	              <div class="member-title-row">
+	                <div class="item-title">${escapeHTML(m.nickname)}</div>
+	                <span class="member-role ${escapeAttr(m.role || "member")}">${escapeHTML(memberRoleLabel(m.role))}</span>
+	              </div>
+	              <div class="item-preview">${escapeHTML(memberStatusText(m, mentionCount))}</div>
+	            </div>
             <div class="icon-row member-actions">
               ${mentionCount ? `<button class="mention-badge list" type="button" data-search-member="${escapeAttr(m.nickname)}">被@${mentionCount}</button>` : ""}
               ${manageable ? `<button class="ghost-btn inline" data-member-action="mute" data-member-id="${m.userId}" data-muted="${m.muted ? "false" : "true"}">${m.muted ? "解除禁言" : "禁言"}</button>` : ""}

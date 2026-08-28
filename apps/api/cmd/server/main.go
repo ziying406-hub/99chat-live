@@ -178,6 +178,7 @@ type GroupRateLimit struct {
 type Member struct {
 	UserID   string `json:"userId"`
 	Nickname string `json:"nickname"`
+	Avatar   string `json:"avatar,omitempty"`
 	Role     string `json:"role"`
 	Muted    bool   `json:"muted"`
 }

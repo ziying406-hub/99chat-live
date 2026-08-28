@@ -1159,7 +1159,7 @@ func (pg *PostgresStore) loadGroups(ctx context.Context) (map[string]Group, erro
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	memberRows, err := pg.pool.Query(ctx, `SELECT gm.group_id, gm.user_id, COALESCE(NULLIF(gm.nickname, ''), u.nickname), gm.role, gm.muted_until IS NOT NULL
+	memberRows, err := pg.pool.Query(ctx, `SELECT gm.group_id, gm.user_id, COALESCE(NULLIF(gm.nickname, ''), u.nickname), u.avatar_url, gm.role, gm.muted_until IS NOT NULL
 		FROM group_members gm JOIN users u ON u.id = gm.user_id ORDER BY gm.created_at`)
 	if err != nil {
 		return nil, err
@@ -1168,7 +1168,7 @@ func (pg *PostgresStore) loadGroups(ctx context.Context) (map[string]Group, erro
 	for memberRows.Next() {
 		var groupID string
 		var member Member
-		if err := memberRows.Scan(&groupID, &member.UserID, &member.Nickname, &member.Role, &member.Muted); err != nil {
+		if err := memberRows.Scan(&groupID, &member.UserID, &member.Nickname, &member.Avatar, &member.Role, &member.Muted); err != nil {
 			return nil, err
 		}
 		group := groups[groupID]
